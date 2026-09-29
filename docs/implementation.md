@@ -16,6 +16,7 @@ Implemented:
 - [x] Idempotency, metadata-only audit entries, transactional outbox.
 - [x] Mobile Today, all tasks, Library, Capture, meaningful empty/error/pending states.
 - [x] Note editing, soft-delete to a Trash view, restore, and permanent purge, synced with version checks.
+- [x] Task rescheduling (set/clear the planned date) and one level of subtasks with completion progress.
 - [x] Account-scoped durable SQLite cache/outbox, coalesced replay, incremental pull pages on version boundaries.
 - [x] Worker publishes deduplicated sync signal jobs and maintains a monotonic Redis watermark.
 - [x] Web landing page and explicitly marked privacy/terms drafts.
@@ -39,7 +40,7 @@ These checks mean code exists. Validation results are recorded separately in `do
 ## Next implementation increments
 
 1. Finish the Phase 0 identity/account lifecycle and native build gates.
-2. M1: note editing/deletion/Trash landed; still pending are the rich-text editor, folders/tags, attachments, backlinks/versions; projects, subtasks, dates/deadlines and recurrence.
+2. M1: note editing/deletion/Trash, task rescheduling and one-level subtasks landed; still pending are the rich-text editor, folders/tags, attachments, backlinks/versions; projects, deeper subtask nesting, separate deadlines and recurrence.
 3. M2: complete onboarding, richer deterministic parsing, widgets/share capture, reminders and device delivery matrix.
 4. M3: learning library, safe URL fetching, metadata jobs, playlists and progress.
 5. M4: financial ledger with integer money, splits, debts, revisions/voids and reconciliation property tests.
@@ -60,6 +61,7 @@ Each milestone retains the specification's exit criteria. No milestone is waived
 - Mobile cache tables currently use the Expo SQLite API directly behind a store interface; shared Drizzle SQLite schema/migrations are still required for M1. Database initialization is version 1 only.
 - Mobile retries every 30 seconds while foregrounded and on resume/manual refresh. Exponential backoff, background connectivity triggers, attachments and full v1.1 conflict handling remain pending.
 - Field-level last-writer-wins is not implemented; stale task commands return a visible conflict. Completion/conversion of an unsynced capture is disabled until its first acknowledgement.
+- Subtasks are one level deep and share the task table; a subtask carries no planned date and is shown nested under its parent. Rescheduling exposes quick Today/Tomorrow/clear actions rather than a full date picker, and a separate deadline distinct from the planned date is not modelled yet.
 - Incremental pull supports the current three entity types; it is not the full specification's sync protocol. No deletion/tombstone expiry or 24-month history retention exists yet.
 - Note soft-delete (Trash) and restore propagate to every device through the version stream. Permanent purge is only offered on an already-trashed note and removes the row on the server, but it does not yet emit a cross-device tombstone: another device that already synced the soft-delete keeps the note in its own Trash until a full resync. Full tombstone propagation is part of the M5 deletion pipeline.
 - Idempotency records are retained indefinitely in this slice, preserving delayed offline retries. Retention/compaction is pending.

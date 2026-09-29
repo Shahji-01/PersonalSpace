@@ -99,8 +99,9 @@ export const tasks = pgTable(
     status: text('status').notNull().default('todo'),
     plannedDate: date('planned_date'),
     completedAt: instant('completed_at'),
+    parentId: uuid('parent_id'),
   },
-  (t) => [index().on(t.userId, t.version)],
+  (t) => [index().on(t.userId, t.version), index().on(t.userId, t.parentId)],
 );
 export const notes = pgTable(
   'notes',

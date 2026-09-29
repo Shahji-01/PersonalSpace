@@ -32,12 +32,19 @@ export async function recordsFor(
       updatedAt: row.updatedAt.toISOString(),
       deletedAt: row.deletedAt?.toISOString() ?? null,
       plannedDate: null,
+      parentId: null,
       ...extra,
     });
   return [
     ...inbox.map((r) => serialize(r, { type: 'inbox', text: r.rawText, status: r.status })),
     ...taskRows.map((r) =>
-      serialize(r, { type: 'task', text: r.title, status: r.status, plannedDate: r.plannedDate }),
+      serialize(r, {
+        type: 'task',
+        text: r.title,
+        status: r.status,
+        plannedDate: r.plannedDate,
+        parentId: r.parentId,
+      }),
     ),
     ...noteRows.map((r) => serialize(r, { type: 'note', text: r.contentText, status: 'active' })),
   ].sort((a, b) => a.version - b.version || a.id.localeCompare(b.id));

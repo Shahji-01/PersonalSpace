@@ -327,6 +327,71 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       expect(item?.convertedEntityId).toBeNull();
     });
   });
+  it('reschedules a task and manages one level of subtasks', async () => {
+    const service = createCaptureService(domain.db);
+    const parentId = v7();
+    const [parent] = await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'capture',
+        payload: { id: parentId, type: 'task', text: 'Plan trip', plannedDate: null },
+      },
+      'test',
+    );
+    const [rescheduled] = await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'task.reschedule',
+        id: parentId,
+        plannedDate: '2026-10-05',
+        baseVersion: parent!.version,
+      },
+      'test',
+    );
+    expect(rescheduled!.plannedDate).toBe('2026-10-05');
+    await expect(
+      service.execute(
+        userA,
+        v7(),
+        { op: 'task.reschedule', id: parentId, plannedDate: null, baseVersion: 0 },
+        'test',
+      ),
+    ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+
+    const subId = v7();
+    const [subtask] = await service.execute(
+      userA,
+      v7(),
+      { op: 'task.addSubtask', id: subId, parentId, text: 'Book flights' },
+      'test',
+    );
+    expect(subtask!.parentId).toBe(parentId);
+    expect(subtask!.plannedDate).toBeNull();
+    // A subtask cannot itself have children.
+    await expect(
+      service.execute(
+        userA,
+        v7(),
+        { op: 'task.addSubtask', id: v7(), parentId: subId, text: 'Too deep' },
+        'test',
+      ),
+    ).rejects.toMatchObject({ code: 'SUBTASK_NESTING' });
+
+    const [completedSub] = await service.execute(
+      userA,
+      v7(),
+      { op: 'task.complete', id: subId, baseVersion: subtask!.version },
+      'test',
+    );
+    expect(completedSub!.status).toBe('done');
+    await withUser(domain.db, userA, async (tx) => {
+      const children = await tx.select().from(tasks).where(eq(tasks.parentId, parentId));
+      expect(children).toHaveLength(1);
+      expect(children[0]!.id).toBe(subId);
+    });
+  });
   it('serializes concurrent duplicate mutations and rejects stale task updates', async () => {
     const service = createCaptureService(domain.db);
     const id = v7();

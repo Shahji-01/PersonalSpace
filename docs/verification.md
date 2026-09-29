@@ -2,22 +2,22 @@
 
 Validated locally on Windows with Node 24.13.1, pnpm 9.15.4, Docker Desktop, PostgreSQL 17, and Chrome.
 
-| Check                                               | Result                                                                                               |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Workspace + test/tool TypeScript                    | Passed                                                                                               |
-| ESLint                                              | Passed                                                                                               |
-| Unit tests                                          | 11 passed: validation, note lifecycle commands, capture suggestions, sync replay and acknowledgement |
-| PostgreSQL/API integration                          | 11 passed against an isolated Testcontainers database                                                |
-| Browser tests                                       | 2 passed: desktop and 390px phone viewport                                                           |
-| Web visual review                                   | Desktop and phone screenshots inspected; no horizontal overflow or browser errors                    |
-| API, worker, web builds                             | Passed                                                                                               |
-| Android and iOS Hermes bundle exports               | Passed                                                                                               |
-| Expo dependency compatibility                       | Passed after aligning safe-area-context with SDK 57                                                  |
-| Local migrations                                    | Applied successfully; repeated migration application covered by integration test                     |
-| Local API readiness and web HTTP response           | 200 / ready                                                                                          |
-| Live HTTP → DB → outbox → BullMQ → Redis → sign-out | Passed; temporary smoke account and jobs removed                                                     |
+| Check                                               | Result                                                                                                           |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Workspace + test/tool TypeScript                    | Passed                                                                                                           |
+| ESLint                                              | Passed                                                                                                           |
+| Unit tests                                          | 12 passed: validation, note and task-date/subtask commands, capture suggestions, sync replay and acknowledgement |
+| PostgreSQL/API integration                          | 12 passed against an isolated Testcontainers database                                                            |
+| Browser tests                                       | 2 passed: desktop and 390px phone viewport                                                                       |
+| Web visual review                                   | Desktop and phone screenshots inspected; no horizontal overflow or browser errors                                |
+| API, worker, web builds                             | Passed                                                                                                           |
+| Android and iOS Hermes bundle exports               | Passed                                                                                                           |
+| Expo dependency compatibility                       | Passed after aligning safe-area-context with SDK 57                                                              |
+| Local migrations                                    | Applied successfully; repeated migration application covered by integration test                                 |
+| Local API readiness and web HTTP response           | 200 / ready                                                                                                      |
+| Live HTTP → DB → outbox → BullMQ → Redis → sign-out | Passed; temporary smoke account and jobs removed                                                                 |
 
-The integration suite exercises actual Better Auth signup/signin/signout, explicit origin checks, owner isolation for all nine product tables, no pooled-context leakage, separate auth/application privileges, strict input ownership, duplicate keys, simultaneous retries, stale version rejection, atomic conversion/provenance, rollback, append-only audit privileges, and the full note lifecycle (edit, soft-delete to Trash, restore, and permanent purge with provenance-foreign-key cleanup under RLS).
+The integration suite exercises actual Better Auth signup/signin/signout, explicit origin checks, owner isolation for all nine product tables, no pooled-context leakage, separate auth/application privileges, strict input ownership, duplicate keys, simultaneous retries, stale version rejection, atomic conversion/provenance, rollback, append-only audit privileges, the full note lifecycle (edit, soft-delete to Trash, restore, and permanent purge with provenance-foreign-key cleanup under RLS), and task rescheduling with one-level subtasks (parent linkage, nesting rejection, and subtask completion).
 
 Browser screenshots are generated under ignored `test-results/`. Use `pnpm test:web` to recreate them after a web build. On this machine tests used the installed Chrome (`PLAYWRIGHT_CHANNEL=chrome`).
 

@@ -64,6 +64,8 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
   const [captureOpen, setCaptureOpen] = useState(false);
   const [editing, setEditing] = useState<RecordItem | null>(null);
   const [editText, setEditText] = useState('');
+  const [subtaskParent, setSubtaskParent] = useState<string | null>(null);
+  const [subtaskText, setSubtaskText] = useState('');
   const [text, setText] = useState('');
   const [type, setType] = useState<Capture['type']>('inbox');
   const [status, setStatus] = useState('Opening local storage…');
@@ -133,15 +135,20 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
     };
   }, [client, session.user.id]);
   const today = localDate();
+  const tomorrow = localDate(1);
   const inboxCount = records.filter((r) => r.type === 'inbox' && r.status === 'new').length;
   const trashCount = records.filter((r) => r.type === 'note' && r.deletedAt).length;
   const visible = records.filter((r) =>
     tab === 'today'
-      ? !r.deletedAt && r.type === 'task' && (allTasks || r.plannedDate === today)
+      ? !r.deletedAt && r.type === 'task' && !r.parentId && (allTasks || r.plannedDate === today)
       : library === 'trash'
         ? r.type === 'note' && !!r.deletedAt
         : !r.deletedAt && r.type === library && r.status !== 'converted',
   );
+  const subtasksOf = (parentId: string) =>
+    records
+      .filter((r) => r.type === 'task' && r.parentId === parentId && !r.deletedAt)
+      .sort((a, b) => a.id.localeCompare(b.id));
   async function save() {
     if (!store.current || saving) return;
     const result = captureSchema.safeParse({
@@ -162,6 +169,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
         {
           ...result.data,
           status: type === 'inbox' ? 'new' : type === 'task' ? 'todo' : 'active',
+          parentId: null,
           version: 0,
           createdAt: now,
           updatedAt: now,
@@ -214,6 +222,59 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
       void sync();
     } catch {
       Alert.alert('Change not saved', 'Please try again.');
+    }
+  }
+  async function reschedule(record: RecordItem, plannedDate: string | null) {
+    if (!store.current || record.plannedDate === plannedDate) return;
+    try {
+      await store.current.enqueue(
+        {
+          mutationId: newId(),
+          command: {
+            op: 'task.reschedule',
+            id: record.id,
+            plannedDate,
+            baseVersion: record.version,
+          },
+        },
+        { ...record, plannedDate },
+        record,
+      );
+      await refreshLocal();
+      void sync();
+    } catch {
+      Alert.alert('Change not saved', 'Please try again.');
+    }
+  }
+  async function addSubtask(parent: RecordItem, subtaskText: string) {
+    if (!store.current) return;
+    const trimmed = subtaskText.trim();
+    if (!trimmed) return;
+    const now = new Date().toISOString();
+    const id = newId();
+    try {
+      await store.current.enqueue(
+        {
+          mutationId: newId(),
+          command: { op: 'task.addSubtask', id, parentId: parent.id, text: trimmed },
+        },
+        {
+          id,
+          type: 'task',
+          text: trimmed,
+          status: 'todo',
+          plannedDate: null,
+          parentId: parent.id,
+          version: 0,
+          createdAt: now,
+          updatedAt: now,
+          deletedAt: null,
+        },
+      );
+      await refreshLocal();
+      void sync();
+    } catch {
+      Alert.alert('Not saved', 'The subtask could not be added. Please try again.');
     }
   }
   async function saveEdit() {
@@ -506,14 +567,107 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                 />
               </View>
             )}
-            {record.type === 'task' && (
-              <Button
-                secondary
-                disabled={pendingIds.includes(record.id) || record.version === 0}
-                label={record.status === 'done' ? 'Reopen task' : 'Mark complete'}
-                onPress={() => void act(record)}
-              />
-            )}
+            {record.type === 'task' &&
+              (() => {
+                const busy = pendingIds.includes(record.id) || record.version === 0;
+                const subs = subtasksOf(record.id);
+                const doneCount = subs.filter((s) => s.status === 'done').length;
+                return (
+                  <>
+                    <Button
+                      secondary
+                      disabled={busy}
+                      label={record.status === 'done' ? 'Reopen task' : 'Mark complete'}
+                      onPress={() => void act(record)}
+                    />
+                    <View style={styles.row}>
+                      <Text style={styles.label}>Plan</Text>
+                      <Button
+                        secondary={record.plannedDate !== today}
+                        disabled={busy}
+                        label="Today"
+                        onPress={() => void reschedule(record, today)}
+                      />
+                      <Button
+                        secondary={record.plannedDate !== tomorrow}
+                        disabled={busy}
+                        label="Tomorrow"
+                        onPress={() => void reschedule(record, tomorrow)}
+                      />
+                      <Button
+                        secondary={record.plannedDate !== null}
+                        disabled={busy}
+                        label="No date"
+                        onPress={() => void reschedule(record, null)}
+                      />
+                    </View>
+                    {subs.length > 0 && (
+                      <Text
+                        style={styles.subtitle}
+                      >{`Subtasks · ${doneCount}/${subs.length} done`}</Text>
+                    )}
+                    {subs.map((sub) => (
+                      <View key={sub.id} style={styles.row}>
+                        <Button
+                          secondary
+                          disabled={pendingIds.includes(sub.id) || sub.version === 0}
+                          label={sub.status === 'done' ? '✓ Done' : 'Mark done'}
+                          onPress={() => void act(sub)}
+                        />
+                        <Text
+                          style={[
+                            styles.label,
+                            { flex: 1, fontWeight: '400' },
+                            sub.status === 'done' && { textDecorationLine: 'line-through' },
+                          ]}
+                        >
+                          {sub.text}
+                        </Text>
+                      </View>
+                    ))}
+                    {subtaskParent === record.id ? (
+                      <View style={{ gap: 8 }}>
+                        <Field
+                          label="New subtask"
+                          autoFocus
+                          value={subtaskText}
+                          onChangeText={setSubtaskText}
+                          maxLength={500}
+                        />
+                        <View style={styles.row}>
+                          <Button
+                            label="Add"
+                            disabled={!subtaskText.trim()}
+                            onPress={() => {
+                              void addSubtask(record, subtaskText);
+                              setSubtaskText('');
+                              setSubtaskParent(null);
+                            }}
+                          />
+                          <Button
+                            secondary
+                            label="Cancel"
+                            onPress={() => {
+                              setSubtaskText('');
+                              setSubtaskParent(null);
+                            }}
+                          />
+                        </View>
+                      </View>
+                    ) : (
+                      <Button
+                        secondary
+                        disabled={busy}
+                        label="Add subtask"
+                        onPress={() => {
+                          setSubtaskText('');
+                          setSubtaskParent(record.id);
+                        }}
+                      />
+                    )}
+                  </>
+                );
+              })()}
             {record.type === 'inbox' && (
               <View style={styles.row}>
                 <Button
@@ -635,7 +789,8 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
     </>
   );
 }
-function localDate() {
+function localDate(offsetDays = 0) {
   const now = new Date();
+  now.setDate(now.getDate() + offsetDays);
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }

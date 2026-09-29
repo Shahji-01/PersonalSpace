@@ -64,6 +64,18 @@ export const commandSchema = z.discriminatedUnion('op', [
     id: idSchema,
     baseVersion: z.number().int().nonnegative(),
   }),
+  z.strictObject({
+    op: z.literal('task.reschedule'),
+    id: idSchema,
+    plannedDate: dateSchema.nullable(),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('task.addSubtask'),
+    id: idSchema,
+    parentId: idSchema,
+    text: z.string().trim().min(1).max(500),
+  }),
 ]);
 export const syncPushSchema = z.strictObject({
   mutations: z
@@ -77,6 +89,7 @@ export const recordSchema = z.strictObject({
   text: z.string(),
   status: z.enum(['new', 'converted', 'todo', 'done', 'active']),
   plannedDate: dateSchema.nullable(),
+  parentId: idSchema.nullable(),
   version: z.number().int().nonnegative(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),

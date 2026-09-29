@@ -207,6 +207,40 @@ export function createCaptureService(db: Database) {
           );
         await tx.delete(entities).where(and(eq(entities.id, note.id), eq(entities.userId, userId)));
         ids = [note.id];
+      } else if (command.op === 'task.reschedule') {
+        const task = await taskFor(tx, userId, command.id);
+        if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);
+        if (task.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This task changed on another device. Refresh and try again.',
+          );
+        await tx
+          .update(tasks)
+          .set({ plannedDate: command.plannedDate, version, updatedAt: new Date() })
+          .where(and(eq(tasks.id, task.id), eq(tasks.userId, userId)));
+        ids = [task.id];
+      } else if (command.op === 'task.addSubtask') {
+        const parent = await taskFor(tx, userId, command.parentId);
+        if (!parent) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);
+        if (parent.parentId)
+          throw new DomainError('SUBTASK_NESTING', 'Subtasks cannot have their own subtasks.', 422);
+        const inserted = await tx
+          .insert(entities)
+          .values({ id: command.id, userId, version, type: 'task' })
+          .onConflictDoNothing()
+          .returning({ id: entities.id });
+        if (!inserted.length)
+          throw new DomainError('ID_UNAVAILABLE', 'This item ID is unavailable.');
+        await tx.insert(tasks).values({
+          id: command.id,
+          userId,
+          version,
+          title: command.text,
+          parentId: parent.id,
+          plannedDate: null,
+        });
+        ids = [command.id];
       } else {
         const task = await taskFor(tx, userId, command.id);
         if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);

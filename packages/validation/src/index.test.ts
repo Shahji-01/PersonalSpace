@@ -35,6 +35,41 @@ describe('boundary validation', () => {
       commandSchema.safeParse({ op: 'note.delete', id, baseVersion: 3, extra: true }).success,
     ).toBe(false);
   });
+  it('accepts task date and subtask commands and rejects malformed ones', () => {
+    const parentId = '01900000-0000-7000-8000-000000000002';
+    expect(
+      commandSchema.safeParse({ op: 'task.reschedule', id, plannedDate: null, baseVersion: 2 })
+        .success,
+    ).toBe(true);
+    expect(
+      commandSchema.safeParse({
+        op: 'task.reschedule',
+        id,
+        plannedDate: '2026-09-30',
+        baseVersion: 2,
+      }).success,
+    ).toBe(true);
+    expect(commandSchema.safeParse({ op: 'task.reschedule', id, baseVersion: 2 }).success).toBe(
+      false,
+    );
+    expect(
+      commandSchema.safeParse({
+        op: 'task.reschedule',
+        id,
+        plannedDate: '2026-02-30',
+        baseVersion: 2,
+      }).success,
+    ).toBe(false);
+    expect(
+      commandSchema.safeParse({ op: 'task.addSubtask', id, parentId, text: 'Step one' }).success,
+    ).toBe(true);
+    expect(commandSchema.safeParse({ op: 'task.addSubtask', id, parentId, text: '' }).success).toBe(
+      false,
+    );
+    expect(commandSchema.safeParse({ op: 'task.addSubtask', id, text: 'Orphan' }).success).toBe(
+      false,
+    );
+  });
   it('requires explicit age and preview consent', () => {
     expect(
       signupSchema.safeParse({ name: 'A', email: 'a@example.test', password: 'long-test-password' })
