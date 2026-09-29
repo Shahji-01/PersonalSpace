@@ -118,4 +118,14 @@ export async function inboxFor(tx: Transaction, userId: string, id: string) {
       )
   )[0];
 }
+export async function trashedInboxFor(tx: Transaction, userId: string, id: string) {
+  return (
+    await tx
+      .select()
+      .from(inboxItems)
+      .where(
+        and(eq(inboxItems.id, id), eq(inboxItems.userId, userId), isNotNull(inboxItems.deletedAt)),
+      )
+  )[0];
+}
 export const nextVersion = sql`version + 1`;

@@ -29,6 +29,7 @@ import {
   noteFor,
   recordsFor,
   taskFor,
+  trashedInboxFor,
   trashedNoteFor,
   trashedTaskFor,
 } from './capture.repository';
@@ -371,6 +372,50 @@ export function createCaptureService(db: Database) {
             .set(patch)
             .where(and(eq(inboxItems.id, entity.id), eq(inboxItems.userId, userId)));
         ids = [entity.id];
+      } else if (command.op === 'inbox.delete') {
+        // Only an unfiled capture can be dismissed; a converted item is preserved as provenance.
+        const item = await inboxFor(tx, userId, command.id);
+        if (!item) throw new DomainError('INBOX_NOT_FOUND', 'This inbox item was not found.', 404);
+        if (item.status !== 'new')
+          throw new DomainError('ALREADY_CONVERTED', 'This inbox item was already filed.');
+        if (item.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This item changed on another device. Refresh and try again.',
+          );
+        const now = new Date();
+        await tx
+          .update(inboxItems)
+          .set({ deletedAt: now, version, updatedAt: now })
+          .where(and(eq(inboxItems.id, item.id), eq(inboxItems.userId, userId)));
+        ids = [item.id];
+      } else if (command.op === 'inbox.restore') {
+        const item = await trashedInboxFor(tx, userId, command.id);
+        if (!item)
+          throw new DomainError('INBOX_NOT_FOUND', 'This inbox item was not in Trash.', 404);
+        if (item.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This item changed on another device. Refresh and try again.',
+          );
+        await tx
+          .update(inboxItems)
+          .set({ deletedAt: null, version, updatedAt: new Date() })
+          .where(and(eq(inboxItems.id, item.id), eq(inboxItems.userId, userId)));
+        ids = [item.id];
+      } else if (command.op === 'inbox.purge') {
+        // A dismissed capture is never converted, so no provenance links reference it; deleting
+        // the entity cascades the inbox row.
+        const item = await trashedInboxFor(tx, userId, command.id);
+        if (!item)
+          throw new DomainError('INBOX_NOT_FOUND', 'This inbox item was not in Trash.', 404);
+        if (item.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This item changed on another device. Refresh and try again.',
+          );
+        await tx.delete(entities).where(and(eq(entities.id, item.id), eq(entities.userId, userId)));
+        ids = [item.id];
       } else {
         const task = await taskFor(tx, userId, command.id);
         if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);

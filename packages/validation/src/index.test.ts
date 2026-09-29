@@ -112,6 +112,13 @@ describe('boundary validation', () => {
       }).success,
     ).toBe(false);
   });
+  it('accepts inbox dismiss commands and rejects malformed ones', () => {
+    expect(commandSchema.safeParse({ op: 'inbox.delete', id, baseVersion: 0 }).success).toBe(true);
+    expect(commandSchema.safeParse({ op: 'inbox.restore', id, baseVersion: 0 }).success).toBe(true);
+    expect(commandSchema.safeParse({ op: 'inbox.purge', id, baseVersion: 0 }).success).toBe(true);
+    expect(commandSchema.safeParse({ op: 'inbox.delete', id }).success).toBe(false);
+    expect(commandSchema.safeParse({ op: 'inbox.delete', baseVersion: 0 }).success).toBe(false);
+  });
   it('requires explicit age and preview consent', () => {
     expect(
       signupSchema.safeParse({ name: 'A', email: 'a@example.test', password: 'long-test-password' })

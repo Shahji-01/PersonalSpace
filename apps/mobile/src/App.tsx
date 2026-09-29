@@ -144,10 +144,13 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
   }, [tab, library, allTasks]);
   const today = localDate();
   const tomorrow = localDate(1);
-  const inboxCount = records.filter((r) => r.type === 'inbox' && r.status === 'new').length;
-  // A note or a top-level task can be trashed; subtasks move with their parent.
+  const inboxCount = records.filter(
+    (r) => r.type === 'inbox' && r.status === 'new' && !r.deletedAt,
+  ).length;
+  // A note, an inbox capture, or a top-level task can be trashed; subtasks move with their parent.
   const inTrash = (r: RecordItem) =>
-    !!r.deletedAt && (r.type === 'note' || (r.type === 'task' && !r.parentId));
+    !!r.deletedAt &&
+    (r.type === 'note' || r.type === 'inbox' || (r.type === 'task' && !r.parentId));
   const trashCount = records.filter(inTrash).length;
   const allTags = [
     ...new Set(
@@ -385,7 +388,9 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
     const command =
       record.type === 'note'
         ? ({ op: 'note.delete', id: record.id, baseVersion: record.version } as const)
-        : ({ op: 'task.delete', id: record.id, baseVersion: record.version } as const);
+        : record.type === 'task'
+          ? ({ op: 'task.delete', id: record.id, baseVersion: record.version } as const)
+          : ({ op: 'inbox.delete', id: record.id, baseVersion: record.version } as const);
     try {
       await store.current.enqueue(
         { mutationId: newId(), command },
@@ -403,7 +408,9 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
     const command =
       record.type === 'note'
         ? ({ op: 'note.restore', id: record.id, baseVersion: record.version } as const)
-        : ({ op: 'task.restore', id: record.id, baseVersion: record.version } as const);
+        : record.type === 'task'
+          ? ({ op: 'task.restore', id: record.id, baseVersion: record.version } as const)
+          : ({ op: 'inbox.restore', id: record.id, baseVersion: record.version } as const);
     try {
       await store.current.enqueue(
         { mutationId: newId(), command },
@@ -421,7 +428,9 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
     const command =
       record.type === 'note'
         ? ({ op: 'note.purge', id: record.id, baseVersion: record.version } as const)
-        : ({ op: 'task.purge', id: record.id, baseVersion: record.version } as const);
+        : record.type === 'task'
+          ? ({ op: 'task.purge', id: record.id, baseVersion: record.version } as const)
+          : ({ op: 'inbox.purge', id: record.id, baseVersion: record.version } as const);
     try {
       await store.current.enqueue({ mutationId: newId(), command }, undefined, record, record.id);
       await refreshLocal();
@@ -657,7 +666,9 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                       'Delete forever?',
                       record.type === 'task'
                         ? 'This permanently removes the task and its subtasks from your account. This cannot be undone.'
-                        : 'This permanently removes the note from your account. This cannot be undone.',
+                        : record.type === 'inbox'
+                          ? 'This permanently removes the captured item from your account. This cannot be undone.'
+                          : 'This permanently removes the note from your account. This cannot be undone.',
                       [
                         { text: 'Cancel', style: 'cancel' },
                         {
@@ -799,7 +810,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                   </>
                 );
               })()}
-            {record.type === 'inbox' && (
+            {record.type === 'inbox' && !record.deletedAt && (
               <View style={styles.row}>
                 <Button
                   secondary
@@ -816,6 +827,12 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                   }
                   label="Make a task"
                   onPress={() => void act(record, 'task')}
+                />
+                <Button
+                  secondary
+                  disabled={pendingIds.includes(record.id) || record.version === 0}
+                  label="Dismiss"
+                  onPress={() => void trashRecord(record)}
                 />
               </View>
             )}

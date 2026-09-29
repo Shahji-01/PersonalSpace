@@ -510,6 +510,85 @@ describe('authenticated capture → PostgreSQL → sync', () => {
     const page = await service.pull(userA, note!.version - 1);
     expect(page.changes.find((r) => r.id === id)?.tags).toEqual([]);
   });
+  it('dismisses, restores, and purges an inbox capture but not a converted one', async () => {
+    const service = createCaptureService(domain.db);
+    const id = v7();
+    const [item] = await service.execute(
+      userA,
+      v7(),
+      { op: 'capture', payload: { id, type: 'inbox', text: 'Maybe later', plannedDate: null } },
+      'test',
+    );
+    const [dismissed] = await service.execute(
+      userA,
+      v7(),
+      { op: 'inbox.delete', id, baseVersion: item!.version },
+      'test',
+    );
+    expect(dismissed!.deletedAt).not.toBeNull();
+    const page = await service.pull(userA, item!.version);
+    expect(page.changes.find((r) => r.id === id)?.deletedAt).not.toBeNull();
+    const [restored] = await service.execute(
+      userA,
+      v7(),
+      { op: 'inbox.restore', id, baseVersion: dismissed!.version },
+      'test',
+    );
+    expect(restored!.deletedAt).toBeNull();
+
+    // A converted capture cannot be dismissed.
+    const noteId = v7();
+    const converted = await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'inbox.convert',
+        id,
+        targetId: noteId,
+        targetType: 'note',
+        baseVersion: restored!.version,
+      },
+      'test',
+    );
+    const filedInbox = converted.find((r) => r.id === id)!;
+    await expect(
+      service.execute(
+        userA,
+        v7(),
+        { op: 'inbox.delete', id, baseVersion: filedInbox.version },
+        'test',
+      ),
+    ).rejects.toMatchObject({ code: 'ALREADY_CONVERTED' });
+
+    // A fresh, unfiled capture can be dismissed and then purged for good.
+    const gone = v7();
+    const [fresh] = await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'capture',
+        payload: { id: gone, type: 'inbox', text: 'Discard me', plannedDate: null },
+      },
+      'test',
+    );
+    const [freshTrashed] = await service.execute(
+      userA,
+      v7(),
+      { op: 'inbox.delete', id: gone, baseVersion: fresh!.version },
+      'test',
+    );
+    const purged = await service.execute(
+      userA,
+      v7(),
+      { op: 'inbox.purge', id: gone, baseVersion: freshTrashed!.version },
+      'test',
+    );
+    expect(purged).toEqual([]);
+    await withUser(domain.db, userA, async (tx) => {
+      expect(await tx.select().from(inboxItems).where(eq(inboxItems.id, gone))).toHaveLength(0);
+      expect(await tx.select().from(entities).where(eq(entities.id, gone))).toHaveLength(0);
+    });
+  });
   it('serializes concurrent duplicate mutations and rejects stale task updates', async () => {
     const service = createCaptureService(domain.db);
     const id = v7();

@@ -127,6 +127,21 @@ export const commandSchema = z.discriminatedUnion('op', [
     tags: tagsSchema,
     baseVersion: z.number().int().nonnegative(),
   }),
+  z.strictObject({
+    op: z.literal('inbox.delete'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('inbox.restore'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('inbox.purge'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
 ]);
 export const syncPushSchema = z.strictObject({
   mutations: z
