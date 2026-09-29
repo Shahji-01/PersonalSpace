@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { v7 as uuidv7 } from 'uuid';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, or } from 'drizzle-orm';
 import {
   entities,
   syncState,
@@ -22,8 +22,32 @@ import {
   type Command,
   type RecordItem,
 } from '@personalspace/validation';
-import { changedEntities, inboxFor, nextVersion, recordsFor, taskFor } from './capture.repository';
+import {
+  changedEntities,
+  inboxFor,
+  nextVersion,
+  noteFor,
+  recordsFor,
+  taskFor,
+  trashedNoteFor,
+} from './capture.repository';
 import { DomainError } from './errors';
+
+// Plain text maps to a ProseMirror-compatible document. Title is the first line, matching
+// how notes are first created so edits round-trip the same way through the record contract.
+function noteContent(text: string) {
+  return {
+    title: text.split('\n')[0]!.slice(0, 120),
+    contentText: text,
+    contentJson: {
+      type: 'doc',
+      content: text.split('\n').map((line) => ({
+        type: 'paragraph',
+        ...(line ? { content: [{ type: 'text', text: line }] } : {}),
+      })),
+    },
+  };
+}
 
 async function insertCapture(tx: Transaction, userId: string, version: number, input: Capture) {
   const std = { id: input.id, userId, version };
@@ -37,19 +61,7 @@ async function insertCapture(tx: Transaction, userId: string, version: number, i
   if (input.type === 'inbox') await tx.insert(inboxItems).values({ ...std, rawText: input.text });
   if (input.type === 'task')
     await tx.insert(tasks).values({ ...std, title: input.text, plannedDate: input.plannedDate });
-  if (input.type === 'note')
-    await tx.insert(notes).values({
-      ...std,
-      title: input.text.split('\n')[0]!.slice(0, 120),
-      contentText: input.text,
-      contentJson: {
-        type: 'doc',
-        content: input.text.split('\n').map((text) => ({
-          type: 'paragraph',
-          ...(text ? { content: [{ type: 'text', text }] } : {}),
-        })),
-      },
-    });
+  if (input.type === 'note') await tx.insert(notes).values({ ...std, ...noteContent(input.text) });
 }
 
 export function createCaptureService(db: Database) {
@@ -129,6 +141,72 @@ export function createCaptureService(db: Database) {
           relation: 'converted_from',
         });
         ids = [item.id, command.targetId];
+      } else if (command.op === 'note.edit') {
+        const note = await noteFor(tx, userId, command.id);
+        if (!note) throw new DomainError('NOTE_NOT_FOUND', 'This note was not found.', 404);
+        if (note.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This note changed on another device. Refresh and try again.',
+          );
+        await tx
+          .update(notes)
+          .set({ ...noteContent(command.text), version, updatedAt: new Date() })
+          .where(and(eq(notes.id, note.id), eq(notes.userId, userId)));
+        ids = [note.id];
+      } else if (command.op === 'note.delete') {
+        const note = await noteFor(tx, userId, command.id);
+        if (!note) throw new DomainError('NOTE_NOT_FOUND', 'This note was not found.', 404);
+        if (note.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This note changed on another device. Refresh and try again.',
+          );
+        const now = new Date();
+        await tx
+          .update(notes)
+          .set({ deletedAt: now, version, updatedAt: now })
+          .where(and(eq(notes.id, note.id), eq(notes.userId, userId)));
+        ids = [note.id];
+      } else if (command.op === 'note.restore') {
+        const note = await trashedNoteFor(tx, userId, command.id);
+        if (!note) throw new DomainError('NOTE_NOT_FOUND', 'This note was not in Trash.', 404);
+        if (note.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This note changed on another device. Refresh and try again.',
+          );
+        await tx
+          .update(notes)
+          .set({ deletedAt: null, version, updatedAt: new Date() })
+          .where(and(eq(notes.id, note.id), eq(notes.userId, userId)));
+        ids = [note.id];
+      } else if (command.op === 'note.purge') {
+        // Purge is only offered for trashed notes, so every device has already recorded the
+        // deletion before the row is removed. Inbound foreign keys are RESTRICT, so clear the
+        // provenance link and any converted-from reference before deleting the entity, whose
+        // ON DELETE CASCADE then removes the note row.
+        const note = await trashedNoteFor(tx, userId, command.id);
+        if (!note) throw new DomainError('NOTE_NOT_FOUND', 'This note was not in Trash.', 404);
+        if (note.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This note changed on another device. Refresh and try again.',
+          );
+        await tx
+          .update(inboxItems)
+          .set({ convertedEntityId: null })
+          .where(and(eq(inboxItems.userId, userId), eq(inboxItems.convertedEntityId, note.id)));
+        await tx
+          .delete(entityLinks)
+          .where(
+            and(
+              eq(entityLinks.userId, userId),
+              or(eq(entityLinks.sourceId, note.id), eq(entityLinks.targetId, note.id)),
+            ),
+          );
+        await tx.delete(entities).where(and(eq(entities.id, note.id), eq(entities.userId, userId)));
+        ids = [note.id];
       } else {
         const task = await taskFor(tx, userId, command.id);
         if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);

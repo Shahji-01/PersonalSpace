@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { entities, inboxItems, notes, tasks, type Transaction } from '@personalspace/db';
 import { recordSchema, type RecordItem } from '@personalspace/validation';
 
@@ -69,6 +69,22 @@ export async function taskFor(tx: Transaction, userId: string, id: string) {
       .select()
       .from(tasks)
       .where(and(eq(tasks.id, id), eq(tasks.userId, userId), isNull(tasks.deletedAt)))
+  )[0];
+}
+export async function noteFor(tx: Transaction, userId: string, id: string) {
+  return (
+    await tx
+      .select()
+      .from(notes)
+      .where(and(eq(notes.id, id), eq(notes.userId, userId), isNull(notes.deletedAt)))
+  )[0];
+}
+export async function trashedNoteFor(tx: Transaction, userId: string, id: string) {
+  return (
+    await tx
+      .select()
+      .from(notes)
+      .where(and(eq(notes.id, id), eq(notes.userId, userId), isNotNull(notes.deletedAt)))
   )[0];
 }
 export async function inboxFor(tx: Transaction, userId: string, id: string) {

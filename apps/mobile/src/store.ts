@@ -119,8 +119,17 @@ export async function openStore(userId: string) {
         );
       });
     },
-    enqueue: async (mutation: Mutation, optimistic?: RecordItem, previous?: RecordItem) => {
+    enqueue: async (
+      mutation: Mutation,
+      optimistic?: RecordItem,
+      previous?: RecordItem,
+      removeId?: string,
+    ) => {
       await transaction(async () => {
+        // Purge removes the record locally right away; `previous` restores it if the server
+        // rejects the change (for example a version conflict) via the reject handler above.
+        if (removeId)
+          await db.runAsync('DELETE FROM records WHERE user_id=? AND id=?', userId, removeId);
         if (optimistic) await save(optimistic);
         await db.runAsync(
           'INSERT INTO outbox(user_id,id,mutation,previous) VALUES (?,?,?,?)',

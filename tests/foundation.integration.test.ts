@@ -7,6 +7,9 @@ import {
   createDatabase,
   withUser,
   tasks,
+  notes,
+  entities,
+  inboxItems,
   auditLogs,
   outboxEvents,
   entityLinks,
@@ -233,6 +236,96 @@ describe('authenticated capture → PostgreSQL → sync', () => {
         'test',
       ),
     ).rejects.toMatchObject({ code: 'ALREADY_CONVERTED' });
+  });
+  it('edits, trashes, restores, and permanently purges a note through sync', async () => {
+    const service = createCaptureService(domain.db);
+    const id = v7();
+    const [created] = await service.execute(
+      userA,
+      v7(),
+      { op: 'capture', payload: { id, type: 'note', text: 'First draft', plannedDate: null } },
+      'test',
+    );
+    const [edited] = await service.execute(
+      userA,
+      v7(),
+      { op: 'note.edit', id, text: 'Revised body\nSecond line', baseVersion: created!.version },
+      'test',
+    );
+    expect(edited!.text).toBe('Revised body\nSecond line');
+    expect(edited!.version).toBeGreaterThan(created!.version);
+    await expect(
+      service.execute(userA, v7(), { op: 'note.edit', id, text: 'stale', baseVersion: 0 }, 'test'),
+    ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+
+    const [trashed] = await service.execute(
+      userA,
+      v7(),
+      { op: 'note.delete', id, baseVersion: edited!.version },
+      'test',
+    );
+    expect(trashed!.deletedAt).not.toBeNull();
+    const trashedPage = await service.pull(userA, edited!.version);
+    expect(trashedPage.changes.find((r) => r.id === id)?.deletedAt).not.toBeNull();
+
+    const [restored] = await service.execute(
+      userA,
+      v7(),
+      { op: 'note.restore', id, baseVersion: trashed!.version },
+      'test',
+    );
+    expect(restored!.deletedAt).toBeNull();
+
+    // Convert an inbox item to a note so purge must also clear provenance FKs.
+    const inboxId = v7();
+    const [inbox] = await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'capture',
+        payload: { id: inboxId, type: 'inbox', text: 'Convert me', plannedDate: null },
+      },
+      'test',
+    );
+    const noteId = v7();
+    const converted = await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'inbox.convert',
+        id: inboxId,
+        targetId: noteId,
+        targetType: 'note',
+        baseVersion: inbox!.version,
+      },
+      'test',
+    );
+    const convertedNote = converted.find((r) => r.id === noteId)!;
+    const [convTrashed] = await service.execute(
+      userA,
+      v7(),
+      { op: 'note.delete', id: noteId, baseVersion: convertedNote.version },
+      'test',
+    );
+    await expect(
+      service.execute(userA, v7(), { op: 'note.purge', id: noteId, baseVersion: 0 }, 'test'),
+    ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+    const purged = await service.execute(
+      userA,
+      v7(),
+      { op: 'note.purge', id: noteId, baseVersion: convTrashed!.version },
+      'test',
+    );
+    expect(purged).toEqual([]);
+    await withUser(domain.db, userA, async (tx) => {
+      expect(await tx.select().from(notes).where(eq(notes.id, noteId))).toHaveLength(0);
+      expect(await tx.select().from(entities).where(eq(entities.id, noteId))).toHaveLength(0);
+      expect(
+        await tx.select().from(entityLinks).where(eq(entityLinks.sourceId, noteId)),
+      ).toHaveLength(0);
+      const [item] = await tx.select().from(inboxItems).where(eq(inboxItems.id, inboxId));
+      expect(item?.convertedEntityId).toBeNull();
+    });
   });
   it('serializes concurrent duplicate mutations and rejects stale task updates', async () => {
     const service = createCaptureService(domain.db);

@@ -59,9 +59,11 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
   const [pendingIds, setPendingIds] = useState<string[]>([]);
   const [problems, setProblems] = useState<Awaited<ReturnType<LocalStore['problems']>>>([]);
   const [tab, setTab] = useState<'today' | 'library'>('today');
-  const [library, setLibrary] = useState<'inbox' | 'note'>('inbox');
+  const [library, setLibrary] = useState<'inbox' | 'note' | 'trash'>('inbox');
   const [allTasks, setAllTasks] = useState(false);
   const [captureOpen, setCaptureOpen] = useState(false);
+  const [editing, setEditing] = useState<RecordItem | null>(null);
+  const [editText, setEditText] = useState('');
   const [text, setText] = useState('');
   const [type, setType] = useState<Capture['type']>('inbox');
   const [status, setStatus] = useState('Opening local storage…');
@@ -132,12 +134,13 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
   }, [client, session.user.id]);
   const today = localDate();
   const inboxCount = records.filter((r) => r.type === 'inbox' && r.status === 'new').length;
-  const visible = records.filter(
-    (r) =>
-      !r.deletedAt &&
-      (tab === 'today'
-        ? r.type === 'task' && (allTasks || r.plannedDate === today)
-        : r.type === library && r.status !== 'converted'),
+  const trashCount = records.filter((r) => r.type === 'note' && r.deletedAt).length;
+  const visible = records.filter((r) =>
+    tab === 'today'
+      ? !r.deletedAt && r.type === 'task' && (allTasks || r.plannedDate === today)
+      : library === 'trash'
+        ? r.type === 'note' && !!r.deletedAt
+        : !r.deletedAt && r.type === library && r.status !== 'converted',
   );
   async function save() {
     if (!store.current || saving) return;
@@ -207,6 +210,86 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
           { ...record, status: record.status === 'done' ? 'todo' : 'done' },
           record,
         );
+      await refreshLocal();
+      void sync();
+    } catch {
+      Alert.alert('Change not saved', 'Please try again.');
+    }
+  }
+  async function saveEdit() {
+    if (!store.current || !editing || saving) return;
+    const trimmed = editText.trim();
+    if (!trimmed) {
+      Alert.alert('Empty note', 'A note needs some text. Delete it instead if you are done.');
+      return;
+    }
+    setSaving(true);
+    try {
+      await store.current.enqueue(
+        {
+          mutationId: newId(),
+          command: { op: 'note.edit', id: editing.id, text: trimmed, baseVersion: editing.version },
+        },
+        { ...editing, text: trimmed, updatedAt: new Date().toISOString() },
+        editing,
+      );
+      setEditing(null);
+      setEditText('');
+      setStatus('Saved on this device. Sync pending.');
+      await refreshLocal();
+      void sync();
+    } catch {
+      Alert.alert('Not saved', 'Your changes are still here. Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function trashNote(record: RecordItem) {
+    if (!store.current) return;
+    try {
+      await store.current.enqueue(
+        {
+          mutationId: newId(),
+          command: { op: 'note.delete', id: record.id, baseVersion: record.version },
+        },
+        { ...record, deletedAt: new Date().toISOString() },
+        record,
+      );
+      await refreshLocal();
+      void sync();
+    } catch {
+      Alert.alert('Change not saved', 'Please try again.');
+    }
+  }
+  async function restoreNote(record: RecordItem) {
+    if (!store.current) return;
+    try {
+      await store.current.enqueue(
+        {
+          mutationId: newId(),
+          command: { op: 'note.restore', id: record.id, baseVersion: record.version },
+        },
+        { ...record, deletedAt: null },
+        record,
+      );
+      await refreshLocal();
+      void sync();
+    } catch {
+      Alert.alert('Change not saved', 'Please try again.');
+    }
+  }
+  async function purgeNote(record: RecordItem) {
+    if (!store.current) return;
+    try {
+      await store.current.enqueue(
+        {
+          mutationId: newId(),
+          command: { op: 'note.purge', id: record.id, baseVersion: record.version },
+        },
+        undefined,
+        record,
+        record.id,
+      );
       await refreshLocal();
       void sync();
     } catch {
@@ -323,6 +406,11 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
               label="Notes"
               onPress={() => setLibrary('note')}
             />
+            <Button
+              secondary={library !== 'trash'}
+              label={`Trash · ${trashCount}`}
+              onPress={() => setLibrary('trash')}
+            />
           </View>
         )}
         {!visible.length && (
@@ -332,14 +420,20 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                 ? 'Make room for what matters.'
                 : library === 'inbox'
                   ? 'A clear inbox.'
-                  : 'Your notes will live here.'}
+                  : library === 'trash'
+                    ? 'Trash is empty.'
+                    : 'Your notes will live here.'}
             </Text>
             <Text style={styles.subtitle}>
               {tab === 'today'
                 ? 'Add one thing you want to do today.'
-                : 'A thought, an idea, something to remember. Save it in a moment.'}
+                : library === 'trash'
+                  ? 'Deleted notes wait here so you can restore them.'
+                  : 'A thought, an idea, something to remember. Save it in a moment.'}
             </Text>
-            <Button label="Capture something" onPress={() => setCaptureOpen(true)} />
+            {library !== 'trash' && (
+              <Button label="Capture something" onPress={() => setCaptureOpen(true)} />
+            )}
           </Card>
         )}
         {visible.map((record) => (
@@ -360,8 +454,58 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                   ? record.status === 'done'
                     ? 'Completed'
                     : (record.plannedDate ?? 'No planned date')
-                  : 'Saved'}
+                  : record.type === 'note' && record.deletedAt
+                    ? 'In Trash'
+                    : 'Saved'}
             </Text>
+            {record.type === 'note' && !record.deletedAt && (
+              <View style={styles.row}>
+                <Button
+                  secondary
+                  disabled={pendingIds.includes(record.id) || record.version === 0}
+                  label="Edit"
+                  onPress={() => {
+                    setEditText(record.text);
+                    setEditing(record);
+                  }}
+                />
+                <Button
+                  secondary
+                  disabled={pendingIds.includes(record.id) || record.version === 0}
+                  label="Move to Trash"
+                  onPress={() => void trashNote(record)}
+                />
+              </View>
+            )}
+            {record.type === 'note' && record.deletedAt && (
+              <View style={styles.row}>
+                <Button
+                  secondary
+                  disabled={pendingIds.includes(record.id) || record.version === 0}
+                  label="Restore"
+                  onPress={() => void restoreNote(record)}
+                />
+                <Button
+                  secondary
+                  disabled={pendingIds.includes(record.id) || record.version === 0}
+                  label="Delete forever"
+                  onPress={() =>
+                    Alert.alert(
+                      'Delete forever?',
+                      'This permanently removes the note from your account. This cannot be undone.',
+                      [
+                        { text: 'Cancel', style: 'cancel' },
+                        {
+                          text: 'Delete forever',
+                          style: 'destructive',
+                          onPress: () => void purgeNote(record),
+                        },
+                      ],
+                    )
+                  }
+                />
+              </View>
+            )}
             {record.type === 'task' && (
               <Button
                 secondary
@@ -450,6 +594,40 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                 disabled={saving}
                 onPress={() => setCaptureOpen(false)}
               />
+            </ScrollView>
+          </KeyboardAvoidingView>
+        </SafeAreaView>
+      </Modal>
+      <Modal
+        visible={editing !== null}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => {
+          if (!saving) setEditing(null);
+        }}
+      >
+        <SafeAreaView style={styles.root}>
+          <KeyboardAvoidingView
+            style={{ flex: 1 }}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          >
+            <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.page}>
+              <Text style={styles.eyebrow}>EDIT NOTE</Text>
+              <Text style={styles.title}>Make it yours.</Text>
+              <Field
+                label="Your note"
+                autoFocus
+                multiline
+                value={editText}
+                onChangeText={setEditText}
+                maxLength={20000}
+              />
+              <Button
+                label={saving ? 'Saving…' : 'Save changes'}
+                disabled={!editText.trim() || saving}
+                onPress={() => void saveEdit()}
+              />
+              <Button secondary label="Cancel" disabled={saving} onPress={() => setEditing(null)} />
             </ScrollView>
           </KeyboardAvoidingView>
         </SafeAreaView>

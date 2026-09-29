@@ -18,6 +18,23 @@ describe('boundary validation', () => {
     );
     expect(captureSchema.safeParse({ id, type: 'note', text: 'a'.repeat(501) }).success).toBe(true);
   });
+  it('accepts note lifecycle commands and rejects malformed ones', () => {
+    expect(
+      commandSchema.safeParse({ op: 'note.edit', id, text: 'Updated', baseVersion: 3 }).success,
+    ).toBe(true);
+    expect(commandSchema.safeParse({ op: 'note.delete', id, baseVersion: 3 }).success).toBe(true);
+    expect(commandSchema.safeParse({ op: 'note.restore', id, baseVersion: 3 }).success).toBe(true);
+    expect(commandSchema.safeParse({ op: 'note.purge', id, baseVersion: 3 }).success).toBe(true);
+    expect(commandSchema.safeParse({ op: 'note.edit', id, text: '', baseVersion: 3 }).success).toBe(
+      false,
+    );
+    expect(
+      commandSchema.safeParse({ op: 'note.edit', id, text: 'x', baseVersion: -1 }).success,
+    ).toBe(false);
+    expect(
+      commandSchema.safeParse({ op: 'note.delete', id, baseVersion: 3, extra: true }).success,
+    ).toBe(false);
+  });
   it('requires explicit age and preview consent', () => {
     expect(
       signupSchema.safeParse({ name: 'A', email: 'a@example.test', password: 'long-test-password' })
