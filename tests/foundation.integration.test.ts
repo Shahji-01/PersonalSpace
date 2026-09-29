@@ -392,6 +392,87 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       expect(children[0]!.id).toBe(subId);
     });
   });
+  it('renames, trashes with subtask cascade, restores, and purges a task', async () => {
+    const service = createCaptureService(domain.db);
+    const parentId = v7();
+    const [parent] = await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'capture',
+        payload: { id: parentId, type: 'task', text: 'Prep launch', plannedDate: null },
+      },
+      'test',
+    );
+    const subId = v7();
+    const [subtask] = await service.execute(
+      userA,
+      v7(),
+      { op: 'task.addSubtask', id: subId, parentId, text: 'Draft copy' },
+      'test',
+    );
+    const [renamed] = await service.execute(
+      userA,
+      v7(),
+      { op: 'task.rename', id: parentId, text: 'Prep the launch', baseVersion: parent!.version },
+      'test',
+    );
+    expect(renamed!.text).toBe('Prep the launch');
+
+    // Trashing the parent cascades to the active subtask on one shared version.
+    const trashed = await service.execute(
+      userA,
+      v7(),
+      { op: 'task.delete', id: parentId, baseVersion: renamed!.version },
+      'test',
+    );
+    expect(trashed).toHaveLength(2);
+    expect(trashed.every((r) => r.deletedAt !== null)).toBe(true);
+    const trashedParent = trashed.find((r) => r.id === parentId)!;
+
+    const restored = await service.execute(
+      userA,
+      v7(),
+      { op: 'task.restore', id: parentId, baseVersion: trashedParent.version },
+      'test',
+    );
+    expect(restored).toHaveLength(2);
+    expect(restored.every((r) => r.deletedAt === null)).toBe(true);
+    const restoredParent = restored.find((r) => r.id === parentId)!;
+
+    // Purge requires the task to be in Trash first.
+    await expect(
+      service.execute(
+        userA,
+        v7(),
+        { op: 'task.purge', id: parentId, baseVersion: restoredParent.version },
+        'test',
+      ),
+    ).rejects.toMatchObject({ code: 'TASK_NOT_FOUND' });
+    const reTrashed = await service.execute(
+      userA,
+      v7(),
+      { op: 'task.delete', id: parentId, baseVersion: restoredParent.version },
+      'test',
+    );
+    const purged = await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'task.purge',
+        id: parentId,
+        baseVersion: reTrashed.find((r) => r.id === parentId)!.version,
+      },
+      'test',
+    );
+    expect(purged).toEqual([]);
+    await withUser(domain.db, userA, async (tx) => {
+      expect(await tx.select().from(tasks).where(eq(tasks.parentId, parentId))).toHaveLength(0);
+      expect(await tx.select().from(entities).where(eq(entities.id, parentId))).toHaveLength(0);
+      expect(await tx.select().from(entities).where(eq(entities.id, subId))).toHaveLength(0);
+    });
+    expect(subtask!.parentId).toBe(parentId);
+  });
   it('serializes concurrent duplicate mutations and rejects stale task updates', async () => {
     const service = createCaptureService(domain.db);
     const id = v7();

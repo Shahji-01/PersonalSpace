@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { v7 as uuidv7 } from 'uuid';
-import { and, eq, or } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import {
   entities,
   syncState,
@@ -30,6 +30,7 @@ import {
   recordsFor,
   taskFor,
   trashedNoteFor,
+  trashedTaskFor,
 } from './capture.repository';
 import { DomainError } from './errors';
 
@@ -241,6 +242,96 @@ export function createCaptureService(db: Database) {
           plannedDate: null,
         });
         ids = [command.id];
+      } else if (command.op === 'task.rename') {
+        const task = await taskFor(tx, userId, command.id);
+        if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);
+        if (task.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This task changed on another device. Refresh and try again.',
+          );
+        await tx
+          .update(tasks)
+          .set({ title: command.text, version, updatedAt: new Date() })
+          .where(and(eq(tasks.id, task.id), eq(tasks.userId, userId)));
+        ids = [task.id];
+      } else if (command.op === 'task.delete') {
+        // Trashing a task cascades to its active subtasks so none are left orphaned; they all
+        // move to Trash together on the same version.
+        const task = await taskFor(tx, userId, command.id);
+        if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);
+        if (task.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This task changed on another device. Refresh and try again.',
+          );
+        const subs = await tx
+          .select({ id: tasks.id })
+          .from(tasks)
+          .where(
+            and(eq(tasks.userId, userId), eq(tasks.parentId, task.id), isNull(tasks.deletedAt)),
+          );
+        const targetIds = [task.id, ...subs.map((s) => s.id)];
+        const now = new Date();
+        await tx
+          .update(tasks)
+          .set({ deletedAt: now, version, updatedAt: now })
+          .where(and(eq(tasks.userId, userId), inArray(tasks.id, targetIds)));
+        ids = targetIds;
+      } else if (command.op === 'task.restore') {
+        const task = await trashedTaskFor(tx, userId, command.id);
+        if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not in Trash.', 404);
+        if (task.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This task changed on another device. Refresh and try again.',
+          );
+        const subs = await tx
+          .select({ id: tasks.id })
+          .from(tasks)
+          .where(
+            and(eq(tasks.userId, userId), eq(tasks.parentId, task.id), isNotNull(tasks.deletedAt)),
+          );
+        const targetIds = [task.id, ...subs.map((s) => s.id)];
+        await tx
+          .update(tasks)
+          .set({ deletedAt: null, version, updatedAt: new Date() })
+          .where(and(eq(tasks.userId, userId), inArray(tasks.id, targetIds)));
+        ids = targetIds;
+      } else if (command.op === 'task.purge') {
+        // Permanent delete of a trashed task and its subtasks. Subtask entities are removed
+        // first (cascading their task rows); inbound provenance keys on the parent are cleared
+        // before its entity is deleted, matching note purge.
+        const task = await trashedTaskFor(tx, userId, command.id);
+        if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not in Trash.', 404);
+        if (task.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This task changed on another device. Refresh and try again.',
+          );
+        const subs = await tx
+          .select({ id: tasks.id })
+          .from(tasks)
+          .where(and(eq(tasks.userId, userId), eq(tasks.parentId, task.id)));
+        const subIds = subs.map((s) => s.id);
+        if (subIds.length)
+          await tx
+            .delete(entities)
+            .where(and(eq(entities.userId, userId), inArray(entities.id, subIds)));
+        await tx
+          .update(inboxItems)
+          .set({ convertedEntityId: null })
+          .where(and(eq(inboxItems.userId, userId), eq(inboxItems.convertedEntityId, task.id)));
+        await tx
+          .delete(entityLinks)
+          .where(
+            and(
+              eq(entityLinks.userId, userId),
+              or(eq(entityLinks.sourceId, task.id), eq(entityLinks.targetId, task.id)),
+            ),
+          );
+        await tx.delete(entities).where(and(eq(entities.id, task.id), eq(entities.userId, userId)));
+        ids = [task.id, ...subIds];
       } else {
         const task = await taskFor(tx, userId, command.id);
         if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);

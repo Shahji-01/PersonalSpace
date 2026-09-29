@@ -94,6 +94,14 @@ export async function trashedNoteFor(tx: Transaction, userId: string, id: string
       .where(and(eq(notes.id, id), eq(notes.userId, userId), isNotNull(notes.deletedAt)))
   )[0];
 }
+export async function trashedTaskFor(tx: Transaction, userId: string, id: string) {
+  return (
+    await tx
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, id), eq(tasks.userId, userId), isNotNull(tasks.deletedAt)))
+  )[0];
+}
 export async function inboxFor(tx: Transaction, userId: string, id: string) {
   return (
     await tx

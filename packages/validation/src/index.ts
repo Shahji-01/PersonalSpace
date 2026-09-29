@@ -76,6 +76,27 @@ export const commandSchema = z.discriminatedUnion('op', [
     parentId: idSchema,
     text: z.string().trim().min(1).max(500),
   }),
+  z.strictObject({
+    op: z.literal('task.rename'),
+    id: idSchema,
+    text: z.string().trim().min(1).max(500),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('task.delete'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('task.restore'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('task.purge'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
 ]);
 export const syncPushSchema = z.strictObject({
   mutations: z

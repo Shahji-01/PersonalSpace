@@ -70,6 +70,22 @@ describe('boundary validation', () => {
       false,
     );
   });
+  it('accepts task rename and trash commands and rejects malformed ones', () => {
+    expect(
+      commandSchema.safeParse({ op: 'task.rename', id, text: 'Renamed', baseVersion: 4 }).success,
+    ).toBe(true);
+    expect(commandSchema.safeParse({ op: 'task.delete', id, baseVersion: 4 }).success).toBe(true);
+    expect(commandSchema.safeParse({ op: 'task.restore', id, baseVersion: 4 }).success).toBe(true);
+    expect(commandSchema.safeParse({ op: 'task.purge', id, baseVersion: 4 }).success).toBe(true);
+    expect(
+      commandSchema.safeParse({ op: 'task.rename', id, text: '', baseVersion: 4 }).success,
+    ).toBe(false);
+    expect(
+      commandSchema.safeParse({ op: 'task.rename', id, text: 'a'.repeat(501), baseVersion: 4 })
+        .success,
+    ).toBe(false);
+    expect(commandSchema.safeParse({ op: 'task.delete', id }).success).toBe(false);
+  });
   it('requires explicit age and preview consent', () => {
     expect(
       signupSchema.safeParse({ name: 'A', email: 'a@example.test', password: 'long-test-password' })

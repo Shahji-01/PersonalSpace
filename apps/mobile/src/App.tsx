@@ -137,12 +137,15 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
   const today = localDate();
   const tomorrow = localDate(1);
   const inboxCount = records.filter((r) => r.type === 'inbox' && r.status === 'new').length;
-  const trashCount = records.filter((r) => r.type === 'note' && r.deletedAt).length;
+  // A note or a top-level task can be trashed; subtasks move with their parent.
+  const inTrash = (r: RecordItem) =>
+    !!r.deletedAt && (r.type === 'note' || (r.type === 'task' && !r.parentId));
+  const trashCount = records.filter(inTrash).length;
   const visible = records.filter((r) =>
     tab === 'today'
       ? !r.deletedAt && r.type === 'task' && !r.parentId && (allTasks || r.plannedDate === today)
       : library === 'trash'
-        ? r.type === 'note' && !!r.deletedAt
+        ? inTrash(r)
         : !r.deletedAt && r.type === library && r.status !== 'converted',
   );
   const subtasksOf = (parentId: string) =>
@@ -281,16 +284,27 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
     if (!store.current || !editing || saving) return;
     const trimmed = editText.trim();
     if (!trimmed) {
-      Alert.alert('Empty note', 'A note needs some text. Delete it instead if you are done.');
+      Alert.alert('Nothing to save', 'Add some text, or delete this item if you are done.');
       return;
     }
+    const command =
+      editing.type === 'note'
+        ? ({
+            op: 'note.edit',
+            id: editing.id,
+            text: trimmed,
+            baseVersion: editing.version,
+          } as const)
+        : ({
+            op: 'task.rename',
+            id: editing.id,
+            text: trimmed,
+            baseVersion: editing.version,
+          } as const);
     setSaving(true);
     try {
       await store.current.enqueue(
-        {
-          mutationId: newId(),
-          command: { op: 'note.edit', id: editing.id, text: trimmed, baseVersion: editing.version },
-        },
+        { mutationId: newId(), command },
         { ...editing, text: trimmed, updatedAt: new Date().toISOString() },
         editing,
       );
@@ -305,14 +319,15 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
       setSaving(false);
     }
   }
-  async function trashNote(record: RecordItem) {
+  async function trashRecord(record: RecordItem) {
     if (!store.current) return;
+    const command =
+      record.type === 'note'
+        ? ({ op: 'note.delete', id: record.id, baseVersion: record.version } as const)
+        : ({ op: 'task.delete', id: record.id, baseVersion: record.version } as const);
     try {
       await store.current.enqueue(
-        {
-          mutationId: newId(),
-          command: { op: 'note.delete', id: record.id, baseVersion: record.version },
-        },
+        { mutationId: newId(), command },
         { ...record, deletedAt: new Date().toISOString() },
         record,
       );
@@ -322,14 +337,15 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
       Alert.alert('Change not saved', 'Please try again.');
     }
   }
-  async function restoreNote(record: RecordItem) {
+  async function restoreRecord(record: RecordItem) {
     if (!store.current) return;
+    const command =
+      record.type === 'note'
+        ? ({ op: 'note.restore', id: record.id, baseVersion: record.version } as const)
+        : ({ op: 'task.restore', id: record.id, baseVersion: record.version } as const);
     try {
       await store.current.enqueue(
-        {
-          mutationId: newId(),
-          command: { op: 'note.restore', id: record.id, baseVersion: record.version },
-        },
+        { mutationId: newId(), command },
         { ...record, deletedAt: null },
         record,
       );
@@ -339,18 +355,14 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
       Alert.alert('Change not saved', 'Please try again.');
     }
   }
-  async function purgeNote(record: RecordItem) {
+  async function purgeRecord(record: RecordItem) {
     if (!store.current) return;
+    const command =
+      record.type === 'note'
+        ? ({ op: 'note.purge', id: record.id, baseVersion: record.version } as const)
+        : ({ op: 'task.purge', id: record.id, baseVersion: record.version } as const);
     try {
-      await store.current.enqueue(
-        {
-          mutationId: newId(),
-          command: { op: 'note.purge', id: record.id, baseVersion: record.version },
-        },
-        undefined,
-        record,
-        record.id,
-      );
+      await store.current.enqueue({ mutationId: newId(), command }, undefined, record, record.id);
       await refreshLocal();
       void sync();
     } catch {
@@ -489,7 +501,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
               {tab === 'today'
                 ? 'Add one thing you want to do today.'
                 : library === 'trash'
-                  ? 'Deleted notes wait here so you can restore them.'
+                  ? 'Deleted notes and tasks wait here so you can restore them.'
                   : 'A thought, an idea, something to remember. Save it in a moment.'}
             </Text>
             {library !== 'trash' && (
@@ -511,12 +523,12 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
             <Text style={styles.subtitle}>
               {pendingIds.includes(record.id) || record.version === 0
                 ? 'Saved locally · not synced'
-                : record.type === 'task'
-                  ? record.status === 'done'
-                    ? 'Completed'
-                    : (record.plannedDate ?? 'No planned date')
-                  : record.type === 'note' && record.deletedAt
-                    ? 'In Trash'
+                : record.deletedAt
+                  ? 'In Trash'
+                  : record.type === 'task'
+                    ? record.status === 'done'
+                      ? 'Completed'
+                      : (record.plannedDate ?? 'No planned date')
                     : 'Saved'}
             </Text>
             {record.type === 'note' && !record.deletedAt && (
@@ -534,17 +546,17 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                   secondary
                   disabled={pendingIds.includes(record.id) || record.version === 0}
                   label="Move to Trash"
-                  onPress={() => void trashNote(record)}
+                  onPress={() => void trashRecord(record)}
                 />
               </View>
             )}
-            {record.type === 'note' && record.deletedAt && (
+            {record.deletedAt && (
               <View style={styles.row}>
                 <Button
                   secondary
                   disabled={pendingIds.includes(record.id) || record.version === 0}
                   label="Restore"
-                  onPress={() => void restoreNote(record)}
+                  onPress={() => void restoreRecord(record)}
                 />
                 <Button
                   secondary
@@ -553,13 +565,15 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                   onPress={() =>
                     Alert.alert(
                       'Delete forever?',
-                      'This permanently removes the note from your account. This cannot be undone.',
+                      record.type === 'task'
+                        ? 'This permanently removes the task and its subtasks from your account. This cannot be undone.'
+                        : 'This permanently removes the note from your account. This cannot be undone.',
                       [
                         { text: 'Cancel', style: 'cancel' },
                         {
                           text: 'Delete forever',
                           style: 'destructive',
-                          onPress: () => void purgeNote(record),
+                          onPress: () => void purgeRecord(record),
                         },
                       ],
                     )
@@ -568,6 +582,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
               </View>
             )}
             {record.type === 'task' &&
+              !record.deletedAt &&
               (() => {
                 const busy = pendingIds.includes(record.id) || record.version === 0;
                 const subs = subtasksOf(record.id);
@@ -580,6 +595,23 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                       label={record.status === 'done' ? 'Reopen task' : 'Mark complete'}
                       onPress={() => void act(record)}
                     />
+                    <View style={styles.row}>
+                      <Button
+                        secondary
+                        disabled={busy}
+                        label="Edit"
+                        onPress={() => {
+                          setEditText(record.text);
+                          setEditing(record);
+                        }}
+                      />
+                      <Button
+                        secondary
+                        disabled={busy}
+                        label="Move to Trash"
+                        onPress={() => void trashRecord(record)}
+                      />
+                    </View>
                     <View style={styles.row}>
                       <Text style={styles.label}>Plan</Text>
                       <Button
@@ -766,15 +798,17 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           >
             <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.page}>
-              <Text style={styles.eyebrow}>EDIT NOTE</Text>
+              <Text style={styles.eyebrow}>
+                {editing?.type === 'task' ? 'RENAME TASK' : 'EDIT NOTE'}
+              </Text>
               <Text style={styles.title}>Make it yours.</Text>
               <Field
-                label="Your note"
+                label={editing?.type === 'task' ? 'Task name' : 'Your note'}
                 autoFocus
-                multiline
+                multiline={editing?.type !== 'task'}
                 value={editText}
                 onChangeText={setEditText}
-                maxLength={20000}
+                maxLength={editing?.type === 'task' ? 500 : 20000}
               />
               <Button
                 label={saving ? 'Saving…' : 'Save changes'}
