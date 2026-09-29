@@ -20,6 +20,7 @@ import { AuthScreen } from './AuthScreen';
 import { apiUrl, clearSession, loadSession, type Session } from './auth';
 import { newId, openStore, type LocalStore } from './store';
 import { Button, Card, Field, styles } from './components';
+import { colors } from '@personalspace/ui';
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -66,6 +67,9 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
   const [editText, setEditText] = useState('');
   const [subtaskParent, setSubtaskParent] = useState<string | null>(null);
   const [subtaskText, setSubtaskText] = useState('');
+  const [tagging, setTagging] = useState<RecordItem | null>(null);
+  const [tagText, setTagText] = useState('');
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [text, setText] = useState('');
   const [type, setType] = useState<Capture['type']>('inbox');
   const [status, setStatus] = useState('Opening local storage…');
@@ -134,6 +138,10 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
       ); /* Keep DB handle alive for in-flight writes; account queries are scoped. */
     };
   }, [client, session.user.id]);
+  // A tag filter only makes sense in the notes and tasks views; clear it when navigating away.
+  useEffect(() => {
+    setTagFilter(null);
+  }, [tab, library, allTasks]);
   const today = localDate();
   const tomorrow = localDate(1);
   const inboxCount = records.filter((r) => r.type === 'inbox' && r.status === 'new').length;
@@ -141,12 +149,22 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
   const inTrash = (r: RecordItem) =>
     !!r.deletedAt && (r.type === 'note' || (r.type === 'task' && !r.parentId));
   const trashCount = records.filter(inTrash).length;
-  const visible = records.filter((r) =>
-    tab === 'today'
-      ? !r.deletedAt && r.type === 'task' && !r.parentId && (allTasks || r.plannedDate === today)
-      : library === 'trash'
-        ? inTrash(r)
-        : !r.deletedAt && r.type === library && r.status !== 'converted',
+  const allTags = [
+    ...new Set(
+      records
+        .filter((r) => !r.deletedAt && (r.type === 'note' || r.type === 'task'))
+        .flatMap((r) => r.tags),
+    ),
+  ].sort();
+  const tagsVisible = allTags.length > 0 && (tab === 'today' || library === 'note');
+  const visible = records.filter(
+    (r) =>
+      (!tagFilter || r.tags.includes(tagFilter)) &&
+      (tab === 'today'
+        ? !r.deletedAt && r.type === 'task' && !r.parentId && (allTasks || r.plannedDate === today)
+        : library === 'trash'
+          ? inTrash(r)
+          : !r.deletedAt && r.type === library && r.status !== 'converted'),
   );
   const subtasksOf = (parentId: string) =>
     records
@@ -173,6 +191,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
           ...result.data,
           status: type === 'inbox' ? 'new' : type === 'task' ? 'todo' : 'active',
           parentId: null,
+          tags: [],
           version: 0,
           createdAt: now,
           updatedAt: now,
@@ -268,6 +287,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
           status: 'todo',
           plannedDate: null,
           parentId: parent.id,
+          tags: [],
           version: 0,
           createdAt: now,
           updatedAt: now,
@@ -315,6 +335,47 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
       void sync();
     } catch {
       Alert.alert('Not saved', 'Your changes are still here. Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function saveTags() {
+    if (!store.current || !tagging || saving) return;
+    // Match the server's normalization so the optimistic record equals the synced result.
+    const parsed = [
+      ...new Set(
+        tagText
+          .split(',')
+          .map((t) => t.trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    ].slice(0, 20);
+    if (parsed.some((t) => t.length > 30)) {
+      Alert.alert('Tag too long', 'Each tag must be 30 characters or fewer.');
+      return;
+    }
+    setSaving(true);
+    try {
+      await store.current.enqueue(
+        {
+          mutationId: newId(),
+          command: {
+            op: 'item.setTags',
+            id: tagging.id,
+            tags: parsed,
+            baseVersion: tagging.version,
+          },
+        },
+        { ...tagging, tags: parsed, updatedAt: new Date().toISOString() },
+        tagging,
+      );
+      setTagging(null);
+      setTagText('');
+      setStatus('Saved on this device. Sync pending.');
+      await refreshLocal();
+      void sync();
+    } catch {
+      Alert.alert('Not saved', 'Your tags are still here. Please try again.');
     } finally {
       setSaving(false);
     }
@@ -486,6 +547,19 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
             />
           </View>
         )}
+        {tagsVisible && (
+          <View style={styles.row}>
+            <Text style={styles.label}>Tags</Text>
+            {allTags.map((tag) => (
+              <Button
+                key={tag}
+                secondary={tagFilter !== tag}
+                label={`#${tag}`}
+                onPress={() => setTagFilter(tagFilter === tag ? null : tag)}
+              />
+            ))}
+          </View>
+        )}
         {!visible.length && (
           <Card>
             <Text style={[styles.title, { fontSize: 24 }]}>
@@ -531,6 +605,13 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                       : (record.plannedDate ?? 'No planned date')
                     : 'Saved'}
             </Text>
+            {(record.type === 'note' || record.type === 'task') &&
+              !record.deletedAt &&
+              record.tags.length > 0 && (
+                <Text style={[styles.subtitle, { color: colors.primary }]}>
+                  {record.tags.map((t) => `#${t}`).join('  ')}
+                </Text>
+              )}
             {record.type === 'note' && !record.deletedAt && (
               <View style={styles.row}>
                 <Button
@@ -540,6 +621,15 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                   onPress={() => {
                     setEditText(record.text);
                     setEditing(record);
+                  }}
+                />
+                <Button
+                  secondary
+                  disabled={pendingIds.includes(record.id) || record.version === 0}
+                  label="Tags"
+                  onPress={() => {
+                    setTagText(record.tags.join(', '));
+                    setTagging(record);
                   }}
                 />
                 <Button
@@ -603,6 +693,15 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                         onPress={() => {
                           setEditText(record.text);
                           setEditing(record);
+                        }}
+                      />
+                      <Button
+                        secondary
+                        disabled={busy}
+                        label="Tags"
+                        onPress={() => {
+                          setTagText(record.tags.join(', '));
+                          setTagging(record);
                         }}
                       />
                       <Button
@@ -816,6 +915,44 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                 onPress={() => void saveEdit()}
               />
               <Button secondary label="Cancel" disabled={saving} onPress={() => setEditing(null)} />
+            </ScrollView>
+          </KeyboardAvoidingView>
+        </SafeAreaView>
+      </Modal>
+      <Modal
+        visible={tagging !== null}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => {
+          if (!saving) setTagging(null);
+        }}
+      >
+        <SafeAreaView style={styles.root}>
+          <KeyboardAvoidingView
+            style={{ flex: 1 }}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          >
+            <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.page}>
+              <Text style={styles.eyebrow}>TAGS</Text>
+              <Text style={styles.title}>Find it later.</Text>
+              <Field
+                label="Comma-separated tags"
+                autoFocus
+                value={tagText}
+                onChangeText={setTagText}
+                placeholder="work, urgent"
+                autoCapitalize="none"
+                maxLength={640}
+              />
+              <Text style={styles.subtitle}>
+                Up to 20 tags, 30 characters each. Tags are saved in lowercase.
+              </Text>
+              <Button
+                label={saving ? 'Saving…' : 'Save tags'}
+                disabled={saving}
+                onPress={() => void saveTags()}
+              />
+              <Button secondary label="Cancel" disabled={saving} onPress={() => setTagging(null)} />
             </ScrollView>
           </KeyboardAvoidingView>
         </SafeAreaView>

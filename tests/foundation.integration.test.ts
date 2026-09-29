@@ -473,6 +473,43 @@ describe('authenticated capture → PostgreSQL → sync', () => {
     });
     expect(subtask!.parentId).toBe(parentId);
   });
+  it('sets normalized tags on an item and keeps versions in step', async () => {
+    const service = createCaptureService(domain.db);
+    const id = v7();
+    const [note] = await service.execute(
+      userA,
+      v7(),
+      { op: 'capture', payload: { id, type: 'note', text: 'Tagged thought', plannedDate: null } },
+      'test',
+    );
+    expect(note!.tags).toEqual([]);
+    const [tagged] = await service.execute(
+      userA,
+      v7(),
+      { op: 'item.setTags', id, tags: ['Work', 'work', 'ideas'], baseVersion: note!.version },
+      'test',
+    );
+    expect(tagged!.tags).toEqual(['work', 'ideas']);
+    expect(tagged!.version).toBeGreaterThan(note!.version);
+    // The record version tracks the entity version, so a second edit uses the returned version.
+    await expect(
+      service.execute(
+        userA,
+        v7(),
+        { op: 'item.setTags', id, tags: ['stale'], baseVersion: note!.version },
+        'test',
+      ),
+    ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+    const [cleared] = await service.execute(
+      userA,
+      v7(),
+      { op: 'item.setTags', id, tags: [], baseVersion: tagged!.version },
+      'test',
+    );
+    expect(cleared!.tags).toEqual([]);
+    const page = await service.pull(userA, note!.version - 1);
+    expect(page.changes.find((r) => r.id === id)?.tags).toEqual([]);
+  });
   it('serializes concurrent duplicate mutations and rejects stale task updates', async () => {
     const service = createCaptureService(domain.db);
     const id = v7();

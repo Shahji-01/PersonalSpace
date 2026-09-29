@@ -332,6 +332,45 @@ export function createCaptureService(db: Database) {
           );
         await tx.delete(entities).where(and(eq(entities.id, task.id), eq(entities.userId, userId)));
         ids = [task.id, ...subIds];
+      } else if (command.op === 'item.setTags') {
+        // Tags live on the entity, so one command labels any item type. Deleted items keep
+        // their tags but are not tagged from the UI.
+        const [entity] = await tx
+          .select()
+          .from(entities)
+          .where(
+            and(
+              eq(entities.id, command.id),
+              eq(entities.userId, userId),
+              isNull(entities.deletedAt),
+            ),
+          );
+        if (!entity) throw new DomainError('ITEM_NOT_FOUND', 'This item was not found.', 404);
+        if (entity.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This item changed on another device. Refresh and try again.',
+          );
+        await tx
+          .update(entities)
+          .set({ tags: command.tags })
+          .where(and(eq(entities.id, entity.id), eq(entities.userId, userId)));
+        // recordsFor reports the version from the type table, so keep it in step with the
+        // entity version the tail bumps below; otherwise the next tag edit would misfire.
+        const patch = { version, updatedAt: new Date() };
+        const where = and(eq(tasks.id, entity.id), eq(tasks.userId, userId));
+        if (entity.type === 'task') await tx.update(tasks).set(patch).where(where);
+        else if (entity.type === 'note')
+          await tx
+            .update(notes)
+            .set(patch)
+            .where(and(eq(notes.id, entity.id), eq(notes.userId, userId)));
+        else
+          await tx
+            .update(inboxItems)
+            .set(patch)
+            .where(and(eq(inboxItems.id, entity.id), eq(inboxItems.userId, userId)));
+        ids = [entity.id];
       } else {
         const task = await taskFor(tx, userId, command.id);
         if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);

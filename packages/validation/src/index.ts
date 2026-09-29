@@ -3,6 +3,30 @@ import { z } from 'zod';
 export const idSchema = z.uuidv7();
 export const dateSchema = z.iso.date();
 export const captureTypeSchema = z.enum(['inbox', 'note', 'task']);
+// Tags are normalized to lowercase, trimmed, de-duplicated, and order-preserving so the same
+// label is never stored twice and the request hash is stable regardless of client input order.
+export const tagsSchema = z
+  .array(
+    z
+      .string()
+      .trim()
+      .min(1)
+      .max(30)
+      .regex(/^[^\s]+(?: [^\s]+)*$/, 'Tags cannot start or end with spaces.'),
+  )
+  .max(20)
+  .transform((values) => {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const value of values) {
+      const normalized = value.toLowerCase();
+      if (!seen.has(normalized)) {
+        seen.add(normalized);
+        result.push(normalized);
+      }
+    }
+    return result;
+  });
 export const captureSchema = z
   .strictObject({
     id: idSchema,
@@ -97,6 +121,12 @@ export const commandSchema = z.discriminatedUnion('op', [
     id: idSchema,
     baseVersion: z.number().int().nonnegative(),
   }),
+  z.strictObject({
+    op: z.literal('item.setTags'),
+    id: idSchema,
+    tags: tagsSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
 ]);
 export const syncPushSchema = z.strictObject({
   mutations: z
@@ -111,6 +141,7 @@ export const recordSchema = z.strictObject({
   status: z.enum(['new', 'converted', 'todo', 'done', 'active']),
   plannedDate: dateSchema.nullable(),
   parentId: idSchema.nullable(),
+  tags: z.array(z.string()),
   version: z.number().int().nonnegative(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),

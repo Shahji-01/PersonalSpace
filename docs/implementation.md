@@ -18,6 +18,7 @@ Implemented:
 - [x] Note editing, soft-delete to a Trash view, restore, and permanent purge, synced with version checks.
 - [x] Task rescheduling (set/clear the planned date) and one level of subtasks with completion progress.
 - [x] Task renaming and soft-delete to Trash with restore and permanent purge; trashing cascades to subtasks.
+- [x] Tags on notes and tasks with client-side tag filtering (stored on the shared entity row).
 - [x] Account-scoped durable SQLite cache/outbox, coalesced replay, incremental pull pages on version boundaries.
 - [x] Worker publishes deduplicated sync signal jobs and maintains a monotonic Redis watermark.
 - [x] Web landing page and explicitly marked privacy/terms drafts.
@@ -41,7 +42,7 @@ These checks mean code exists. Validation results are recorded separately in `do
 ## Next implementation increments
 
 1. Finish the Phase 0 identity/account lifecycle and native build gates.
-2. M1: note editing/deletion/Trash, task rescheduling and one-level subtasks landed; still pending are the rich-text editor, folders/tags, attachments, backlinks/versions; projects, deeper subtask nesting, separate deadlines and recurrence.
+2. M1: note editing/deletion/Trash, task rescheduling, one-level subtasks, task Trash, and item tags landed; still pending are the rich-text editor, folders, attachments, backlinks/versions; projects, deeper subtask nesting, separate deadlines and recurrence.
 3. M2: complete onboarding, richer deterministic parsing, widgets/share capture, reminders and device delivery matrix.
 4. M3: learning library, safe URL fetching, metadata jobs, playlists and progress.
 5. M4: financial ledger with integer money, splits, debts, revisions/voids and reconciliation property tests.
@@ -64,6 +65,7 @@ Each milestone retains the specification's exit criteria. No milestone is waived
 - Field-level last-writer-wins is not implemented; stale task commands return a visible conflict. Completion/conversion of an unsynced capture is disabled until its first acknowledgement.
 - Subtasks are one level deep and share the task table; a subtask carries no planned date and is shown nested under its parent. Rescheduling exposes quick Today/Tomorrow/clear actions rather than a full date picker, and a separate deadline distinct from the planned date is not modelled yet.
 - Only top-level tasks and notes can be trashed; trashing a task cascades its subtasks to Trash on one shared version, and restore brings them back together. Subtasks themselves are managed through their parent (complete/reopen only) rather than trashed individually. Task purge, like note purge, is guarded to already-trashed items and does not yet emit a cross-device tombstone.
+- Tags are stored as a normalized lowercase array on the entity row and set atomically with `item.setTags` (up to 20 tags, 30 characters each). Filtering is client-side over synced records; server-side tag search, folders, and per-tag management screens are not built yet. A GIN index is in place for future server search.
 - Incremental pull supports the current three entity types; it is not the full specification's sync protocol. No deletion/tombstone expiry or 24-month history retention exists yet.
 - Note soft-delete (Trash) and restore propagate to every device through the version stream. Permanent purge is only offered on an already-trashed note and removes the row on the server, but it does not yet emit a cross-device tombstone: another device that already synced the soft-delete keeps the note in its own Trash until a full resync. Full tombstone propagation is part of the M5 deletion pipeline.
 - Idempotency records are retained indefinitely in this slice, preserving delayed offline retries. Retention/compaction is pending.

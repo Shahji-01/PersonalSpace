@@ -86,6 +86,32 @@ describe('boundary validation', () => {
     ).toBe(false);
     expect(commandSchema.safeParse({ op: 'task.delete', id }).success).toBe(false);
   });
+  it('normalizes tags and validates the setTags command', () => {
+    const parsed = commandSchema.safeParse({
+      op: 'item.setTags',
+      id,
+      tags: ['Work', 'work', ' Urgent '],
+      baseVersion: 1,
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success && parsed.data.op === 'item.setTags')
+      expect(parsed.data.tags).toEqual(['work', 'urgent']);
+    expect(
+      commandSchema.safeParse({ op: 'item.setTags', id, tags: [], baseVersion: 1 }).success,
+    ).toBe(true);
+    expect(
+      commandSchema.safeParse({ op: 'item.setTags', id, tags: ['a'.repeat(31)], baseVersion: 1 })
+        .success,
+    ).toBe(false);
+    expect(
+      commandSchema.safeParse({
+        op: 'item.setTags',
+        id,
+        tags: Array.from({ length: 21 }, (_, i) => `t${i}`),
+        baseVersion: 1,
+      }).success,
+    ).toBe(false);
+  });
   it('requires explicit age and preview consent', () => {
     expect(
       signupSchema.safeParse({ name: 'A', email: 'a@example.test', password: 'long-test-password' })

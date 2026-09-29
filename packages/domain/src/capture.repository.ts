@@ -9,6 +9,11 @@ export async function recordsFor(
 ): Promise<RecordItem[]> {
   if (!ids.length) return [];
   // A transaction owns one PostgreSQL connection; queries on it must run sequentially.
+  const tagRows = await tx
+    .select({ id: entities.id, tags: entities.tags })
+    .from(entities)
+    .where(and(eq(entities.userId, userId), inArray(entities.id, ids)));
+  const tagsById = new Map(tagRows.map((r) => [r.id, r.tags]));
   const inbox = await tx
     .select()
     .from(inboxItems)
@@ -33,6 +38,7 @@ export async function recordsFor(
       deletedAt: row.deletedAt?.toISOString() ?? null,
       plannedDate: null,
       parentId: null,
+      tags: tagsById.get(row.id) ?? [],
       ...extra,
     });
   return [

@@ -11,6 +11,7 @@ import {
   unique,
   index,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 const instant = (name: string) => timestamp(name, { withTimezone: true, mode: 'date' });
 export const authUsers = pgTable('auth_user', {
@@ -77,10 +78,18 @@ export const syncState = pgTable('user_sync_state', {
   userId: uuid('user_id').primaryKey(),
   version: bigint('version', { mode: 'number' }).notNull().default(0),
 });
-export const entities = pgTable('entities', { ...std(), type: text('type').notNull() }, (t) => [
-  unique().on(t.id, t.userId),
-  index().on(t.userId, t.version),
-]);
+export const entities = pgTable(
+  'entities',
+  {
+    ...std(),
+    type: text('type').notNull(),
+    tags: text('tags')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
+  },
+  (t) => [unique().on(t.id, t.userId), index().on(t.userId, t.version)],
+);
 export const inboxItems = pgTable(
   'inbox_items',
   {
