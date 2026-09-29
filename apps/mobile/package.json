@@ -1,0 +1,35 @@
+{
+  "name": "@personalspace/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "dev": "expo start --dev-client",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "typecheck": "tsc --noEmit",
+    "bundle": "expo export --platform android --platform ios --output-dir dist",
+    "deps:check": "expo install --check"
+  },
+  "dependencies": {
+    "@personalspace/api-client": "workspace:*",
+    "@personalspace/validation": "workspace:*",
+    "@personalspace/sync": "workspace:*",
+    "@personalspace/ui": "workspace:*",
+    "@personalspace/nlp": "workspace:*",
+    "expo": "~57.0.26",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "expo-status-bar": "~57.0.1",
+    "expo-secure-store": "~57.0.4",
+    "expo-sqlite": "~57.0.3",
+    "expo-crypto": "~57.0.3",
+    "expo-dev-client": "~57.0.19",
+    "react-native-safe-area-context": "~5.7.0",
+    "uuid": "^13.0.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.0"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "expo": {
+    "name": "PersonalSpace",
+    "slug": "personalspace",
+    "version": "0.1.0",
+    "scheme": "personalspace",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": { "supportsTablet": true, "bundleIdentifier": "com.personalspace.app" },
+    "android": { "package": "com.personalspace.app" },
+    "plugins": ["expo-secure-store", "expo-sqlite"],
+    "experiments": { "autolinkingModuleResolution": true }
+  }
+}

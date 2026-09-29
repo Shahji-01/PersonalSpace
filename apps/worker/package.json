@@ -1,0 +1,21 @@
+{
+  "name": "@personalspace/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file=../../.env src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsup"
+  },
+  "dependencies": {
+    "@personalspace/db": "workspace:*",
+    "bullmq": "^5.61.0",
+    "ioredis": "^5.8.0",
+    "zod": "^4.1.0",
+    "drizzle-orm": "^0.45.2"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.0"
+  }
+}

@@ -1,0 +1,8 @@
+pnpm-lock.yaml
+PersonalSpace-Specification-v1.2.md
+node_modules
+dist
+.next
+.expo
+.local
+**/next-env.d.ts

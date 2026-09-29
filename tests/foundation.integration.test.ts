@@ -1,0 +1,323 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { readFile } from 'node:fs/promises';
+import { v7 } from 'uuid';
+import { Pool } from 'pg';
+import {
+  createDatabase,
+  withUser,
+  tasks,
+  auditLogs,
+  outboxEvents,
+  entityLinks,
+  idempotencyKeys,
+} from '../packages/db/src/index';
+import { migrate } from '../packages/db/src/migrate';
+import { createApp } from '../apps/api/src/app';
+import { createCaptureService } from '../packages/domain/src/index';
+import { eq, sql } from 'drizzle-orm';
+import type { FastifyInstance } from 'fastify';
+import type { ServerConfig } from '../packages/config/src/index';
+
+let container: StartedPostgreSqlContainer;
+let owner: Pool;
+let domain: ReturnType<typeof createDatabase>;
+let auth: ReturnType<typeof createDatabase>;
+let app: FastifyInstance;
+let tokenA: string;
+let tokenB: string;
+let userA: string;
+let userB: string;
+const headers = (token: string) => ({
+  authorization: `Bearer ${token}`,
+  origin: 'personalspace://',
+});
+beforeAll(async () => {
+  container = await new PostgreSqlContainer('postgres:17-alpine').start();
+  const url = container.getConnectionUri();
+  owner = new Pool({ connectionString: url });
+  await owner.query(await readFile(new URL('../infra/postgres/init.sql', import.meta.url), 'utf8'));
+  await migrate(url);
+  await migrate(url); // Forward-only runner is safe to repeat.
+  const appUrl = new URL(url);
+  appUrl.username = 'personalspace_app';
+  appUrl.password = 'local_app_only';
+  const authUrl = new URL(url);
+  authUrl.username = 'personalspace_auth';
+  authUrl.password = 'local_auth_only';
+  domain = createDatabase(appUrl.href);
+  auth = createDatabase(authUrl.href);
+  const config: ServerConfig = {
+    NODE_ENV: 'test',
+    PORT: 4000,
+    HOST: '127.0.0.1',
+    API_URL: 'http://localhost:4000',
+    WEB_URL: 'http://localhost:3000',
+    DATABASE_URL: appUrl.href,
+    AUTH_DATABASE_URL: authUrl.href,
+    REDIS_URL: 'redis://localhost:6379',
+    AUTH_SECRET: 'test-only-secret-at-least-thirty-two-characters',
+  };
+  app = await createApp({
+    config,
+    db: domain.db,
+    authDb: auth.db,
+    logger: false,
+    ready: async () => {
+      await domain.pool.query('select 1');
+    },
+  });
+  await app.ready();
+  async function signup(email: string) {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/auth/sign-up/email',
+      headers: { origin: 'personalspace://', 'sec-fetch-mode': 'cors' },
+      payload: {
+        name: 'Test User',
+        email,
+        password: 'a-test-password-123',
+        ageConfirmed: true,
+        termsAccepted: true,
+      },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    return response.json<{ token: string; user: { id: string } }>();
+  }
+  const a = await signup('a@example.test');
+  const b = await signup('b@example.test');
+  tokenA = a.token;
+  userA = a.user.id;
+  tokenB = b.token;
+  userB = b.user.id;
+});
+afterAll(async () => {
+  await app?.close();
+  await Promise.all([domain?.pool.end(), auth?.pool.end(), owner?.end()]);
+  await container?.stop();
+});
+
+describe('authenticated capture → PostgreSQL → sync', () => {
+  it('enforces origin checks even in tests and rejects untrusted browser sign-in', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/auth/sign-in/email',
+      headers: { origin: 'https://untrusted.example', 'sec-fetch-mode': 'cors' },
+      payload: { email: 'a@example.test', password: 'a-test-password-123' },
+    });
+    expect(response.statusCode).toBe(403);
+  });
+  it('requires authentication and checks age/consent on direct signup calls', async () => {
+    expect((await app.inject('/api/v1/sync/pull')).statusCode).toBe(401);
+    const result = await app.inject({
+      method: 'POST',
+      url: '/api/auth/sign-up/email',
+      payload: {
+        name: 'Underage',
+        email: 'c@example.test',
+        password: 'a-test-password-123',
+        ageConfirmed: false,
+        termsAccepted: true,
+      },
+    });
+    expect(result.statusCode).toBe(400);
+  });
+  it('rejects client-supplied ownership', async () => {
+    const result = await app.inject({
+      method: 'POST',
+      url: '/api/v1/commands',
+      headers: { ...headers(tokenA), 'idempotency-key': v7() },
+      payload: {
+        op: 'capture',
+        payload: { id: v7(), type: 'task', text: 'Private task', userId: userB },
+      },
+    });
+    expect(result.statusCode).toBe(400);
+  });
+  it('commits capture, audit, and outbox atomically and replays identical retries', async () => {
+    const id = v7();
+    const key = v7();
+    const payload = {
+      op: 'capture',
+      payload: { id, type: 'task', text: 'Private task', plannedDate: '2026-09-29' },
+    };
+    const request = {
+      method: 'POST' as const,
+      url: '/api/v1/commands',
+      headers: { ...headers(tokenA), 'idempotency-key': key },
+      payload,
+    };
+    const first = await app.inject(request);
+    expect(first.statusCode, first.body).toBe(200);
+    const replay = await app.inject(request);
+    expect(replay.json()).toEqual(first.json());
+    await withUser(domain.db, userA, async (tx) => {
+      expect(await tx.select().from(tasks).where(eq(tasks.id, id))).toHaveLength(1);
+      expect(await tx.select().from(auditLogs).where(eq(auditLogs.entityId, id))).toHaveLength(1);
+      expect(
+        (await tx.select().from(outboxEvents)).some((row) =>
+          JSON.stringify(row.payload).includes(id),
+        ),
+      ).toBe(true);
+    });
+    const reuse = await app.inject({
+      ...request,
+      payload: { ...payload, payload: { ...payload.payload, text: 'Changed payload' } },
+    });
+    expect(reuse.statusCode).toBe(422);
+    expect(reuse.json().error.code).toBe('IDEMPOTENCY_KEY_REUSED');
+  });
+  it('RLS blocks other users even without a repository ownership predicate', async () => {
+    expect(await domain.db.select().from(tasks)).toEqual([]);
+    const aTasks = await withUser(domain.db, userA, (tx) => tx.select().from(tasks));
+    expect(aTasks.length).toBeGreaterThan(0);
+    expect(await withUser(domain.db, userB, (tx) => tx.select().from(tasks))).toEqual([]);
+    const id = aTasks[0]!.id;
+    await expect(
+      withUser(domain.db, userB, (tx) =>
+        tx.insert(tasks).values({ id: v7(), userId: userA, version: 1, title: 'unauthorized' }),
+      ),
+    ).rejects.toThrow();
+    const attempt = await app.inject({
+      method: 'POST',
+      url: '/api/v1/commands',
+      headers: { ...headers(tokenB), 'idempotency-key': v7() },
+      payload: { op: 'task.complete', id, baseVersion: aTasks[0]!.version },
+    });
+    expect(attempt.statusCode).toBe(404);
+    expect(
+      (await app.inject({ url: '/api/v1/sync/pull', headers: headers(tokenB) })).json().changes,
+    ).toEqual([]);
+    await expect(domain.pool.query('SELECT * FROM auth_session')).rejects.toThrow();
+    await expect(auth.pool.query('SELECT * FROM tasks')).rejects.toThrow();
+  });
+  it('converts once, preserves provenance, and keeps both records on one sync page', async () => {
+    const service = createCaptureService(domain.db);
+    const id = v7();
+    const [inbox] = await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'capture',
+        payload: { id, type: 'inbox', text: 'Read the chapter', plannedDate: null },
+      },
+      'test',
+    );
+    const targetId = v7();
+    const converted = await service.execute(
+      userA,
+      v7(),
+      { op: 'inbox.convert', id, targetId, targetType: 'task', baseVersion: inbox!.version },
+      'test',
+    );
+    expect(converted).toHaveLength(2);
+    expect(converted[0]!.version).toBe(converted[1]!.version);
+    const page = await service.pull(userA, inbox!.version);
+    expect(page.changes.map((r) => r.id)).toEqual(expect.arrayContaining([id, targetId]));
+    expect(
+      await withUser(domain.db, userA, (tx) =>
+        tx.select().from(entityLinks).where(eq(entityLinks.sourceId, targetId)),
+      ),
+    ).toHaveLength(1);
+    await expect(
+      service.execute(
+        userA,
+        v7(),
+        {
+          op: 'inbox.convert',
+          id,
+          targetId: v7(),
+          targetType: 'note',
+          baseVersion: inbox!.version,
+        },
+        'test',
+      ),
+    ).rejects.toMatchObject({ code: 'ALREADY_CONVERTED' });
+  });
+  it('serializes concurrent duplicate mutations and rejects stale task updates', async () => {
+    const service = createCaptureService(domain.db);
+    const id = v7();
+    const key = v7();
+    const command = {
+      op: 'capture' as const,
+      payload: { id, type: 'task' as const, text: 'Concurrent', plannedDate: null },
+    };
+    const results = await Promise.all([
+      service.execute(userA, key, command, 'one'),
+      service.execute(userA, key, command, 'two'),
+    ]);
+    expect(results[0]).toEqual(results[1]);
+    const version = results[0]![0]!.version;
+    await service.execute(userA, v7(), { op: 'task.complete', id, baseVersion: version }, 'three');
+    await expect(
+      service.execute(userA, v7(), { op: 'task.reopen', id, baseVersion: version }, 'four'),
+    ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+  });
+  it('rolls back rejected writes and prevents audit modification', async () => {
+    const service = createCaptureService(domain.db);
+    const key = v7();
+    await expect(
+      service.execute(userA, key, { op: 'task.complete', id: v7(), baseVersion: 0 }, 'rollback'),
+    ).rejects.toThrow();
+    expect(
+      await withUser(domain.db, userA, (tx) =>
+        tx.select().from(idempotencyKeys).where(eq(idempotencyKeys.key, key)),
+      ),
+    ).toEqual([]);
+    await expect(
+      withUser(domain.db, userA, (tx) => tx.execute(sql`delete from audit_logs`)),
+    ).rejects.toThrow();
+  });
+  it('signs in with a password and revokes the session on sign-out', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/auth/sign-in/email',
+      headers: { origin: 'personalspace://', 'sec-fetch-mode': 'cors' },
+      payload: { email: 'a@example.test', password: 'a-test-password-123' },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    const token = response.json<{ token: string }>().token;
+    expect((await app.inject({ url: '/api/v1/me', headers: headers(token) })).statusCode).toBe(200);
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/auth/sign-out',
+          headers: headers(token),
+          payload: {},
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect((await app.inject({ url: '/api/v1/me', headers: headers(token) })).statusCode).toBe(401);
+  });
+  it('fails closed for every product table and does not leak pooled user context', async () => {
+    const tables = [
+      'user_sync_state',
+      'entities',
+      'inbox_items',
+      'tasks',
+      'notes',
+      'entity_links',
+      'idempotency_keys',
+      'outbox_events',
+      'audit_logs',
+    ];
+    const client = await domain.pool.connect();
+    try {
+      for (const table of tables) {
+        expect((await client.query(`SELECT * FROM ${table}`)).rows).toEqual([]);
+      }
+      await client.query('BEGIN');
+      await client.query("SELECT set_config('app.user_id', $1, true)", [userB]);
+      for (const table of tables) {
+        const result = await client.query<{ user_id: string }>(`SELECT user_id FROM ${table}`);
+        expect(result.rows.every((row) => row.user_id === userB)).toBe(true);
+      }
+      await client.query('COMMIT');
+      for (const table of tables)
+        expect((await client.query(`SELECT * FROM ${table}`)).rows).toEqual([]);
+    } finally {
+      client.release();
+    }
+  });
+});

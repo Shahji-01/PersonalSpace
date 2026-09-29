@@ -1,0 +1,41 @@
+{
+  "name": "personalspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "dev:api": "pnpm --filter @personalspace/api dev",
+    "dev:web": "pnpm --filter @personalspace/web dev",
+    "dev:mobile": "pnpm --filter @personalspace/mobile dev",
+    "build": "turbo run build",
+    "typecheck": "tsc -p tsconfig.tools.json --noEmit && turbo run typecheck",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "db:migrate": "pnpm --filter @personalspace/db migrate",
+    "infra:up": "docker compose up -d --wait",
+    "infra:down": "docker compose down",
+    "test:web": "playwright test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@testcontainers/postgresql": "^11.10.0",
+    "@types/node": "^24.0.0",
+    "eslint": "^9.39.0",
+    "eslint-config-prettier": "^10.1.0",
+    "prettier": "^3.6.0",
+    "tsx": "^4.20.0",
+    "turbo": "^2.5.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.46.0",
+    "vitest": "^3.2.0",
+    "@playwright/test": "^1.55.0"
+  }
+}

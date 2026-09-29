@@ -1,0 +1,27 @@
+name: personalspace
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: personalspace
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: local_owner_only
+    ports: ['127.0.0.1:5432:5432']
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/001-roles.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d personalspace']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    ports: ['127.0.0.1:6379:6379']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+volumes:
+  postgres_data:
