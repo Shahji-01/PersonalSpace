@@ -40,6 +40,9 @@ export async function recordsFor(
       dueDate: null,
       priority: 0,
       parentId: null,
+      pinned: false,
+      favorite: false,
+      archivedAt: null,
       tags: tagsById.get(row.id) ?? [],
       ...extra,
     });
@@ -63,6 +66,9 @@ export async function recordsFor(
         status: 'active',
         contentJson: r.contentJson,
         contentSchemaVersion: r.contentSchemaVersion,
+        pinned: r.isPinned,
+        favorite: r.isFavorite,
+        archivedAt: r.archivedAt?.toISOString() ?? null,
       }),
     ),
   ].sort((a, b) => a.version - b.version || a.id.localeCompare(b.id));

@@ -162,6 +162,24 @@ export const commandSchema = z.discriminatedUnion('op', [
     dueDate: dateSchema.nullable(),
     baseVersion: z.number().int().nonnegative(),
   }),
+  z.strictObject({
+    op: z.literal('note.setPinned'),
+    id: idSchema,
+    pinned: z.boolean(),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('note.setFavorite'),
+    id: idSchema,
+    favorite: z.boolean(),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('note.setArchived'),
+    id: idSchema,
+    archived: z.boolean(),
+    baseVersion: z.number().int().nonnegative(),
+  }),
 ]);
 export const syncPushSchema = z.strictObject({
   mutations: z
@@ -180,6 +198,9 @@ export const recordSchema = z.strictObject({
   dueDate: dateSchema.nullable(),
   priority: z.number().int().min(0).max(4),
   parentId: idSchema.nullable(),
+  pinned: z.boolean(),
+  favorite: z.boolean(),
+  archivedAt: z.iso.datetime().nullable(),
   tags: z.array(z.string()),
   version: z.number().int().nonnegative(),
   createdAt: z.iso.datetime(),

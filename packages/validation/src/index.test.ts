@@ -138,6 +138,25 @@ describe('boundary validation', () => {
         .success,
     ).toBe(false);
   });
+  it('accepts note pin/favorite/archive commands and rejects malformed ones', () => {
+    expect(
+      commandSchema.safeParse({ op: 'note.setPinned', id, pinned: true, baseVersion: 1 }).success,
+    ).toBe(true);
+    expect(
+      commandSchema.safeParse({ op: 'note.setFavorite', id, favorite: false, baseVersion: 1 })
+        .success,
+    ).toBe(true);
+    expect(
+      commandSchema.safeParse({ op: 'note.setArchived', id, archived: true, baseVersion: 1 })
+        .success,
+    ).toBe(true);
+    expect(
+      commandSchema.safeParse({ op: 'note.setPinned', id, pinned: 'yes', baseVersion: 1 }).success,
+    ).toBe(false);
+    expect(commandSchema.safeParse({ op: 'note.setArchived', id, baseVersion: 1 }).success).toBe(
+      false,
+    );
+  });
   it('accepts inbox dismiss commands and rejects malformed ones', () => {
     expect(commandSchema.safeParse({ op: 'inbox.delete', id, baseVersion: 0 }).success).toBe(true);
     expect(commandSchema.safeParse({ op: 'inbox.restore', id, baseVersion: 0 }).success).toBe(true);

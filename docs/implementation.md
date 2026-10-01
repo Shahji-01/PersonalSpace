@@ -21,6 +21,7 @@ Implemented:
 - [x] Tags on notes and tasks with client-side tag filtering (stored on the shared entity row).
 - [x] Dismiss an unfiled inbox capture to Trash with restore and permanent purge.
 - [x] Task priority (0–4) and a deadline separate from the planned date; Today shows due/overdue tasks and sorts by priority.
+- [x] Note pin, favorite, and archive (orthogonal to Trash); a separate Archived view and pinned-first note ordering.
 - [x] Rich-text note editing: headings, bold/italic, lists, checklists, quotes, links, code, undo/redo; native note previews and account-scoped SQLite drafts.
 - [x] Shared versioned note-document schema, bounded input validation, server-derived text, formatted JSON in sync, and protection against legacy plain-text edits flattening rich notes.
 - [x] Account-scoped durable SQLite cache/outbox, coalesced replay, incremental pull pages on version boundaries.

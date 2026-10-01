@@ -237,6 +237,31 @@ export function createCaptureService(db: Database) {
           );
         await tx.delete(entities).where(and(eq(entities.id, note.id), eq(entities.userId, userId)));
         ids = [note.id];
+      } else if (
+        command.op === 'note.setPinned' ||
+        command.op === 'note.setFavorite' ||
+        command.op === 'note.setArchived'
+      ) {
+        // Pin, favorite and archive are orthogonal note flags; archiving hides a note from the
+        // active list without deleting it. All operate on a live (non-trashed) note.
+        const note = await noteFor(tx, userId, command.id);
+        if (!note) throw new DomainError('NOTE_NOT_FOUND', 'This note was not found.', 404);
+        if (note.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This note changed on another device. Refresh and try again.',
+          );
+        const patch =
+          command.op === 'note.setPinned'
+            ? { isPinned: command.pinned }
+            : command.op === 'note.setFavorite'
+              ? { isFavorite: command.favorite }
+              : { archivedAt: command.archived ? new Date() : null };
+        await tx
+          .update(notes)
+          .set({ ...patch, version, updatedAt: new Date() })
+          .where(and(eq(notes.id, note.id), eq(notes.userId, userId)));
+        ids = [note.id];
       } else if (command.op === 'task.reschedule') {
         const task = await taskFor(tx, userId, command.id);
         if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);

@@ -62,7 +62,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
   const [pendingIds, setPendingIds] = useState<string[]>([]);
   const [problems, setProblems] = useState<Awaited<ReturnType<LocalStore['problems']>>>([]);
   const [tab, setTab] = useState<'today' | 'library'>('today');
-  const [library, setLibrary] = useState<'inbox' | 'note' | 'trash'>('inbox');
+  const [library, setLibrary] = useState<'inbox' | 'note' | 'trash' | 'archived'>('inbox');
   const [allTasks, setAllTasks] = useState(false);
   const [captureOpen, setCaptureOpen] = useState(false);
   const [editing, setEditing] = useState<RecordItem | null>(null);
@@ -156,6 +156,9 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
     !!r.deletedAt &&
     (r.type === 'note' || r.type === 'inbox' || (r.type === 'task' && !r.parentId));
   const trashCount = records.filter(inTrash).length;
+  const archivedCount = records.filter(
+    (r) => r.type === 'note' && !r.deletedAt && r.archivedAt,
+  ).length;
   const allTags = [
     ...new Set(
       records
@@ -176,8 +179,20 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
         ? !r.deletedAt && r.type === 'task' && !r.parentId && (allTasks || inToday(r))
         : library === 'trash'
           ? inTrash(r)
-          : !r.deletedAt && r.type === library && r.status !== 'converted'),
+          : library === 'archived'
+            ? r.type === 'note' && !r.deletedAt && !!r.archivedAt
+            : library === 'note'
+              ? r.type === 'note' && !r.deletedAt && !r.archivedAt
+              : !r.deletedAt && r.type === library && r.status !== 'converted'),
   );
+  // Pinned notes rise to the top of the Notes list, then favorites.
+  if (tab === 'library' && library === 'note')
+    visible.sort(
+      (a, b) =>
+        Number(b.pinned) - Number(a.pinned) ||
+        Number(b.favorite) - Number(a.favorite) ||
+        b.id.localeCompare(a.id),
+    );
   if (tab === 'today')
     visible.sort(
       (a, b) =>
@@ -212,6 +227,9 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
           dueDate: null,
           priority: 0,
           parentId: null,
+          pinned: false,
+          favorite: false,
+          archivedAt: null,
           tags: [],
           version: 0,
           createdAt: now,
@@ -344,6 +362,9 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
           dueDate: null,
           priority: 0,
           parentId: parent.id,
+          pinned: false,
+          favorite: false,
+          archivedAt: null,
           tags: [],
           version: 0,
           createdAt: now,
@@ -435,6 +456,57 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
       Alert.alert('Not saved', 'Your tags are still here. Please try again.');
     } finally {
       setSaving(false);
+    }
+  }
+  async function setPinned(record: RecordItem, pinned: boolean) {
+    if (!store.current) return;
+    try {
+      await store.current.enqueue(
+        {
+          mutationId: newId(),
+          command: { op: 'note.setPinned', id: record.id, pinned, baseVersion: record.version },
+        },
+        { ...record, pinned },
+        record,
+      );
+      await refreshLocal();
+      void sync();
+    } catch {
+      Alert.alert('Change not saved', 'Please try again.');
+    }
+  }
+  async function setFavorite(record: RecordItem, favorite: boolean) {
+    if (!store.current) return;
+    try {
+      await store.current.enqueue(
+        {
+          mutationId: newId(),
+          command: { op: 'note.setFavorite', id: record.id, favorite, baseVersion: record.version },
+        },
+        { ...record, favorite },
+        record,
+      );
+      await refreshLocal();
+      void sync();
+    } catch {
+      Alert.alert('Change not saved', 'Please try again.');
+    }
+  }
+  async function setArchived(record: RecordItem, archived: boolean) {
+    if (!store.current) return;
+    try {
+      await store.current.enqueue(
+        {
+          mutationId: newId(),
+          command: { op: 'note.setArchived', id: record.id, archived, baseVersion: record.version },
+        },
+        { ...record, archivedAt: archived ? new Date().toISOString() : null },
+        record,
+      );
+      await refreshLocal();
+      void sync();
+    } catch {
+      Alert.alert('Change not saved', 'Please try again.');
     }
   }
   async function trashRecord(record: RecordItem) {
@@ -604,6 +676,11 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
               onPress={() => setLibrary('note')}
             />
             <Button
+              secondary={library !== 'archived'}
+              label={`Archived · ${archivedCount}`}
+              onPress={() => setLibrary('archived')}
+            />
+            <Button
               secondary={library !== 'trash'}
               label={`Trash · ${trashCount}`}
               onPress={() => setLibrary('trash')}
@@ -632,16 +709,20 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                   ? 'A clear inbox.'
                   : library === 'trash'
                     ? 'Trash is empty.'
-                    : 'Your notes will live here.'}
+                    : library === 'archived'
+                      ? 'Nothing archived.'
+                      : 'Your notes will live here.'}
             </Text>
             <Text style={styles.subtitle}>
               {tab === 'today'
                 ? 'Add one thing you want to do today.'
                 : library === 'trash'
                   ? 'Deleted notes and tasks wait here so you can restore them.'
-                  : 'A thought, an idea, something to remember. Save it in a moment.'}
+                  : library === 'archived'
+                    ? 'Archived notes are tucked away here, out of your main list.'
+                    : 'A thought, an idea, something to remember. Save it in a moment.'}
             </Text>
-            {library !== 'trash' && (
+            {library !== 'trash' && library !== 'archived' && (
               <Button label="Capture something" onPress={() => setCaptureOpen(true)} />
             )}
           </Card>
@@ -702,24 +783,62 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                     .join(' · ')}
                 </Text>
               )}
-            {record.type === 'note' && !record.deletedAt && (
+            {record.type === 'note' && !record.deletedAt && !record.archivedAt && (
+              <>
+                <View style={styles.row}>
+                  <Button
+                    secondary
+                    disabled={pendingIds.includes(record.id) || record.version === 0}
+                    label="Edit"
+                    onPress={() => {
+                      setEditingNote(record);
+                    }}
+                  />
+                  <Button
+                    secondary
+                    disabled={pendingIds.includes(record.id) || record.version === 0}
+                    label="Tags"
+                    onPress={() => {
+                      setTagText(record.tags.join(', '));
+                      setTagging(record);
+                    }}
+                  />
+                  <Button
+                    secondary
+                    disabled={pendingIds.includes(record.id) || record.version === 0}
+                    label="Move to Trash"
+                    onPress={() => void trashRecord(record)}
+                  />
+                </View>
+                <View style={styles.row}>
+                  <Button
+                    secondary={!record.pinned}
+                    disabled={pendingIds.includes(record.id) || record.version === 0}
+                    label={record.pinned ? '📌 Pinned' : 'Pin'}
+                    onPress={() => void setPinned(record, !record.pinned)}
+                  />
+                  <Button
+                    secondary={!record.favorite}
+                    disabled={pendingIds.includes(record.id) || record.version === 0}
+                    label={record.favorite ? '★ Favorite' : 'Favorite'}
+                    onPress={() => void setFavorite(record, !record.favorite)}
+                  />
+                  <Button
+                    secondary
+                    disabled={pendingIds.includes(record.id) || record.version === 0}
+                    label="Archive"
+                    onPress={() => void setArchived(record, true)}
+                  />
+                </View>
+              </>
+            )}
+            {record.type === 'note' && !record.deletedAt && record.archivedAt && (
               <View style={styles.row}>
                 <Button
                   secondary
                   disabled={pendingIds.includes(record.id) || record.version === 0}
-                  label="Edit"
-                  onPress={() => {
-                    setEditingNote(record);
-                  }}
-                />
-                <Button
-                  secondary
-                  disabled={pendingIds.includes(record.id) || record.version === 0}
-                  label="Tags"
-                  onPress={() => {
-                    setTagText(record.tags.join(', '));
-                    setTagging(record);
-                  }}
+                  label="Unarchive"
+                  onPress={() => void setArchived(record, false)}
                 />
                 <Button
                   secondary

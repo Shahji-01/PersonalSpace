@@ -128,6 +128,9 @@ export const notes = pgTable(
     contentJson: jsonb('content_json').notNull(),
     contentSchemaVersion: integer('content_schema_version').notNull().default(1),
     contentText: text('content_text').notNull(),
+    isPinned: boolean('is_pinned').notNull().default(false),
+    isFavorite: boolean('is_favorite').notNull().default(false),
+    archivedAt: instant('archived_at'),
   },
   (t) => [index().on(t.userId, t.version)],
 );

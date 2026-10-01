@@ -728,6 +728,58 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       ),
     ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
   });
+  it('pins, favorites, and archives a note with independent flags', async () => {
+    const service = createCaptureService(domain.db);
+    const id = v7();
+    const [note] = await service.execute(
+      userA,
+      v7(),
+      { op: 'capture', payload: { id, type: 'note', text: 'Keeper', plannedDate: null } },
+      'test',
+    );
+    expect(note!.pinned).toBe(false);
+    expect(note!.favorite).toBe(false);
+    expect(note!.archivedAt).toBeNull();
+    const [pinned] = await service.execute(
+      userA,
+      v7(),
+      { op: 'note.setPinned', id, pinned: true, baseVersion: note!.version },
+      'test',
+    );
+    expect(pinned!.pinned).toBe(true);
+    const [favorited] = await service.execute(
+      userA,
+      v7(),
+      { op: 'note.setFavorite', id, favorite: true, baseVersion: pinned!.version },
+      'test',
+    );
+    expect(favorited!.favorite).toBe(true);
+    expect(favorited!.pinned).toBe(true); // flags are independent
+    const [archived] = await service.execute(
+      userA,
+      v7(),
+      { op: 'note.setArchived', id, archived: true, baseVersion: favorited!.version },
+      'test',
+    );
+    expect(archived!.archivedAt).not.toBeNull();
+    const page = await service.pull(userA, note!.version);
+    expect(page.changes.find((r) => r.id === id)?.archivedAt).not.toBeNull();
+    const [unarchived] = await service.execute(
+      userA,
+      v7(),
+      { op: 'note.setArchived', id, archived: false, baseVersion: archived!.version },
+      'test',
+    );
+    expect(unarchived!.archivedAt).toBeNull();
+    await expect(
+      service.execute(
+        userA,
+        v7(),
+        { op: 'note.setPinned', id, pinned: false, baseVersion: note!.version },
+        'test',
+      ),
+    ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+  });
   it('serializes concurrent duplicate mutations and rejects stale task updates', async () => {
     const service = createCaptureService(domain.db);
     const id = v7();
