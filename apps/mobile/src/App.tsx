@@ -168,10 +168,11 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
   ].sort();
   const tagsVisible = allTags.length > 0 && (tab === 'today' || library === 'note');
   // §10.2: a task is "today" if planned today, due today, or overdue and not done.
+  const closed = (r: RecordItem) => r.status === 'done' || r.status === 'cancelled';
   const inToday = (r: RecordItem) =>
     r.plannedDate === today ||
     r.dueDate === today ||
-    (!!r.dueDate && r.dueDate < today && r.status !== 'done');
+    (!!r.dueDate && r.dueDate < today && !closed(r));
   const visible = records.filter(
     (r) =>
       (!tagFilter || r.tags.includes(tagFilter)) &&
@@ -299,6 +300,28 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
           },
         },
         { ...record, plannedDate },
+        record,
+      );
+      await refreshLocal();
+      void sync();
+    } catch {
+      Alert.alert('Change not saved', 'Please try again.');
+    }
+  }
+  async function setTaskStatus(record: RecordItem, status: RecordItem['status']) {
+    if (!store.current || record.status === status) return;
+    try {
+      await store.current.enqueue(
+        {
+          mutationId: newId(),
+          command: {
+            op: 'task.setStatus',
+            id: record.id,
+            status: status as 'todo' | 'in_progress' | 'done' | 'cancelled',
+            baseVersion: record.version,
+          },
+        },
+        { ...record, status },
         record,
       );
       await refreshLocal();
@@ -736,7 +759,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                 style={[
                   styles.label,
                   { fontSize: 18, lineHeight: 26 },
-                  record.status === 'done' && { textDecorationLine: 'line-through' },
+                  closed(record) && { textDecorationLine: 'line-through' },
                 ]}
               >
                 {record.text}
@@ -750,7 +773,11 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                   : record.type === 'task'
                     ? record.status === 'done'
                       ? 'Completed'
-                      : (record.plannedDate ?? 'No planned date')
+                      : record.status === 'cancelled'
+                        ? 'Cancelled'
+                        : record.status === 'in_progress'
+                          ? 'In progress'
+                          : (record.plannedDate ?? 'No planned date')
                     : 'Saved'}
             </Text>
             {(record.type === 'note' || record.type === 'task') &&
@@ -889,12 +916,26 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                 const doneCount = subs.filter((s) => s.status === 'done').length;
                 return (
                   <>
-                    <Button
-                      secondary
-                      disabled={busy}
-                      label={record.status === 'done' ? 'Reopen task' : 'Mark complete'}
-                      onPress={() => void act(record)}
-                    />
+                    <View style={styles.row}>
+                      <Text style={styles.label}>Status</Text>
+                      {(['todo', 'in_progress', 'done', 'cancelled'] as const).map((s) => (
+                        <Button
+                          key={s}
+                          secondary={record.status !== s}
+                          disabled={busy}
+                          label={
+                            s === 'todo'
+                              ? 'To do'
+                              : s === 'in_progress'
+                                ? 'In progress'
+                                : s === 'done'
+                                  ? 'Done'
+                                  : 'Cancelled'
+                          }
+                          onPress={() => void setTaskStatus(record, s)}
+                        />
+                      ))}
+                    </View>
                     <View style={styles.row}>
                       <Button
                         secondary

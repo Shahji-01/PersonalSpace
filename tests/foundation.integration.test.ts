@@ -780,6 +780,46 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       ),
     ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
   });
+  it('moves a task through in_progress, done and cancelled', async () => {
+    const service = createCaptureService(domain.db);
+    const id = v7();
+    const [task] = await service.execute(
+      userA,
+      v7(),
+      { op: 'capture', payload: { id, type: 'task', text: 'Write report', plannedDate: null } },
+      'test',
+    );
+    expect(task!.status).toBe('todo');
+    const [started] = await service.execute(
+      userA,
+      v7(),
+      { op: 'task.setStatus', id, status: 'in_progress', baseVersion: task!.version },
+      'test',
+    );
+    expect(started!.status).toBe('in_progress');
+    const [done] = await service.execute(
+      userA,
+      v7(),
+      { op: 'task.setStatus', id, status: 'done', baseVersion: started!.version },
+      'test',
+    );
+    expect(done!.status).toBe('done');
+    await withUser(domain.db, userA, async (tx) => {
+      const [row] = await tx.select().from(tasks).where(eq(tasks.id, id));
+      expect(row?.completedAt).not.toBeNull();
+    });
+    const [cancelled] = await service.execute(
+      userA,
+      v7(),
+      { op: 'task.setStatus', id, status: 'cancelled', baseVersion: done!.version },
+      'test',
+    );
+    expect(cancelled!.status).toBe('cancelled');
+    await withUser(domain.db, userA, async (tx) => {
+      const [row] = await tx.select().from(tasks).where(eq(tasks.id, id));
+      expect(row?.completedAt).toBeNull(); // clearing done clears the completion time
+    });
+  });
   it('serializes concurrent duplicate mutations and rejects stale task updates', async () => {
     const service = createCaptureService(domain.db);
     const id = v7();

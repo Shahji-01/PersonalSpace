@@ -180,6 +180,12 @@ export const commandSchema = z.discriminatedUnion('op', [
     archived: z.boolean(),
     baseVersion: z.number().int().nonnegative(),
   }),
+  z.strictObject({
+    op: z.literal('task.setStatus'),
+    id: idSchema,
+    status: z.enum(['todo', 'in_progress', 'done', 'cancelled']),
+    baseVersion: z.number().int().nonnegative(),
+  }),
 ]);
 export const syncPushSchema = z.strictObject({
   mutations: z
@@ -193,7 +199,7 @@ export const recordSchema = z.strictObject({
   text: z.string(),
   contentJson: noteDocumentSchema.nullable().optional(),
   contentSchemaVersion: z.literal(1).optional(),
-  status: z.enum(['new', 'converted', 'todo', 'done', 'active']),
+  status: z.enum(['new', 'converted', 'todo', 'in_progress', 'done', 'cancelled', 'active']),
   plannedDate: dateSchema.nullable(),
   dueDate: dateSchema.nullable(),
   priority: z.number().int().min(0).max(4),

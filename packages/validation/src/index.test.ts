@@ -138,6 +138,19 @@ describe('boundary validation', () => {
         .success,
     ).toBe(false);
   });
+  it('accepts task status transitions and rejects unknown statuses', () => {
+    for (const status of ['todo', 'in_progress', 'done', 'cancelled'] as const)
+      expect(
+        commandSchema.safeParse({ op: 'task.setStatus', id, status, baseVersion: 1 }).success,
+      ).toBe(true);
+    expect(
+      commandSchema.safeParse({ op: 'task.setStatus', id, status: 'archived', baseVersion: 1 })
+        .success,
+    ).toBe(false);
+    expect(commandSchema.safeParse({ op: 'task.setStatus', id, baseVersion: 1 }).success).toBe(
+      false,
+    );
+  });
   it('accepts note pin/favorite/archive commands and rejects malformed ones', () => {
     expect(
       commandSchema.safeParse({ op: 'note.setPinned', id, pinned: true, baseVersion: 1 }).success,

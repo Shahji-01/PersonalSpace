@@ -262,6 +262,24 @@ export function createCaptureService(db: Database) {
           .set({ ...patch, version, updatedAt: new Date() })
           .where(and(eq(notes.id, note.id), eq(notes.userId, userId)));
         ids = [note.id];
+      } else if (command.op === 'task.setStatus') {
+        const task = await taskFor(tx, userId, command.id);
+        if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);
+        if (task.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This task changed on another device. Refresh and try again.',
+          );
+        await tx
+          .update(tasks)
+          .set({
+            status: command.status,
+            completedAt: command.status === 'done' ? new Date() : null,
+            version,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(tasks.id, task.id), eq(tasks.userId, userId)));
+        ids = [task.id];
       } else if (command.op === 'task.reschedule') {
         const task = await taskFor(tx, userId, command.id);
         if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);
