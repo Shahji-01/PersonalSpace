@@ -21,6 +21,7 @@ import { createCaptureService } from '../packages/domain/src/index';
 import { eq, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import type { ServerConfig } from '../packages/config/src/index';
+import { readDocument, documentText } from '../packages/editor-schema/src/index';
 
 let container: StartedPostgreSqlContainer;
 let owner: Pool;
@@ -101,6 +102,106 @@ afterAll(async () => {
 });
 
 describe('authenticated capture → PostgreSQL → sync', () => {
+  it('round-trips formatted notes through commands, storage, retry and sync without flattening', async () => {
+    const service = createCaptureService(domain.db);
+    const id = v7();
+    const [created] = await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'capture',
+        payload: { id, type: 'note', text: 'Original', plannedDate: null },
+      },
+      'rich-text',
+    );
+    const document = readDocument({
+      type: 'doc',
+      content: [
+        {
+          type: 'heading',
+          attrs: { level: 1 },
+          content: [{ type: 'text', text: 'A clearer day' }],
+        },
+        {
+          type: 'paragraph',
+          content: [{ type: 'text', text: 'नमस्ते', marks: [{ type: 'bold' }] }],
+        },
+        {
+          type: 'taskList',
+          content: [
+            {
+              type: 'taskItem',
+              attrs: { checked: false },
+              content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Read a chapter' }] }],
+            },
+          ],
+        },
+      ],
+    });
+    const command = {
+      op: 'note.updateContent' as const,
+      id,
+      contentJson: document,
+      contentSchemaVersion: 1 as const,
+      baseVersion: created!.version,
+    };
+    const key = v7();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/commands',
+      headers: { ...headers(tokenA), 'idempotency-key': key },
+      payload: command,
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    const updated = await service.execute(userA, key, command, 'rich-text');
+    expect(updated[0]?.contentJson).toEqual(document);
+    expect(updated[0]?.text).toBe(documentText(document));
+    expect(updated[0]?.contentSchemaVersion).toBe(1);
+    const pull = await service.pull(userA, created!.version);
+    expect(pull.changes.find((record) => record.id === id)?.contentJson).toEqual(document);
+    await withUser(domain.db, userA, async (tx) => {
+      const [row] = await tx.select().from(notes).where(eq(notes.id, id));
+      expect(row?.title).toBe('A clearer day');
+      expect(row?.contentJson).toEqual(document);
+    });
+    await expect(service.execute(userB, v7(), command, 'rich-text')).rejects.toMatchObject({
+      code: 'NOTE_NOT_FOUND',
+    });
+    await expect(service.execute(userA, v7(), command, 'rich-text')).rejects.toMatchObject({
+      code: 'VERSION_CONFLICT',
+    });
+    await expect(
+      service.execute(
+        userA,
+        v7(),
+        { op: 'note.edit', id, text: 'Flattened', baseVersion: updated[0]!.version },
+        'rich-text',
+      ),
+    ).rejects.toMatchObject({ code: 'RICH_TEXT_REQUIRED' });
+    const malformed = await app.inject({
+      method: 'POST',
+      url: '/api/v1/commands',
+      headers: { ...headers(tokenA), 'idempotency-key': v7() },
+      payload: {
+        ...command,
+        contentJson: { type: 'doc', content: [{ type: 'script', text: 'bad' }] },
+      },
+    });
+    expect(malformed.statusCode).toBe(400);
+    // Keep the pre-existing suite's initial-isolation assumptions intact.
+    const [trashed] = await service.execute(
+      userA,
+      v7(),
+      { op: 'note.delete', id, baseVersion: updated[0]!.version },
+      'rich-text',
+    );
+    await service.execute(
+      userA,
+      v7(),
+      { op: 'note.purge', id, baseVersion: trashed!.version },
+      'rich-text',
+    );
+  });
   it('enforces origin checks even in tests and rejects untrusted browser sign-in', async () => {
     const response = await app.inject({
       method: 'POST',
@@ -588,6 +689,44 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       expect(await tx.select().from(inboxItems).where(eq(inboxItems.id, gone))).toHaveLength(0);
       expect(await tx.select().from(entities).where(eq(entities.id, gone))).toHaveLength(0);
     });
+  });
+  it('sets task priority and a deadline separate from the planned date', async () => {
+    const service = createCaptureService(domain.db);
+    const id = v7();
+    const [task] = await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'capture',
+        payload: { id, type: 'task', text: 'Ship release', plannedDate: '2026-10-01' },
+      },
+      'test',
+    );
+    expect(task!.priority).toBe(0);
+    expect(task!.dueDate).toBeNull();
+    const [prioritized] = await service.execute(
+      userA,
+      v7(),
+      { op: 'task.setPriority', id, priority: 3, baseVersion: task!.version },
+      'test',
+    );
+    expect(prioritized!.priority).toBe(3);
+    const [dated] = await service.execute(
+      userA,
+      v7(),
+      { op: 'task.setDueDate', id, dueDate: '2026-10-05', baseVersion: prioritized!.version },
+      'test',
+    );
+    expect(dated!.dueDate).toBe('2026-10-05');
+    expect(dated!.plannedDate).toBe('2026-10-01'); // deadline is independent of the do-date
+    await expect(
+      service.execute(
+        userA,
+        v7(),
+        { op: 'task.setPriority', id, priority: 1, baseVersion: task!.version },
+        'test',
+      ),
+    ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
   });
   it('serializes concurrent duplicate mutations and rejects stale task updates', async () => {
     const service = createCaptureService(domain.db);

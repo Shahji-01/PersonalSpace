@@ -2,20 +2,20 @@
 
 Validated locally on Windows with Node 24.13.1, pnpm 9.15.4, Docker Desktop, PostgreSQL 17, and Chrome.
 
-| Check                                               | Result                                                                                                                             |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Workspace + test/tool TypeScript                    | Passed                                                                                                                             |
-| ESLint                                              | Passed                                                                                                                             |
-| Unit tests                                          | 15 passed: validation, note/task/inbox lifecycle commands, tag normalization, capture suggestions, sync replay and acknowledgement |
-| PostgreSQL/API integration                          | 15 passed against an isolated Testcontainers database                                                                              |
-| Browser tests                                       | 2 passed: desktop and 390px phone viewport                                                                                         |
-| Web visual review                                   | Desktop and phone screenshots inspected; no horizontal overflow or browser errors                                                  |
-| API, worker, web builds                             | Passed                                                                                                                             |
-| Android and iOS Hermes bundle exports               | Passed                                                                                                                             |
-| Expo dependency compatibility                       | Passed after aligning safe-area-context with SDK 57                                                                                |
-| Local migrations                                    | Applied successfully; repeated migration application covered by integration test                                                   |
-| Local API readiness and web HTTP response           | 200 / ready                                                                                                                        |
-| Live HTTP → DB → outbox → BullMQ → Redis → sign-out | Passed; temporary smoke account and jobs removed                                                                                   |
+| Check                                               | Result                                                                                                                                           |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Workspace + test/tool TypeScript                    | Passed                                                                                                                                           |
+| ESLint                                              | Passed                                                                                                                                           |
+| Unit tests                                          | 24 passed: validation (incl. task priority/due-date), editor-schema, formatted-note drafts, capture suggestions, sync replay and acknowledgement |
+| PostgreSQL/API integration                          | 17 passed against an isolated Testcontainers database                                                                                            |
+| Browser tests                                       | 2 passed: desktop and 390px phone viewport                                                                                                       |
+| Web visual review                                   | Desktop and phone screenshots inspected; no horizontal overflow or browser errors                                                                |
+| API, worker, web builds                             | Passed                                                                                                                                           |
+| Android and iOS Hermes bundle exports               | Passed                                                                                                                                           |
+| Expo dependency compatibility                       | Passed after aligning safe-area-context with SDK 57                                                                                              |
+| Local migrations                                    | Applied successfully; repeated migration application covered by integration test                                                                 |
+| Local API readiness and web HTTP response           | 200 / ready                                                                                                                                      |
+| Live HTTP → DB → outbox → BullMQ → Redis → sign-out | Passed; temporary smoke account and jobs removed                                                                                                 |
 
 The integration suite exercises actual Better Auth signup/signin/signout, explicit origin checks, owner isolation for all nine product tables, no pooled-context leakage, separate auth/application privileges, strict input ownership, duplicate keys, simultaneous retries, stale version rejection, atomic conversion/provenance, rollback, append-only audit privileges, the full note lifecycle (edit, soft-delete to Trash, restore, and permanent purge with provenance-foreign-key cleanup under RLS), task rescheduling with one-level subtasks (parent linkage, nesting rejection, and subtask completion), task renaming with soft-delete/restore/purge including subtask cascade and purge-guard checks, item tagging (server-side normalization, entity/type version parity, and clearing), and the inbox dismiss lifecycle (dismiss/restore/purge with the converted-item guard).
 

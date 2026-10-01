@@ -112,6 +112,32 @@ describe('boundary validation', () => {
       }).success,
     ).toBe(false);
   });
+  it('accepts task priority and due-date commands within bounds', () => {
+    expect(
+      commandSchema.safeParse({ op: 'task.setPriority', id, priority: 4, baseVersion: 1 }).success,
+    ).toBe(true);
+    expect(
+      commandSchema.safeParse({ op: 'task.setPriority', id, priority: 0, baseVersion: 1 }).success,
+    ).toBe(true);
+    expect(
+      commandSchema.safeParse({ op: 'task.setPriority', id, priority: 5, baseVersion: 1 }).success,
+    ).toBe(false);
+    expect(
+      commandSchema.safeParse({ op: 'task.setPriority', id, priority: 1.5, baseVersion: 1 })
+        .success,
+    ).toBe(false);
+    expect(
+      commandSchema.safeParse({ op: 'task.setDueDate', id, dueDate: '2026-10-05', baseVersion: 1 })
+        .success,
+    ).toBe(true);
+    expect(
+      commandSchema.safeParse({ op: 'task.setDueDate', id, dueDate: null, baseVersion: 1 }).success,
+    ).toBe(true);
+    expect(
+      commandSchema.safeParse({ op: 'task.setDueDate', id, dueDate: '2026-13-01', baseVersion: 1 })
+        .success,
+    ).toBe(false);
+  });
   it('accepts inbox dismiss commands and rejects malformed ones', () => {
     expect(commandSchema.safeParse({ op: 'inbox.delete', id, baseVersion: 0 }).success).toBe(true);
     expect(commandSchema.safeParse({ op: 'inbox.restore', id, baseVersion: 0 }).success).toBe(true);

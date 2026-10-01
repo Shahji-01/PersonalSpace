@@ -1,5 +1,5 @@
 {
-  "name": "@personalspace/validation",
+  "name": "@personalspace/editor-schema",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,7 +10,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@personalspace/editor-schema": "workspace:*",
     "zod": "^4.1.0"
   }
 }

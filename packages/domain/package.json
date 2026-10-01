@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@personalspace/editor-schema": "workspace:*",
     "@personalspace/db": "workspace:*",
     "@personalspace/validation": "workspace:*",
     "drizzle-orm": "^0.45.2",

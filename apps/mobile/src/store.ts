@@ -3,6 +3,9 @@ import * as Crypto from 'expo-crypto';
 import { v7 } from 'uuid';
 import { recordSchema, type Mutation, type RecordItem } from '@personalspace/validation';
 import type { SyncStore } from '@personalspace/sync';
+import { readDocument, type NoteDocument } from '@personalspace/editor-schema';
+
+export type NoteDraft = { content: NoteDocument; baseVersion: number };
 
 export const newId = () => v7({ random: Crypto.getRandomBytes(16) });
 type OutboxRow = { id: string; mutation: string; previous: string | null; error: string | null };
@@ -17,7 +20,8 @@ export async function openStore(userId: string) {
   await db.execAsync(`PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS records (user_id TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(user_id,id));
     CREATE TABLE IF NOT EXISTS outbox (user_id TEXT NOT NULL, id TEXT NOT NULL, mutation TEXT NOT NULL, previous TEXT, error TEXT, PRIMARY KEY(user_id,id));
-    CREATE TABLE IF NOT EXISTS cursors (user_id TEXT PRIMARY KEY, cursor INTEGER NOT NULL DEFAULT 0);`);
+    CREATE TABLE IF NOT EXISTS cursors (user_id TEXT PRIMARY KEY, cursor INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS note_drafts (user_id TEXT NOT NULL, note_id TEXT NOT NULL, content TEXT NOT NULL, base_version INTEGER NOT NULL, PRIMARY KEY(user_id,note_id));`);
   const save = async (item: RecordItem) => {
     await db.runAsync(
       'INSERT OR REPLACE INTO records(user_id,id,data) VALUES (?,?,?)',
@@ -37,7 +41,29 @@ export async function openStore(userId: string) {
     pending,
     acknowledge: async (id, records) => {
       await transaction(async () => {
+        const queued = await db.getFirstAsync<OutboxRow>(
+          'SELECT * FROM outbox WHERE user_id=? AND id=?',
+          userId,
+          id,
+        );
+        const command = queued ? (JSON.parse(queued.mutation) as Mutation).command : null;
         for (const item of records) await save(item);
+        if (command?.op === 'note.updateContent') {
+          // Only discard the exact draft acknowledged by the server, never a newer edit.
+          await db.runAsync(
+            'DELETE FROM note_drafts WHERE user_id=? AND note_id=? AND content=? AND base_version=?',
+            userId,
+            command.id,
+            JSON.stringify(command.contentJson),
+            command.baseVersion,
+          );
+        }
+        if (command?.op === 'note.purge')
+          await db.runAsync(
+            'DELETE FROM note_drafts WHERE user_id=? AND note_id=?',
+            userId,
+            command.id,
+          );
         await db.runAsync('DELETE FROM outbox WHERE user_id=? AND id=?', userId, id);
       });
     },
@@ -84,6 +110,33 @@ export async function openStore(userId: string) {
   };
   return {
     ...store,
+    loadDraft: async (noteId: string): Promise<NoteDraft | null> => {
+      const row = await db.getFirstAsync<{ content: string; base_version: number }>(
+        'SELECT content,base_version FROM note_drafts WHERE user_id=? AND note_id=?',
+        userId,
+        noteId,
+      );
+      return row
+        ? { content: readDocument(JSON.parse(row.content)), baseVersion: row.base_version }
+        : null;
+    },
+    saveDraft: async (noteId: string, draft: NoteDraft) => {
+      const content = readDocument(draft.content);
+      await transaction(async () => {
+        await db.runAsync(
+          'INSERT OR REPLACE INTO note_drafts(user_id,note_id,content,base_version) VALUES (?,?,?,?)',
+          userId,
+          noteId,
+          JSON.stringify(content),
+          draft.baseVersion,
+        );
+      });
+    },
+    discardDraft: async (noteId: string) => {
+      await transaction(async () => {
+        await db.runAsync('DELETE FROM note_drafts WHERE user_id=? AND note_id=?', userId, noteId);
+      });
+    },
     list: async () =>
       (
         await db.getAllAsync<{ data: string }>(

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { noteDocumentSchema } from '@personalspace/editor-schema';
 
 export const idSchema = z.uuidv7();
 export const dateSchema = z.iso.date();
@@ -74,6 +75,13 @@ export const commandSchema = z.discriminatedUnion('op', [
     baseVersion: z.number().int().nonnegative(),
   }),
   z.strictObject({
+    op: z.literal('note.updateContent'),
+    id: idSchema,
+    contentJson: noteDocumentSchema,
+    contentSchemaVersion: z.literal(1),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
     op: z.literal('note.delete'),
     id: idSchema,
     baseVersion: z.number().int().nonnegative(),
@@ -142,6 +150,18 @@ export const commandSchema = z.discriminatedUnion('op', [
     id: idSchema,
     baseVersion: z.number().int().nonnegative(),
   }),
+  z.strictObject({
+    op: z.literal('task.setPriority'),
+    id: idSchema,
+    priority: z.number().int().min(0).max(4),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('task.setDueDate'),
+    id: idSchema,
+    dueDate: dateSchema.nullable(),
+    baseVersion: z.number().int().nonnegative(),
+  }),
 ]);
 export const syncPushSchema = z.strictObject({
   mutations: z
@@ -153,8 +173,12 @@ export const recordSchema = z.strictObject({
   id: idSchema,
   type: captureTypeSchema,
   text: z.string(),
+  contentJson: noteDocumentSchema.nullable().optional(),
+  contentSchemaVersion: z.literal(1).optional(),
   status: z.enum(['new', 'converted', 'todo', 'done', 'active']),
   plannedDate: dateSchema.nullable(),
+  dueDate: dateSchema.nullable(),
+  priority: z.number().int().min(0).max(4),
   parentId: idSchema.nullable(),
   tags: z.array(z.string()),
   version: z.number().int().nonnegative(),

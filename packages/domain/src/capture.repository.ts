@@ -37,6 +37,8 @@ export async function recordsFor(
       updatedAt: row.updatedAt.toISOString(),
       deletedAt: row.deletedAt?.toISOString() ?? null,
       plannedDate: null,
+      dueDate: null,
+      priority: 0,
       parentId: null,
       tags: tagsById.get(row.id) ?? [],
       ...extra,
@@ -49,10 +51,20 @@ export async function recordsFor(
         text: r.title,
         status: r.status,
         plannedDate: r.plannedDate,
+        dueDate: r.dueDate,
+        priority: r.priority,
         parentId: r.parentId,
       }),
     ),
-    ...noteRows.map((r) => serialize(r, { type: 'note', text: r.contentText, status: 'active' })),
+    ...noteRows.map((r) =>
+      serialize(r, {
+        type: 'note',
+        text: r.contentText,
+        status: 'active',
+        contentJson: r.contentJson,
+        contentSchemaVersion: r.contentSchemaVersion,
+      }),
+    ),
   ].sort((a, b) => a.version - b.version || a.id.localeCompare(b.id));
 }
 export async function changedEntities(tx: Transaction, userId: string, cursor: number) {

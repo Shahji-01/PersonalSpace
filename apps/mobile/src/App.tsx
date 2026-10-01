@@ -21,6 +21,8 @@ import { apiUrl, clearSession, loadSession, type Session } from './auth';
 import { newId, openStore, type LocalStore } from './store';
 import { Button, Card, Field, styles } from './components';
 import { colors } from '@personalspace/ui';
+import { NoteEditorScreen } from './NoteEditorScreen';
+import { NotePreview } from './NotePreview';
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -64,6 +66,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
   const [allTasks, setAllTasks] = useState(false);
   const [captureOpen, setCaptureOpen] = useState(false);
   const [editing, setEditing] = useState<RecordItem | null>(null);
+  const [editingNote, setEditingNote] = useState<RecordItem | null>(null);
   const [editText, setEditText] = useState('');
   const [subtaskParent, setSubtaskParent] = useState<string | null>(null);
   const [subtaskText, setSubtaskText] = useState('');
@@ -144,6 +147,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
   }, [tab, library, allTasks]);
   const today = localDate();
   const tomorrow = localDate(1);
+  const priorityLabels = ['None', 'Low', 'Medium', 'High', 'Urgent'];
   const inboxCount = records.filter(
     (r) => r.type === 'inbox' && r.status === 'new' && !r.deletedAt,
   ).length;
@@ -160,15 +164,27 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
     ),
   ].sort();
   const tagsVisible = allTags.length > 0 && (tab === 'today' || library === 'note');
+  // §10.2: a task is "today" if planned today, due today, or overdue and not done.
+  const inToday = (r: RecordItem) =>
+    r.plannedDate === today ||
+    r.dueDate === today ||
+    (!!r.dueDate && r.dueDate < today && r.status !== 'done');
   const visible = records.filter(
     (r) =>
       (!tagFilter || r.tags.includes(tagFilter)) &&
       (tab === 'today'
-        ? !r.deletedAt && r.type === 'task' && !r.parentId && (allTasks || r.plannedDate === today)
+        ? !r.deletedAt && r.type === 'task' && !r.parentId && (allTasks || inToday(r))
         : library === 'trash'
           ? inTrash(r)
           : !r.deletedAt && r.type === library && r.status !== 'converted'),
   );
+  if (tab === 'today')
+    visible.sort(
+      (a, b) =>
+        b.priority - a.priority ||
+        (a.dueDate ?? '9999').localeCompare(b.dueDate ?? '9999') ||
+        a.id.localeCompare(b.id),
+    );
   const subtasksOf = (parentId: string) =>
     records
       .filter((r) => r.type === 'task' && r.parentId === parentId && !r.deletedAt)
@@ -193,6 +209,8 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
         {
           ...result.data,
           status: type === 'inbox' ? 'new' : type === 'task' ? 'todo' : 'active',
+          dueDate: null,
+          priority: 0,
           parentId: null,
           tags: [],
           version: 0,
@@ -271,6 +289,40 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
       Alert.alert('Change not saved', 'Please try again.');
     }
   }
+  async function setPriority(record: RecordItem, priority: number) {
+    if (!store.current || record.priority === priority) return;
+    try {
+      await store.current.enqueue(
+        {
+          mutationId: newId(),
+          command: { op: 'task.setPriority', id: record.id, priority, baseVersion: record.version },
+        },
+        { ...record, priority },
+        record,
+      );
+      await refreshLocal();
+      void sync();
+    } catch {
+      Alert.alert('Change not saved', 'Please try again.');
+    }
+  }
+  async function setDueDate(record: RecordItem, dueDate: string | null) {
+    if (!store.current || record.dueDate === dueDate) return;
+    try {
+      await store.current.enqueue(
+        {
+          mutationId: newId(),
+          command: { op: 'task.setDueDate', id: record.id, dueDate, baseVersion: record.version },
+        },
+        { ...record, dueDate },
+        record,
+      );
+      await refreshLocal();
+      void sync();
+    } catch {
+      Alert.alert('Change not saved', 'Please try again.');
+    }
+  }
   async function addSubtask(parent: RecordItem, subtaskText: string) {
     if (!store.current) return;
     const trimmed = subtaskText.trim();
@@ -289,6 +341,8 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
           text: trimmed,
           status: 'todo',
           plannedDate: null,
+          dueDate: null,
+          priority: 0,
           parentId: parent.id,
           tags: [],
           version: 0,
@@ -594,15 +648,19 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
         )}
         {visible.map((record) => (
           <Card key={record.id}>
-            <Text
-              style={[
-                styles.label,
-                { fontSize: 18, lineHeight: 26 },
-                record.status === 'done' && { textDecorationLine: 'line-through' },
-              ]}
-            >
-              {record.text}
-            </Text>
+            {record.type === 'note' && record.contentJson ? (
+              <NotePreview document={record.contentJson} />
+            ) : (
+              <Text
+                style={[
+                  styles.label,
+                  { fontSize: 18, lineHeight: 26 },
+                  record.status === 'done' && { textDecorationLine: 'line-through' },
+                ]}
+              >
+                {record.text}
+              </Text>
+            )}
             <Text style={styles.subtitle}>
               {pendingIds.includes(record.id) || record.version === 0
                 ? 'Saved locally · not synced'
@@ -621,6 +679,29 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                   {record.tags.map((t) => `#${t}`).join('  ')}
                 </Text>
               )}
+            {record.type === 'task' &&
+              !record.deletedAt &&
+              (record.priority > 0 || record.dueDate) && (
+                <Text
+                  style={[
+                    styles.subtitle,
+                    record.dueDate && record.dueDate < today && record.status !== 'done'
+                      ? { color: colors.danger }
+                      : {},
+                  ]}
+                >
+                  {[
+                    record.priority > 0 ? `${priorityLabels[record.priority]} priority` : null,
+                    record.dueDate
+                      ? record.dueDate < today && record.status !== 'done'
+                        ? `Overdue — due ${record.dueDate}`
+                        : `Due ${record.dueDate}`
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </Text>
+              )}
             {record.type === 'note' && !record.deletedAt && (
               <View style={styles.row}>
                 <Button
@@ -628,8 +709,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                   disabled={pendingIds.includes(record.id) || record.version === 0}
                   label="Edit"
                   onPress={() => {
-                    setEditText(record.text);
-                    setEditing(record);
+                    setEditingNote(record);
                   }}
                 />
                 <Button
@@ -742,6 +822,39 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                         label="No date"
                         onPress={() => void reschedule(record, null)}
                       />
+                    </View>
+                    <View style={styles.row}>
+                      <Text style={styles.label}>Deadline</Text>
+                      <Button
+                        secondary={record.dueDate !== today}
+                        disabled={busy}
+                        label="Today"
+                        onPress={() => void setDueDate(record, today)}
+                      />
+                      <Button
+                        secondary={record.dueDate !== tomorrow}
+                        disabled={busy}
+                        label="Tomorrow"
+                        onPress={() => void setDueDate(record, tomorrow)}
+                      />
+                      <Button
+                        secondary={record.dueDate !== null}
+                        disabled={busy}
+                        label="None"
+                        onPress={() => void setDueDate(record, null)}
+                      />
+                    </View>
+                    <View style={styles.row}>
+                      <Text style={styles.label}>Priority</Text>
+                      {priorityLabels.map((plabel, level) => (
+                        <Button
+                          key={plabel}
+                          secondary={record.priority !== level}
+                          disabled={busy}
+                          label={plabel}
+                          onPress={() => void setPriority(record, level)}
+                        />
+                      ))}
                     </View>
                     {subs.length > 0 && (
                       <Text
@@ -899,6 +1012,26 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
             </ScrollView>
           </KeyboardAvoidingView>
         </SafeAreaView>
+      </Modal>
+      <Modal
+        visible={editingNote !== null}
+        animationType="slide"
+        onRequestClose={() => setEditingNote(null)}
+      >
+        {editingNote && store.current && (
+          <NoteEditorScreen
+            key={editingNote.id}
+            note={editingNote}
+            store={store.current}
+            onClose={() => setEditingNote(null)}
+            onSaved={async () => {
+              setEditingNote(null);
+              setStatus('Saved on this device. Sync pending.');
+              await refreshLocal();
+              void sync();
+            }}
+          />
+        )}
       </Modal>
       <Modal
         visible={editing !== null}

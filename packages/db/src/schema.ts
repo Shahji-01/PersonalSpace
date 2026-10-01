@@ -10,6 +10,8 @@ import {
   primaryKey,
   unique,
   index,
+  integer,
+  smallint,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
@@ -106,11 +108,17 @@ export const tasks = pgTable(
     ...std(),
     title: text('title').notNull(),
     status: text('status').notNull().default('todo'),
+    priority: smallint('priority').notNull().default(0),
     plannedDate: date('planned_date'),
+    dueDate: date('due_date'),
     completedAt: instant('completed_at'),
     parentId: uuid('parent_id'),
   },
-  (t) => [index().on(t.userId, t.version), index().on(t.userId, t.parentId)],
+  (t) => [
+    index().on(t.userId, t.version),
+    index().on(t.userId, t.parentId),
+    index().on(t.userId, t.status, t.dueDate),
+  ],
 );
 export const notes = pgTable(
   'notes',
@@ -118,6 +126,7 @@ export const notes = pgTable(
     ...std(),
     title: text('title').notNull(),
     contentJson: jsonb('content_json').notNull(),
+    contentSchemaVersion: integer('content_schema_version').notNull().default(1),
     contentText: text('content_text').notNull(),
   },
   (t) => [index().on(t.userId, t.version)],

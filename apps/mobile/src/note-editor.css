@@ -1,0 +1,185 @@
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: #f5f3ec;
+  color: #17251e;
+  font-family: system-ui, sans-serif;
+}
+.note-editor {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+.note-editor header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px 12px;
+  gap: 12px;
+}
+.note-editor .eyebrow {
+  margin: 0 0 6px;
+  color: #275d48;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 2px;
+}
+.note-editor h1 {
+  margin: 0;
+  font-size: 25px;
+  letter-spacing: -0.6px;
+}
+.note-editor button {
+  border: 1px solid #d8dfd5;
+  border-radius: 9px;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 8px 12px;
+  background: #e8ede4;
+  color: #214e3d;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+}
+.note-editor button:disabled {
+  opacity: 0.45;
+}
+.note-editor button[aria-pressed='true'],
+.note-editor .primary {
+  background: #214e3d;
+  color: white;
+  border-color: #214e3d;
+}
+.note-editor button:focus-visible,
+.note-editor input:focus-visible {
+  outline: 3px solid #b58032;
+  outline-offset: 2px;
+}
+.toolbar {
+  display: flex;
+  flex-shrink: 0;
+  overflow-x: auto;
+  gap: 6px;
+  padding: 8px 16px;
+  border-block: 1px solid #d8dfd5;
+}
+.toolbar button {
+  flex-shrink: 0;
+}
+.editor-scroll {
+  flex: 1;
+  min-height: 80px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: #fffef9;
+}
+.tiptap {
+  padding: 16px 20px 40px;
+  outline: none;
+  min-height: 100%;
+  font-size: 17px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.tiptap p {
+  margin: 0 0 12px;
+}
+.tiptap h1,
+.tiptap h2,
+.tiptap h3 {
+  line-height: 1.25;
+  margin: 18px 0 10px;
+}
+.tiptap h1 {
+  font-size: 28px;
+}
+.tiptap h2 {
+  font-size: 23px;
+}
+.tiptap h3 {
+  font-size: 20px;
+}
+.tiptap ul,
+.tiptap ol {
+  padding-left: 24px;
+}
+.tiptap ul[data-type='taskList'] {
+  padding: 0;
+  list-style: none;
+}
+.tiptap li[data-type='taskItem'] {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.tiptap li[data-type='taskItem'] > div {
+  flex: 1;
+  min-width: 0;
+}
+.tiptap input[type='checkbox'] {
+  width: 22px;
+  height: 22px;
+  accent-color: #214e3d;
+}
+.tiptap code {
+  font-family: ui-monospace, monospace;
+  background: #edf0e8;
+  border-radius: 3px;
+  padding: 2px 4px;
+}
+.tiptap pre {
+  overflow-x: auto;
+  background: #edf0e8;
+  padding: 12px;
+  border-radius: 8px;
+}
+.tiptap pre code {
+  padding: 0;
+}
+.tiptap blockquote {
+  border-left: 3px solid #527d66;
+  margin: 16px 0;
+  padding-left: 16px;
+}
+.tiptap a {
+  color: #275d48;
+  text-decoration: underline;
+}
+.note-editor footer {
+  padding: 8px 16px 12px;
+  border-top: 1px solid #d8dfd5;
+}
+.note-editor footer p {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #526257;
+}
+.note-editor .error {
+  color: #a5322d;
+}
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.link-form {
+  padding: 12px 16px;
+}
+.link-form label {
+  display: block;
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+.link-form input {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #aab8ab;
+  border-radius: 8px;
+  font: inherit;
+  margin-bottom: 8px;
+}

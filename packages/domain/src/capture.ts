@@ -34,6 +34,12 @@ import {
   trashedTaskFor,
 } from './capture.repository';
 import { DomainError } from './errors';
+import {
+  documentText,
+  hasFormatting,
+  plainTextDocument,
+  readDocument,
+} from '@personalspace/editor-schema';
 
 // Plain text maps to a ProseMirror-compatible document. Title is the first line, matching
 // how notes are first created so edits round-trip the same way through the record contract.
@@ -41,13 +47,8 @@ function noteContent(text: string) {
   return {
     title: text.split('\n')[0]!.slice(0, 120),
     contentText: text,
-    contentJson: {
-      type: 'doc',
-      content: text.split('\n').map((line) => ({
-        type: 'paragraph',
-        ...(line ? { content: [{ type: 'text', text: line }] } : {}),
-      })),
-    },
+    contentJson: plainTextDocument(text),
+    contentSchemaVersion: 1,
   };
 }
 
@@ -143,6 +144,27 @@ export function createCaptureService(db: Database) {
           relation: 'converted_from',
         });
         ids = [item.id, command.targetId];
+      } else if (command.op === 'note.updateContent') {
+        const note = await noteFor(tx, userId, command.id);
+        if (!note) throw new DomainError('NOTE_NOT_FOUND', 'This note was not found.', 404);
+        if (note.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This note changed on another device. Your local draft is preserved.',
+          );
+        const text = documentText(command.contentJson);
+        await tx
+          .update(notes)
+          .set({
+            contentJson: command.contentJson,
+            contentSchemaVersion: command.contentSchemaVersion,
+            contentText: text,
+            title: text.split('\n')[0]!.slice(0, 120) || 'Untitled note',
+            version,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(notes.id, note.id), eq(notes.userId, userId)));
+        ids = [note.id];
       } else if (command.op === 'note.edit') {
         const note = await noteFor(tx, userId, command.id);
         if (!note) throw new DomainError('NOTE_NOT_FOUND', 'This note was not found.', 404);
@@ -150,6 +172,12 @@ export function createCaptureService(db: Database) {
           throw new DomainError(
             'VERSION_CONFLICT',
             'This note changed on another device. Refresh and try again.',
+          );
+        if (hasFormatting(readDocument(note.contentJson, note.contentSchemaVersion)))
+          throw new DomainError(
+            'RICH_TEXT_REQUIRED',
+            'Update the app to edit this formatted note.',
+            422,
           );
         await tx
           .update(notes)
@@ -416,6 +444,32 @@ export function createCaptureService(db: Database) {
           );
         await tx.delete(entities).where(and(eq(entities.id, item.id), eq(entities.userId, userId)));
         ids = [item.id];
+      } else if (command.op === 'task.setPriority') {
+        const task = await taskFor(tx, userId, command.id);
+        if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);
+        if (task.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This task changed on another device. Refresh and try again.',
+          );
+        await tx
+          .update(tasks)
+          .set({ priority: command.priority, version, updatedAt: new Date() })
+          .where(and(eq(tasks.id, task.id), eq(tasks.userId, userId)));
+        ids = [task.id];
+      } else if (command.op === 'task.setDueDate') {
+        const task = await taskFor(tx, userId, command.id);
+        if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);
+        if (task.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This task changed on another device. Refresh and try again.',
+          );
+        await tx
+          .update(tasks)
+          .set({ dueDate: command.dueDate, version, updatedAt: new Date() })
+          .where(and(eq(tasks.id, task.id), eq(tasks.userId, userId)));
+        ids = [task.id];
       } else {
         const task = await taskFor(tx, userId, command.id);
         if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);
