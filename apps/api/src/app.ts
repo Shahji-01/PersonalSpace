@@ -8,10 +8,18 @@ import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import type { ServerConfig } from '@personalspace/config';
 import type { Database } from '@personalspace/db';
-import { createCaptureService, DomainError } from '@personalspace/domain';
+import {
+  createCaptureService,
+  createNoteHistoryService,
+  createSearchService,
+  DomainError,
+} from '@personalspace/domain';
 import {
   commandSchema,
+  searchQuerySchema,
+  searchResponseSchema,
   idSchema,
+  noteHistoryResponseSchema,
   pullResponseSchema,
   pushResponseSchema,
   signupSchema,
@@ -47,6 +55,7 @@ export async function createApp(deps: {
   });
   const auth = createAuth(deps.authDb, config);
   const capture = createCaptureService(deps.db);
+  const noteHistory = createNoteHistoryService(deps.db);
   await app.register(helmet);
   await app.register(cors, {
     origin: config.WEB_URL,
@@ -183,6 +192,74 @@ export async function createApp(deps: {
         request.userId = session.user.id;
       });
       api.get('/me', async (request) => ({ data: { id: request.userId } }));
+      api.get(
+        '/search',
+        {
+          schema: {
+            security: [{ bearerAuth: [] }],
+            querystring: z.toJSONSchema(
+              searchQuerySchema.omit({ limit: true, offset: true, includeArchived: true }).extend({
+                limit: z
+                  .string()
+                  .regex(/^[0-9]+$/)
+                  .optional(),
+                offset: z
+                  .string()
+                  .regex(/^[0-9]+$/)
+                  .optional(),
+                includeArchived: z.enum(['true', 'false']).optional(),
+              }),
+              { target: 'draft-7', io: 'input' },
+            ),
+            response: { 200: z.toJSONSchema(searchResponseSchema, { target: 'draft-7' }) },
+          },
+        },
+        async (request) => {
+          const raw = request.query as Record<string, unknown>;
+          return createSearchService(deps.db).search(
+            request.userId,
+            searchQuerySchema.parse({
+              ...raw,
+              limit: raw.limit === undefined ? undefined : Number(raw.limit),
+              offset: raw.offset === undefined ? undefined : Number(raw.offset),
+              includeArchived: raw.includeArchived === 'true',
+            }),
+          );
+        },
+      );
+      api.get(
+        '/notes/:id/versions',
+        {
+          schema: {
+            security: [{ bearerAuth: [] }],
+            params: z.toJSONSchema(z.object({ id: idSchema }), { target: 'draft-7' }),
+            querystring: z.toJSONSchema(
+              z.strictObject({
+                beforeVersion: z
+                  .string()
+                  .regex(/^[1-9][0-9]*$/)
+                  .optional(),
+              }),
+              { target: 'draft-7' },
+            ),
+            response: { 200: z.toJSONSchema(noteHistoryResponseSchema, { target: 'draft-7' }) },
+          },
+        },
+        async (request) => {
+          const { id } = z.object({ id: idSchema }).parse(request.params);
+          const { beforeVersion } = z
+            .object({
+              beforeVersion: z.coerce
+                .number()
+                .int()
+                .positive()
+                .max(Number.MAX_SAFE_INTEGER)
+                .optional(),
+            })
+            .parse(request.query);
+          return noteHistory.list(request.userId, id, beforeVersion);
+        },
+      );
       api.post(
         '/commands',
         {
@@ -240,12 +317,15 @@ export async function createApp(deps: {
         },
       );
       api.get('/sync/pull', { schema: { security: [{ bearerAuth: [] }] } }, async (request) => {
-        const { cursor } = z
+        const { cursor, mode } = z
           .object({
             cursor: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+            mode: z.enum(['incremental', 'full']).default('incremental'),
           })
           .parse(request.query);
-        return pullResponseSchema.parse(await capture.pull(request.userId, cursor));
+        return pullResponseSchema.parse(
+          await capture.pull(request.userId, cursor, mode === 'full'),
+        );
       });
     },
     { prefix: '/api/v1' },

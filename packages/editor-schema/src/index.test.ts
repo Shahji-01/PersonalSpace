@@ -8,9 +8,60 @@ import {
   noteDocumentSchema,
   plainTextDocument,
   readDocument,
+  noteReferenceIds,
 } from './index';
 
 describe('canonical note documents', () => {
+  it('preserves stable reference IDs, deduplicates links and rejects malformed reference attributes', () => {
+    const id = '0199a1b0-0000-7000-8000-000000000001';
+    const ref = { type: 'noteReference' as const, attrs: { noteId: id } };
+    const doc = readDocument({
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [ref, ref] }],
+    });
+    expect(noteReferenceIds(doc)).toEqual([id]);
+    expect(hasFormatting(doc)).toBe(true);
+    expect(documentText(doc)).toBe('[[Note]][[Note]]');
+    expect(documentMarkdown(doc)).toBe(`[[note:${id}]][[note:${id}]]`);
+    for (const attrs of [
+      { noteId: 'not-a-uuid' },
+      { noteId: id, title: 'Untrusted title' },
+      { noteId: id, href: 'https://example.test' },
+    ])
+      expect(
+        noteDocumentSchema.safeParse({
+          type: 'doc',
+          content: [{ type: 'paragraph', content: [{ ...ref, attrs }] }],
+        }).success,
+      ).toBe(false);
+  });
+  it('accepts the nullable title attribute emitted by the installed link extension', () => {
+    const doc = plainTextDocument('Link');
+    doc.content = [
+      {
+        type: 'paragraph',
+        content: [
+          {
+            type: 'text',
+            text: 'Link',
+            marks: [
+              {
+                type: 'link',
+                attrs: {
+                  href: 'https://example.test',
+                  title: null,
+                  target: '_blank',
+                  rel: 'noopener noreferrer nofollow',
+                  class: null,
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    expect(readDocument(doc)).toEqual(doc);
+  });
   it('reads legacy paragraphs without losing blank lines or Hindi text', () => {
     const text = 'मेरी नोटबुक\n\nA little space.\n';
     const document = readDocument(plainTextDocument(text));

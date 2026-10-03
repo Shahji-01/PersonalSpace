@@ -112,12 +112,12 @@ body,
   padding: 0;
   list-style: none;
 }
-.tiptap li[data-type='taskItem'] {
+.tiptap ul[data-type='taskList'] > li {
   display: flex;
   gap: 10px;
   align-items: flex-start;
 }
-.tiptap li[data-type='taskItem'] > div {
+.tiptap ul[data-type='taskList'] > li > div {
   flex: 1;
   min-width: 0;
 }
@@ -182,4 +182,59 @@ body,
   border-radius: 8px;
   font: inherit;
   margin-bottom: 8px;
+}
+.note-reference {
+  color: #275d48;
+  background: #e8ede4;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.note-reference:focus-visible {
+  outline: 3px solid #b58032;
+}
+.reference-picker {
+  padding: 12px 16px;
+  border-bottom: 1px solid #d8dfd5;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.reference-picker label {
+  display: block;
+  margin-bottom: 6px;
+}
+.reference-picker input {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px;
+  font: inherit;
+}
+.reference-results {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+}
+.reference-results button {
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.reference-results small {
+  display: block;
+  font-weight: 400;
+}
+.linked-from {
+  padding: 12px 20px 24px;
+  border-top: 1px solid #d8dfd5;
+}
+.linked-from h2 {
+  font-size: 16px;
+}
+.linked-from p {
+  font-size: 14px;
+}
+.linked-from button {
+  display: block;
+  margin-top: 8px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }

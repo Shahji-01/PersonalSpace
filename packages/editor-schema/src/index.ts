@@ -6,9 +6,18 @@ export type Mark =
   | { type: 'bold' | 'italic' | 'code' }
   | {
       type: 'link';
-      attrs: { href: string; target?: string | null; rel?: string | null; class?: null };
+      attrs: {
+        href: string;
+        target?: string | null;
+        rel?: string | null;
+        class?: null;
+        title?: string | null;
+      };
     };
-export type InlineNode = { type: 'text'; text: string; marks?: Mark[] } | { type: 'hardBreak' };
+export type InlineNode =
+  | { type: 'text'; text: string; marks?: Mark[] }
+  | { type: 'hardBreak' }
+  | { type: 'noteReference'; attrs: { noteId: string }; marks?: Mark[] };
 export type BlockNode =
   | { type: 'paragraph'; content?: InlineNode[] }
   | { type: 'heading'; attrs: { level: 1 | 2 | 3 }; content?: InlineNode[] }
@@ -52,6 +61,7 @@ const mark: z.ZodType<Mark> = z.discriminatedUnion('type', [
       target: z.enum(['_blank', '_self']).nullable().optional(),
       rel: z.string().max(100).nullable().optional(),
       class: z.null().optional(),
+      title: z.string().max(500).nullable().optional(),
     }),
   }),
 ]);
@@ -59,6 +69,11 @@ const textNode = z.strictObject({ type: z.literal('text'), text: z.string().min(
 const inline: z.ZodType<InlineNode> = z.discriminatedUnion('type', [
   textNode.extend({ marks: z.array(mark).max(4).optional() }),
   z.strictObject({ type: z.literal('hardBreak') }),
+  z.strictObject({
+    type: z.literal('noteReference'),
+    attrs: z.strictObject({ noteId: z.uuid({ version: 'v7' }) }),
+    marks: z.array(mark).max(4).optional(),
+  }),
 ]);
 const paragraph = z.strictObject({
   type: z.literal('paragraph'),
@@ -162,6 +177,7 @@ export function plainTextDocument(text: string): NoteDocument {
 }
 
 export function documentText(node: DocumentNode): string {
+  if (node.type === 'noteReference') return '[[Note]]';
   if (node.type === 'text') return node.text;
   if (node.type === 'hardBreak') return '\n';
   const separator = ['paragraph', 'heading', 'codeBlock'].includes(node.type) ? '' : '\n';
@@ -185,6 +201,7 @@ export function hasFormatting(document: NoteDocument): boolean {
 }
 
 export function documentMarkdown(node: DocumentNode): string {
+  if (node.type === 'noteReference') return `[[note:${node.attrs.noteId}]]`;
   if (node.type === 'hardBreak') return '  \n';
   if (node.type === 'text') {
     let result = node.text.replace(/([\\`*_{}[\]<>#!|])/g, '\\$1');
@@ -230,4 +247,16 @@ export function documentMarkdown(node: DocumentNode): string {
       .join('\n');
   }
   return children.join('\n\n');
+}
+
+// References store only stable IDs. Display titles are resolved from the current
+// account's records, so renames never rewrite another note or its history.
+export function noteReferenceIds(node: DocumentNode): string[] {
+  const ids = new Set<string>();
+  function visit(current: DocumentNode) {
+    if (current.type === 'noteReference') ids.add(current.attrs.noteId);
+    else if ('content' in current) for (const child of current.content ?? []) visit(child);
+  }
+  visit(node);
+  return [...ids].sort();
 }

@@ -13,8 +13,17 @@ import {
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { ApiError, createClient } from '@personalspace/api-client';
-import { createSyncEngine } from '@personalspace/sync';
-import { captureSchema, type Capture, type RecordItem } from '@personalspace/validation';
+import { createSyncEngine, createSyncScheduler } from '@personalspace/sync';
+import {
+  captureSchema,
+  recordSchema,
+  deadlineLabel,
+  deadlineLocalDate,
+  currentTimeZone,
+  type Mutation,
+  type Capture,
+  type RecordItem,
+} from '@personalspace/validation';
 import { suggestCapture } from '@personalspace/nlp';
 import { AuthScreen } from './AuthScreen';
 import { apiUrl, clearSession, loadSession, type Session } from './auth';
@@ -22,7 +31,14 @@ import { newId, openStore, type LocalStore } from './store';
 import { Button, Card, Field, styles } from './components';
 import { colors } from '@personalspace/ui';
 import { NoteEditorScreen } from './NoteEditorScreen';
+import { TaskDetailsScreen } from './TaskDetailsScreen';
+import { SearchScreen } from './SearchScreen';
 import { NotePreview } from './NotePreview';
+import { NoteHistoryScreen } from './NoteHistoryScreen';
+import { FolderScreen, folderPath } from './FolderScreen';
+import { ProjectScreen } from './ProjectScreen';
+import { ProjectNotesScreen } from './ProjectNotesScreen';
+import { taskIsClosed, taskIsOverdue, taskMatches, taskViews, type TaskView } from './task-views';
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -57,16 +73,30 @@ export default function App() {
 function Space({ session, onSignOut }: { session: Session; onSignOut: () => void }) {
   const store = useRef<LocalStore | null>(null);
   const engine = useRef<ReturnType<typeof createSyncEngine> | null>(null);
+  const scheduler = useRef<ReturnType<typeof createSyncScheduler> | null>(null);
   const mounted = useRef(true);
   const [records, setRecords] = useState<RecordItem[]>([]);
   const [pendingIds, setPendingIds] = useState<string[]>([]);
+  const [pendingCount, setPendingCount] = useState(0);
   const [problems, setProblems] = useState<Awaited<ReturnType<LocalStore['problems']>>>([]);
   const [tab, setTab] = useState<'today' | 'library'>('today');
   const [library, setLibrary] = useState<'inbox' | 'note' | 'trash' | 'archived'>('inbox');
-  const [allTasks, setAllTasks] = useState(false);
+  const [taskView, setTaskView] = useState<TaskView>('today');
   const [captureOpen, setCaptureOpen] = useState(false);
   const [editing, setEditing] = useState<RecordItem | null>(null);
   const [editingNote, setEditingNote] = useState<RecordItem | null>(null);
+  const [noteCloseRequest, setNoteCloseRequest] = useState(0);
+  const [taskDetails, setTaskDetails] = useState<RecordItem | null>(null);
+  const [openingDaily, setOpeningDaily] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [historyNote, setHistoryNote] = useState<RecordItem | null>(null);
+  const [folderScreen, setFolderScreen] = useState(false);
+  const [filingNote, setFilingNote] = useState<RecordItem | null>(null);
+  const [folderFilter, setFolderFilter] = useState<string | null>(null);
+  const [projectScreen, setProjectScreen] = useState(false);
+  const [projectNotes, setProjectNotes] = useState<RecordItem | null>(null);
+  const [assigningTask, setAssigningTask] = useState<RecordItem | null>(null);
+  const [projectFilter, setProjectFilter] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
   const [subtaskParent, setSubtaskParent] = useState<string | null>(null);
   const [subtaskText, setSubtaskText] = useState('');
@@ -75,6 +105,9 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [text, setText] = useState('');
   const [type, setType] = useState<Capture['type']>('inbox');
+  const [captureDate, setCaptureDate] = useState<string | null>(null);
+  const [captureDeadline, setCaptureDeadline] = useState('');
+  const [captureDeadlineOpen, setCaptureDeadlineOpen] = useState(false);
   const [status, setStatus] = useState('Opening local storage…');
   const [syncing, setSyncing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -89,33 +122,34 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
     if (!mounted.current) return;
     setRecords(items);
     setProblems(errors);
+    setPendingCount(pending.length);
     setPendingIds(
-      pending.map((m) => (m.command.op === 'capture' ? m.command.payload.id : m.command.id)),
+      pending
+        .filter((m) => m.command.op !== 'note.checkpoint')
+        .map((m) => (m.command.op === 'capture' ? m.command.payload.id : m.command.id)),
     );
   }
-  async function sync() {
-    if (!engine.current) return;
-    setSyncing(true);
-    try {
-      await engine.current.sync();
-      if (mounted.current) setStatus('Up to date');
-    } catch (error) {
-      if (mounted.current)
-        setStatus(
-          error instanceof ApiError && error.status === 401
-            ? 'Session expired. Sign in again to sync.'
-            : 'Offline or unable to sync. Saved items stay on this device.',
-        );
-    } finally {
-      if (mounted.current) {
-        setSyncing(false);
-        await refreshLocal();
-      }
-    }
+  async function sync(manual = false) {
+    await scheduler.current?.request(manual);
   }
   useEffect(() => {
     mounted.current = true;
-    void openStore(session.user.id)
+    void openStore(
+      session.user.id,
+      (record) =>
+        new Promise((resolve) =>
+          Alert.alert(
+            'Change repeating task',
+            `How should this change apply to “${record.text}”?`,
+            [
+              { text: 'This occurrence', onPress: () => resolve('occurrence') },
+              { text: 'This and future', onPress: () => resolve('future') },
+              { text: 'Cancel', style: 'cancel', onPress: () => resolve(null) },
+            ],
+            { cancelable: true, onDismiss: () => resolve(null) },
+          ),
+        ),
+    )
       .then(async (local) => {
         if (!mounted.current) {
           await local.close();
@@ -123,29 +157,54 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
         }
         store.current = local;
         engine.current = createSyncEngine(local, client);
+        const localEngine = engine.current;
+        scheduler.current = createSyncScheduler({
+          sync: async () => {
+            try {
+              await localEngine.sync();
+            } finally {
+              await refreshLocal();
+            }
+          },
+          retry: (error) => ({
+            pause: error instanceof ApiError && (error.status === 401 || error.status === 403),
+            afterMs: error instanceof ApiError ? error.retryAfterMs : undefined,
+          }),
+          onState: (state) => {
+            if (!mounted.current) return;
+            setSyncing(state.status === 'syncing');
+            if (state.status === 'synced') setStatus('Up to date');
+            else if (state.status === 'paused')
+              setStatus(
+                'Sync paused. Sign in again or pull to retry. Saved items stay on this device.',
+              );
+            else if (state.status === 'retrying')
+              setStatus(
+                `Unable to sync. Retrying at ${new Date(state.retryAt).toLocaleTimeString()}. Items are saved on this device.`,
+              );
+          },
+        });
+        scheduler.current.setActive(AppState.currentState === 'active');
         await refreshLocal();
         await sync();
       })
       .catch(() => setStatus('Could not open local storage. Restart the app to try again.'));
     const listener = AppState.addEventListener('change', (state) => {
-      if (state === 'active') void sync();
+      scheduler.current?.setActive(state === 'active');
     });
-    const timer = setInterval(() => {
-      if (AppState.currentState === 'active') void sync();
-    }, 30000);
     return () => {
       mounted.current = false;
       listener.remove();
-      clearInterval(
-        timer,
-      ); /* Keep DB handle alive for in-flight writes; account queries are scoped. */
+      scheduler.current?.dispose();
+      /* Keep DB handle alive for in-flight writes; account queries are scoped. */
     };
   }, [client, session.user.id]);
   // A tag filter only makes sense in the notes and tasks views; clear it when navigating away.
   useEffect(() => {
     setTagFilter(null);
-  }, [tab, library, allTasks]);
+  }, [tab, library, taskView]);
   const today = localDate();
+  const suggestion = suggestCapture(text, today);
   const tomorrow = localDate(1);
   const priorityLabels = ['None', 'Low', 'Medium', 'High', 'Urgent'];
   const inboxCount = records.filter(
@@ -167,23 +226,29 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
     ),
   ].sort();
   const tagsVisible = allTags.length > 0 && (tab === 'today' || library === 'note');
+  const folders = records.filter((r) => r.type === 'folder' && !r.deletedAt);
+  const projects = records
+    .filter((r) => r.type === 'project' && !r.deletedAt)
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id));
   // §10.2: a task is "today" if planned today, due today, or overdue and not done.
-  const closed = (r: RecordItem) => r.status === 'done' || r.status === 'cancelled';
-  const inToday = (r: RecordItem) =>
-    r.plannedDate === today ||
-    r.dueDate === today ||
-    (!!r.dueDate && r.dueDate < today && !closed(r));
+  const closed = taskIsClosed;
   const visible = records.filter(
     (r) =>
       (!tagFilter || r.tags.includes(tagFilter)) &&
       (tab === 'today'
-        ? !r.deletedAt && r.type === 'task' && !r.parentId && (allTasks || inToday(r))
+        ? taskMatches(r, taskView, today) &&
+          (projectFilter === null ||
+            (projectFilter === 'unassigned' ? !r.projectId : r.projectId === projectFilter))
         : library === 'trash'
           ? inTrash(r)
           : library === 'archived'
             ? r.type === 'note' && !r.deletedAt && !!r.archivedAt
             : library === 'note'
-              ? r.type === 'note' && !r.deletedAt && !r.archivedAt
+              ? r.type === 'note' &&
+                !r.deletedAt &&
+                !r.archivedAt &&
+                (folderFilter === null ||
+                  (folderFilter === 'unfiled' ? !r.folderId : r.folderId === folderFilter))
               : !r.deletedAt && r.type === library && r.status !== 'converted'),
   );
   // Pinned notes rise to the top of the Notes list, then favorites.
@@ -198,12 +263,12 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
     visible.sort(
       (a, b) =>
         b.priority - a.priority ||
-        (a.dueDate ?? '9999').localeCompare(b.dueDate ?? '9999') ||
+        (deadlineLocalDate(a) ?? '9999').localeCompare(deadlineLocalDate(b) ?? '9999') ||
         a.id.localeCompare(b.id),
     );
   const subtasksOf = (parentId: string) =>
     records
-      .filter((r) => r.type === 'task' && r.parentId === parentId && !r.deletedAt)
+      .filter((r) => r.type === 'task' && r.parentId === parentId && !r.deletedAt && !r.archivedAt)
       .sort((a, b) => a.id.localeCompare(b.id));
   async function save() {
     if (!store.current || saving) return;
@@ -211,7 +276,8 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
       id: newId(),
       type,
       text,
-      plannedDate: type === 'task' ? today : null,
+      plannedDate: type === 'task' ? (captureDate ?? today) || null : null,
+      ...(type === 'task' && captureDeadline ? { dueDate: captureDeadline } : {}),
     });
     if (!result.success) {
       Alert.alert('Check your capture', result.error.issues[0]?.message);
@@ -225,9 +291,26 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
         {
           ...result.data,
           status: type === 'inbox' ? 'new' : type === 'task' ? 'todo' : 'active',
-          dueDate: null,
+          dueDate: result.data.dueDate ?? null,
+          dueTime: null,
+          timeMode: 'floating',
+          timezone: null,
+          dueAt: null,
           priority: 0,
           parentId: null,
+          folderId: null,
+          projectId: null,
+          relatedNoteIds: [],
+          recurrence: null,
+          color: null,
+          sortOrder: 0,
+          completedAt: null,
+          kind: 'note',
+          dailyDate: null,
+          recoveredFromId: null,
+          descriptionJson: null,
+          descriptionSchemaVersion: 1,
+          estimatedMinutes: null,
           pinned: false,
           favorite: false,
           archivedAt: null,
@@ -240,6 +323,9 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
       );
       setCaptureOpen(false);
       setText('');
+      setCaptureDate(null);
+      setCaptureDeadline('');
+      setCaptureDeadlineOpen(false);
       setStatus('Saved on this device. Sync pending.');
       await refreshLocal();
       void sync();
@@ -275,9 +361,16 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
               op: record.status === 'done' ? 'task.reopen' : 'task.complete',
               id: record.id,
               baseVersion: record.version,
+              ...(record.status !== 'done'
+                ? { currentTimezone: currentTimeZone(), occurredAt: new Date().toISOString() }
+                : {}),
             },
           },
-          { ...record, status: record.status === 'done' ? 'todo' : 'done' },
+          {
+            ...record,
+            status: record.status === 'done' ? 'todo' : 'done',
+            completedAt: record.status === 'done' ? null : new Date().toISOString(),
+          },
           record,
         );
       await refreshLocal();
@@ -316,12 +409,14 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
           mutationId: newId(),
           command: {
             op: 'task.setStatus',
+            currentTimezone: currentTimeZone(),
+            occurredAt: new Date().toISOString(),
             id: record.id,
             status: status as 'todo' | 'in_progress' | 'done' | 'cancelled',
             baseVersion: record.version,
           },
         },
-        { ...record, status },
+        { ...record, status, completedAt: status === 'done' ? new Date().toISOString() : null },
         record,
       );
       await refreshLocal();
@@ -355,7 +450,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
           mutationId: newId(),
           command: { op: 'task.setDueDate', id: record.id, dueDate, baseVersion: record.version },
         },
-        { ...record, dueDate },
+        { ...record, dueDate, dueTime: null, timeMode: 'floating', timezone: null, dueAt: null },
         record,
       );
       await refreshLocal();
@@ -383,8 +478,25 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
           status: 'todo',
           plannedDate: null,
           dueDate: null,
+          dueTime: null,
+          timeMode: 'floating',
+          timezone: null,
+          dueAt: null,
           priority: 0,
           parentId: parent.id,
+          folderId: null,
+          projectId: parent.projectId,
+          relatedNoteIds: [],
+          recurrence: null,
+          color: null,
+          sortOrder: 0,
+          completedAt: null,
+          kind: 'note',
+          dailyDate: null,
+          recoveredFromId: null,
+          descriptionJson: null,
+          descriptionSchemaVersion: 1,
+          estimatedMinutes: null,
           pinned: false,
           favorite: false,
           archivedAt: null,
@@ -521,7 +633,12 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
       await store.current.enqueue(
         {
           mutationId: newId(),
-          command: { op: 'note.setArchived', id: record.id, archived, baseVersion: record.version },
+          command: {
+            op: record.type === 'task' ? 'task.setArchived' : 'note.setArchived',
+            id: record.id,
+            archived,
+            baseVersion: record.version,
+          },
         },
         { ...record, archivedAt: archived ? new Date().toISOString() : null },
         record,
@@ -530,6 +647,64 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
       void sync();
     } catch {
       Alert.alert('Change not saved', 'Please try again.');
+    }
+  }
+  async function openDailyNote() {
+    if (!store.current || openingDaily) return;
+    setOpeningDaily(true);
+    try {
+      const date = localDate();
+      const findDaily = (items: RecordItem[]) =>
+        items.find(
+          (r) => r.type === 'note' && r.kind === 'daily' && r.dailyDate === date && !r.deletedAt,
+        );
+      let daily = findDaily(await store.current.list());
+      if (!daily) {
+        const now = new Date().toISOString();
+        const id = newId();
+        await store.current.enqueue(
+          { mutationId: newId(), command: { op: 'note.openDaily', id, date } },
+          recordSchema.parse({
+            id,
+            type: 'note',
+            kind: 'daily',
+            dailyDate: date,
+            text: date,
+            status: 'active',
+            plannedDate: null,
+            version: 0,
+            createdAt: now,
+            updatedAt: now,
+            deletedAt: null,
+          }),
+        );
+      }
+      await refreshLocal();
+      if (!daily || daily.version === 0) {
+        await sync();
+        daily = findDaily(await store.current.list());
+      }
+      const pending = await store.current.pending();
+      if (
+        daily &&
+        daily.version > 0 &&
+        !pending.some(
+          (m) =>
+            m.command.op !== 'capture' &&
+            m.command.op !== 'note.checkpoint' &&
+            m.command.id === daily.id,
+        )
+      )
+        setEditingNote(daily);
+      else
+        Alert.alert(
+          'Daily note saved locally',
+          'It will open for editing after syncing. Tap Daily note again once you are connected.',
+        );
+    } catch {
+      Alert.alert('Could not open the daily note', 'Please try again.');
+    } finally {
+      setOpeningDaily(false);
     }
   }
   async function trashRecord(record: RecordItem) {
@@ -608,10 +783,16 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
     <>
       <ScrollView
         contentContainerStyle={styles.page}
-        refreshControl={<RefreshControl refreshing={syncing} onRefresh={() => void sync()} />}
+        refreshControl={<RefreshControl refreshing={syncing} onRefresh={() => void sync(true)} />}
       >
         <View style={[styles.row, { justifyContent: 'space-between' }]}>
           <Text style={styles.eyebrow}>PERSONALSPACE</Text>
+          <Button
+            secondary
+            label="Search"
+            disabled={!store.current}
+            onPress={() => setSearchOpen(true)}
+          />
           <Button
             secondary
             label="Sign out"
@@ -645,12 +826,27 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
             : 'Capture first. Organize when you are ready.'}
         </Text>
         <Text accessibilityLiveRegion="polite" style={styles.subtitle}>
-          {pendingIds.length ? `${pendingIds.length} waiting to sync · ` : ''}
+          {pendingCount ? `${pendingCount} waiting to sync · ` : ''}
           {status}
         </Text>
         {problems.map((problem) => (
           <Card key={problem.id}>
             <Text style={styles.error}>A change could not sync: {problem.error}</Text>
+            {(() => {
+              const command = (JSON.parse(problem.mutation) as Mutation).command;
+              if (command.op !== 'note.updateContent' && command.op !== 'note.checkpoint')
+                return null;
+              const note = records.find(
+                (r) => r.id === command.id && !r.deletedAt && r.type === 'note',
+              );
+              return note ? (
+                <Button
+                  label="Review draft"
+                  disabled={pendingIds.includes(note.id)}
+                  onPress={() => setEditingNote(note)}
+                />
+              ) : null;
+            })()}
             <Button
               secondary
               label="Dismiss failed change"
@@ -673,10 +869,26 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
             />
           </Card>
         ))}
+        {tab === 'today' && (
+          <Button
+            secondary
+            label={openingDaily ? 'Opening daily note…' : 'Daily note'}
+            disabled={openingDaily || !store.current}
+            onPress={() => void openDailyNote()}
+          />
+        )}
         {tab === 'today' ? (
           <View style={styles.row}>
-            <Button secondary={allTasks} label="Today" onPress={() => setAllTasks(false)} />
-            <Button secondary={!allTasks} label="All tasks" onPress={() => setAllTasks(true)} />
+            <ScrollView horizontal contentContainerStyle={styles.row}>
+              {taskViews.map((view) => (
+                <Button
+                  key={view.value}
+                  secondary={taskView !== view.value}
+                  label={view.label}
+                  onPress={() => setTaskView(view.value)}
+                />
+              ))}
+            </ScrollView>
             <Button
               secondary
               label={`Inbox · ${inboxCount}`}
@@ -710,6 +922,42 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
             />
           </View>
         )}
+        {tab === 'today' && (
+          <View style={{ gap: 12 }}>
+            <Button
+              secondary
+              label="Manage projects"
+              onPress={() => {
+                setAssigningTask(null);
+                setProjectScreen(true);
+              }}
+            />
+            {!!projects.length && (
+              <ScrollView horizontal contentContainerStyle={styles.row}>
+                <Button
+                  secondary={projectFilter !== null}
+                  label="All projects"
+                  onPress={() => setProjectFilter(null)}
+                />
+                <Button
+                  secondary={projectFilter !== 'unassigned'}
+                  label="No project"
+                  onPress={() => setProjectFilter('unassigned')}
+                />
+                {projects
+                  .filter((p) => p.status === 'active' || p.id === projectFilter)
+                  .map((p) => (
+                    <Button
+                      key={p.id}
+                      secondary={projectFilter !== p.id}
+                      label={p.text}
+                      onPress={() => setProjectFilter(p.id)}
+                    />
+                  ))}
+              </ScrollView>
+            )}
+          </View>
+        )}
         {tagsVisible && (
           <View style={styles.row}>
             <Text style={styles.label}>Tags</Text>
@@ -721,6 +969,38 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                 onPress={() => setTagFilter(tagFilter === tag ? null : tag)}
               />
             ))}
+          </View>
+        )}
+        {tab === 'library' && library === 'note' && (
+          <View style={{ gap: 12 }}>
+            <Button
+              secondary
+              label="Manage folders"
+              onPress={() => {
+                setFilingNote(null);
+                setFolderScreen(true);
+              }}
+            />
+            <ScrollView horizontal contentContainerStyle={styles.row}>
+              <Button
+                secondary={folderFilter !== null}
+                label="All notes"
+                onPress={() => setFolderFilter(null)}
+              />
+              <Button
+                secondary={folderFilter !== 'unfiled'}
+                label="Unfiled"
+                onPress={() => setFolderFilter('unfiled')}
+              />
+              {folders.map((folder) => (
+                <Button
+                  key={folder.id}
+                  secondary={folderFilter !== folder.id}
+                  label={folderPath(folder, folders)}
+                  onPress={() => setFolderFilter(folder.id)}
+                />
+              ))}
+            </ScrollView>
           </View>
         )}
         {!visible.length && (
@@ -753,7 +1033,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
         {visible.map((record) => (
           <Card key={record.id}>
             {record.type === 'note' && record.contentJson ? (
-              <NotePreview document={record.contentJson} />
+              <NotePreview document={record.contentJson} records={records} />
             ) : (
               <Text
                 style={[
@@ -778,7 +1058,9 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                         : record.status === 'in_progress'
                           ? 'In progress'
                           : (record.plannedDate ?? 'No planned date')
-                    : 'Saved'}
+                    : record.recoveredFromId
+                      ? 'Recovered draft copy'
+                      : 'Saved'}
             </Text>
             {(record.type === 'note' || record.type === 'task') &&
               !record.deletedAt &&
@@ -793,23 +1075,49 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                 <Text
                   style={[
                     styles.subtitle,
-                    record.dueDate && record.dueDate < today && record.status !== 'done'
-                      ? { color: colors.danger }
-                      : {},
+                    taskIsOverdue(record, today) ? { color: colors.danger } : {},
                   ]}
                 >
                   {[
                     record.priority > 0 ? `${priorityLabels[record.priority]} priority` : null,
                     record.dueDate
-                      ? record.dueDate < today && record.status !== 'done'
-                        ? `Overdue — due ${record.dueDate}`
-                        : `Due ${record.dueDate}`
+                      ? taskIsOverdue(record, today)
+                        ? `Overdue — due ${deadlineLabel(record)}`
+                        : `Due ${deadlineLabel(record)}`
                       : null,
                   ]
                     .filter(Boolean)
                     .join(' · ')}
                 </Text>
               )}
+            {record.type === 'task' && !record.deletedAt && (
+              <View style={styles.row}>
+                <Button
+                  secondary
+                  label="Details"
+                  disabled={pendingIds.includes(record.id) || record.version === 0}
+                  onPress={() => setTaskDetails(record)}
+                />
+                <Button
+                  secondary
+                  label={record.archivedAt ? 'Unarchive' : 'Archive'}
+                  disabled={pendingIds.includes(record.id) || record.version === 0}
+                  onPress={() => void setArchived(record, !record.archivedAt)}
+                />
+                {!!record.estimatedMinutes && (
+                  <Text style={styles.subtitle}>{record.estimatedMinutes} min estimated</Text>
+                )}
+                <Button
+                  secondary
+                  label={projects.find((p) => p.id === record.projectId)?.text ?? 'Add to project'}
+                  disabled={pendingIds.includes(record.id) || record.version === 0}
+                  onPress={() => {
+                    setAssigningTask(record);
+                    setProjectScreen(true);
+                  }}
+                />
+              </View>
+            )}
             {record.type === 'note' && !record.deletedAt && !record.archivedAt && (
               <>
                 <View style={styles.row}>
@@ -875,6 +1183,25 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                 />
               </View>
             )}
+            {record.type === 'note' && !record.deletedAt && (
+              <View style={styles.row}>
+                <Button
+                  secondary
+                  label="Folder"
+                  disabled={pendingIds.includes(record.id) || record.version === 0}
+                  onPress={() => {
+                    setFilingNote(record);
+                    setFolderScreen(true);
+                  }}
+                />
+                <Button
+                  secondary
+                  label="Version history"
+                  disabled={pendingIds.includes(record.id) || record.version === 0}
+                  onPress={() => setHistoryNote(record)}
+                />
+              </View>
+            )}
             {record.deletedAt && (
               <View style={styles.row}>
                 <Button
@@ -916,6 +1243,16 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                 const doneCount = subs.filter((s) => s.status === 'done').length;
                 return (
                   <>
+                    {record.recurrence && (
+                      <Text style={styles.subtitle}>
+                        Repeats · occurrence {record.recurrence.occurrenceNumber}
+                        {pendingIds.includes(record.id) &&
+                        ['done', 'cancelled'].includes(record.status) &&
+                        !record.recurrence.advanced
+                          ? ' · Next occurrence appears after sync'
+                          : ''}
+                      </Text>
+                    )}
                     <View style={styles.row}>
                       <Text style={styles.label}>Status</Text>
                       {(['todo', 'in_progress', 'done', 'cancelled'] as const).map((s) => (
@@ -930,7 +1267,9 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                                 ? 'In progress'
                                 : s === 'done'
                                   ? 'Done'
-                                  : 'Cancelled'
+                                  : record.recurrence
+                                    ? 'Skip occurrence'
+                                    : 'Cancelled'
                           }
                           onPress={() => void setTaskStatus(record, s)}
                         />
@@ -986,14 +1325,20 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                     <View style={styles.row}>
                       <Text style={styles.label}>Deadline</Text>
                       <Button
-                        secondary={record.dueDate !== today}
+                        secondary
+                        label="Edit deadline"
                         disabled={busy}
+                        onPress={() => setTaskDetails(record)}
+                      />
+                      <Button
+                        secondary={record.dueDate !== today}
+                        disabled={busy || !!record.dueTime}
                         label="Today"
                         onPress={() => void setDueDate(record, today)}
                       />
                       <Button
                         secondary={record.dueDate !== tomorrow}
-                        disabled={busy}
+                        disabled={busy || !!record.dueTime}
                         label="Tomorrow"
                         onPress={() => void setDueDate(record, tomorrow)}
                       />
@@ -1145,19 +1490,81 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                 onChangeText={setText}
                 maxLength={20000}
               />
-              <Text style={styles.subtitle}>{suggestCapture(text).reason}</Text>
+              <Text style={styles.subtitle}>{suggestion.reason}</Text>
+              {suggestion.type === 'task' && (
+                <Button
+                  secondary
+                  label="Use task suggestion"
+                  disabled={saving}
+                  onPress={() => {
+                    setType('task');
+                    setCaptureDate(
+                      suggestion.dates?.plannedDate ?? (suggestion.dates?.dueDate ? '' : today),
+                    );
+                    setCaptureDeadline(suggestion.dates?.dueDate ?? '');
+                    setCaptureDeadlineOpen(!!suggestion.dates?.dueDate);
+                  }}
+                />
+              )}
               <View style={styles.row}>
                 {(['inbox', 'note', 'task'] as const).map((option) => (
                   <Button
                     key={option}
-                    label={
-                      option === 'inbox' ? 'Inbox' : option === 'note' ? 'Note' : 'Task for today'
-                    }
+                    label={option === 'inbox' ? 'Inbox' : option === 'note' ? 'Note' : 'Task'}
                     secondary={type !== option}
                     onPress={() => setType(option)}
                   />
                 ))}
               </View>
+              {type === 'task' && (
+                <>
+                  <Field
+                    label="Date"
+                    value={captureDate ?? today}
+                    onChangeText={setCaptureDate}
+                    placeholder="YYYY-MM-DD (optional)"
+                    maxLength={10}
+                    editable={!saving}
+                  />
+                  <View style={styles.row}>
+                    <Button
+                      secondary
+                      label="Today"
+                      onPress={() => setCaptureDate(today)}
+                      disabled={saving}
+                    />
+                    <Button
+                      secondary
+                      label="No date"
+                      onPress={() => setCaptureDate('')}
+                      disabled={saving}
+                    />
+                    <Button
+                      secondary
+                      label={captureDeadlineOpen ? 'Remove deadline' : 'Add deadline'}
+                      disabled={saving}
+                      onPress={() => {
+                        setCaptureDeadlineOpen(!captureDeadlineOpen);
+                        setCaptureDeadline('');
+                      }}
+                    />
+                  </View>
+                  {captureDeadlineOpen && (
+                    <Field
+                      label="Deadline"
+                      value={captureDeadline}
+                      onChangeText={setCaptureDeadline}
+                      placeholder="YYYY-MM-DD"
+                      maxLength={10}
+                      editable={!saving}
+                    />
+                  )}
+                  <Text style={styles.subtitle}>
+                    Date is when you plan to do it. Deadline is when it must be finished. Your
+                    original text is kept.
+                  </Text>
+                </>
+              )}
               <Button
                 label={saving ? 'Saving…' : 'Save'}
                 disabled={!text.trim() || saving}
@@ -1174,19 +1581,173 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
         </SafeAreaView>
       </Modal>
       <Modal
+        visible={taskDetails !== null}
+        animationType="slide"
+        onRequestClose={() => setTaskDetails(null)}
+      >
+        {taskDetails && store.current && (
+          <TaskDetailsScreen
+            key={taskDetails.id}
+            task={taskDetails}
+            store={store.current}
+            onClose={() => setTaskDetails(null)}
+            onEditDescription={() => {
+              setEditingNote(taskDetails);
+              setTaskDetails(null);
+            }}
+            onSaved={async () => {
+              setTaskDetails(null);
+              await refreshLocal();
+              void sync();
+            }}
+          />
+        )}
+      </Modal>
+      <Modal visible={searchOpen} animationType="slide" onRequestClose={() => setSearchOpen(false)}>
+        {store.current && (
+          <SearchScreen
+            store={store.current}
+            client={client}
+            records={records}
+            onClose={() => {
+              setSearchOpen(false);
+              void refreshLocal();
+            }}
+            onOpen={async (record) => {
+              await refreshLocal();
+              setSearchOpen(false);
+              if (record.type === 'note') setEditingNote(record);
+              else if (record.type === 'task') setTaskDetails(record);
+              else if (record.type === 'project') {
+                setProjectFilter(record.id);
+                setTaskView('all');
+                setTab('today');
+              } else {
+                setLibrary('inbox');
+                setTab('library');
+              }
+            }}
+          />
+        )}
+      </Modal>
+      <Modal
         visible={editingNote !== null}
         animationType="slide"
-        onRequestClose={() => setEditingNote(null)}
+        onRequestClose={() => setNoteCloseRequest((value) => value + 1)}
       >
         {editingNote && store.current && (
           <NoteEditorScreen
             key={editingNote.id}
             note={editingNote}
+            closeRequest={noteCloseRequest}
             store={store.current}
+            records={records}
+            pendingIds={pendingIds}
+            onOpenNote={setEditingNote}
+            onCheckpointQueued={async () => {
+              await refreshLocal();
+              void sync();
+            }}
             onClose={() => setEditingNote(null)}
             onSaved={async () => {
               setEditingNote(null);
               setStatus('Saved on this device. Sync pending.');
+              await refreshLocal();
+              void sync();
+            }}
+          />
+        )}
+      </Modal>
+      <Modal
+        visible={projectScreen}
+        animationType="slide"
+        onRequestClose={() => setProjectScreen(false)}
+      >
+        {projectScreen && store.current && (
+          <ProjectScreen
+            records={records}
+            pendingIds={pendingIds}
+            store={store.current}
+            task={assigningTask}
+            onClose={() => setProjectScreen(false)}
+            onChanged={async () => {
+              await refreshLocal();
+              void sync();
+            }}
+            onViewTasks={(id) => {
+              setProjectFilter(id);
+              setTaskView('all');
+              setTab('today');
+              setProjectScreen(false);
+            }}
+            onViewNotes={(project) => {
+              setProjectScreen(false);
+              setProjectNotes(project);
+            }}
+          />
+        )}
+      </Modal>
+      <Modal
+        visible={projectNotes !== null}
+        animationType="slide"
+        onRequestClose={() => setProjectNotes(null)}
+      >
+        {projectNotes && store.current && (
+          <ProjectNotesScreen
+            key={projectNotes.id}
+            project={projectNotes}
+            records={records}
+            pendingIds={pendingIds}
+            store={store.current}
+            onClose={() => setProjectNotes(null)}
+            onSaved={async () => {
+              setProjectNotes(null);
+              setStatus('Project notes saved on this device. Sync pending.');
+              await refreshLocal();
+              void sync();
+            }}
+            onOpenNote={(note) => {
+              setProjectNotes(null);
+              setEditingNote(note);
+            }}
+          />
+        )}
+      </Modal>
+      <Modal
+        visible={historyNote !== null}
+        animationType="slide"
+        onRequestClose={() => setHistoryNote(null)}
+      >
+        {historyNote && store.current && (
+          <NoteHistoryScreen
+            key={historyNote.id}
+            note={historyNote}
+            records={records}
+            store={store.current}
+            client={client}
+            onClose={() => setHistoryNote(null)}
+            onRestored={async () => {
+              setHistoryNote(null);
+              setStatus('Version restored on this device. Sync pending.');
+              await refreshLocal();
+              void sync();
+            }}
+          />
+        )}
+      </Modal>
+      <Modal
+        visible={folderScreen}
+        animationType="slide"
+        onRequestClose={() => setFolderScreen(false)}
+      >
+        {folderScreen && store.current && (
+          <FolderScreen
+            records={records}
+            pendingIds={pendingIds}
+            note={filingNote}
+            store={store.current}
+            onClose={() => setFolderScreen(false)}
+            onChanged={async () => {
               await refreshLocal();
               void sync();
             }}

@@ -1,11 +1,14 @@
 import { createHash } from 'node:crypto';
 import { v7 as uuidv7 } from 'uuid';
-import { and, eq, inArray, isNotNull, isNull, or } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import {
   entities,
   syncState,
   tasks,
   notes,
+  noteVersions,
+  noteFolders,
+  projects,
   inboxItems,
   entityLinks,
   idempotencyKeys,
@@ -17,6 +20,8 @@ import {
 } from '@personalspace/db';
 import {
   commandSchema,
+  fixedDeadlineInstant,
+  DeadlineTimeError,
   recordSchema,
   type Capture,
   type Command,
@@ -34,6 +39,17 @@ import {
   trashedTaskFor,
 } from './capture.repository';
 import { DomainError } from './errors';
+import {
+  setRecurrence,
+  updateFutureRecurrence,
+  advanceRecurrence,
+  purgeUnusedRecurrence,
+} from './task-recurrence';
+import { snapshotNote, checkpointNote } from './note-history';
+import { indexSearchRecords } from './search';
+import { applyFolderCommand, requireFolder } from './folders';
+import { applyProjectCommand, requireProject } from './projects';
+import { replaceNoteReferences, validateNoteReferences } from './note-references';
 import {
   documentText,
   hasFormatting,
@@ -63,8 +79,81 @@ async function insertCapture(tx: Transaction, userId: string, version: number, i
   if (!inserted.length) throw new DomainError('ID_UNAVAILABLE', 'This item ID is unavailable.');
   if (input.type === 'inbox') await tx.insert(inboxItems).values({ ...std, rawText: input.text });
   if (input.type === 'task')
-    await tx.insert(tasks).values({ ...std, title: input.text, plannedDate: input.plannedDate });
+    await tx.insert(tasks).values({
+      ...std,
+      title: input.text,
+      plannedDate: input.plannedDate,
+      dueDate: input.dueDate ?? null,
+    });
   if (input.type === 'note') await tx.insert(notes).values({ ...std, ...noteContent(input.text) });
+}
+
+async function purgeRecords(tx: Transaction, userId: string, ids: string[], version: number) {
+  const removedTasks = await tx
+    .select({ ruleId: tasks.recurrenceRuleId })
+    .from(tasks)
+    .where(and(eq(tasks.userId, userId), inArray(tasks.id, ids)));
+  const relatedProjects = await tx
+    .selectDistinct({ id: projects.id })
+    .from(entityLinks)
+    .innerJoin(projects, and(eq(projects.id, entityLinks.sourceId), eq(projects.userId, userId)))
+    .where(
+      and(
+        eq(entityLinks.userId, userId),
+        inArray(entityLinks.targetId, ids),
+        eq(entityLinks.relation, 'related'),
+      ),
+    );
+  await tx
+    .update(inboxItems)
+    .set({ convertedEntityId: null })
+    .where(and(eq(inboxItems.userId, userId), inArray(inboxItems.convertedEntityId, ids)));
+  await tx
+    .delete(entityLinks)
+    .where(
+      and(
+        eq(entityLinks.userId, userId),
+        or(inArray(entityLinks.sourceId, ids), inArray(entityLinks.targetId, ids)),
+      ),
+    );
+  await tx.delete(notes).where(and(eq(notes.userId, userId), inArray(notes.id, ids)));
+  await tx.delete(tasks).where(and(eq(tasks.userId, userId), inArray(tasks.id, ids)));
+  await purgeUnusedRecurrence(
+    tx,
+    userId,
+    removedTasks.flatMap((task) => (task.ruleId ? [task.ruleId] : [])),
+  );
+  await tx
+    .delete(inboxItems)
+    .where(and(eq(inboxItems.userId, userId), inArray(inboxItems.id, ids)));
+  await tx
+    .delete(noteFolders)
+    .where(and(eq(noteFolders.userId, userId), inArray(noteFolders.id, ids)));
+  const now = new Date();
+  await tx
+    .update(entities)
+    .set({ purgedAt: now, deletedAt: now, updatedAt: now, tags: [], version })
+    .where(and(eq(entities.userId, userId), inArray(entities.id, ids)));
+  const removedIds = sql.join(
+    ids.map((id) => sql`${id}`),
+    sql`, `,
+  );
+  await tx.execute(sql`
+    UPDATE idempotency_keys k SET response = (
+      SELECT coalesce(jsonb_agg(entry ORDER BY ordinal), '[]'::jsonb)
+      FROM jsonb_array_elements(k.response) WITH ORDINALITY AS r(entry,ordinal)
+      WHERE entry->>'id' NOT IN (${removedIds})
+    ) WHERE k.user_id = ${userId} AND EXISTS (
+      SELECT 1 FROM jsonb_array_elements(k.response) entry WHERE entry->>'id' IN (${removedIds})
+    )
+  `);
+  const affected = relatedProjects.map((row) => row.id);
+  if (affected.length)
+    await tx
+      .update(projects)
+      .set({ version, updatedAt: now })
+      .where(and(eq(projects.userId, userId), inArray(projects.id, affected)));
+  return affected;
 }
 
 export function createCaptureService(db: Database) {
@@ -104,6 +193,148 @@ export function createCaptureService(db: Database) {
       if (command.op === 'capture') {
         await insertCapture(tx, userId, version, command.payload);
         ids = [command.payload.id];
+      } else if (command.op === 'note.copyDraft') {
+        const source = await noteFor(tx, userId, command.sourceId);
+        if (!source)
+          throw new DomainError(
+            'NOTE_NOT_FOUND',
+            'The original note is unavailable. Restore it from Trash before recovering this draft.',
+            404,
+          );
+        if (command.sourceBaseVersion > source.version)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'Refresh the original note before copying this draft.',
+          );
+        const inserted = await tx
+          .insert(entities)
+          .values({ id: command.id, userId, type: 'note', version })
+          .onConflictDoNothing()
+          .returning({ id: entities.id });
+        if (!inserted.length)
+          throw new DomainError('ID_UNAVAILABLE', 'This item ID is unavailable.');
+        const text = documentText(command.contentJson);
+        await tx.insert(notes).values({
+          id: command.id,
+          userId,
+          version,
+          title: `${text.split('\n')[0]!.slice(0, 100)} (recovered draft)`,
+          contentText: text,
+          contentJson: command.contentJson,
+          contentSchemaVersion: 1,
+          recoveredFromId: source.id,
+          folderId: source.folderId,
+        });
+        await replaceNoteReferences(tx, userId, command.id, command.contentJson, version);
+        ids = [command.id];
+      } else if (command.op === 'note.checkpoint') {
+        const note = await noteFor(tx, userId, command.id);
+        if (!note) throw new DomainError('NOTE_NOT_FOUND', 'This note was not found.', 404);
+        if (note.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This note changed elsewhere. Your local draft is preserved.',
+          );
+        await validateNoteReferences(tx, userId, command.contentJson);
+        await checkpointNote(tx, userId, note.id, version, command.contentJson, command.reason);
+        await tx
+          .insert(auditLogs)
+          .values({ id: uuidv7(), userId, action: command.op, entityId: note.id, requestId });
+        // Checkpoints preserve the published note and its base version. History is
+        // refreshed independently when opened; the response contains no draft content.
+        ids = [];
+      } else if (command.op === 'note.openDaily') {
+        // The per-user sync lock serializes different devices opening the same day.
+        const [existing] = await tx
+          .select({ id: notes.id })
+          .from(notes)
+          .where(
+            and(
+              eq(notes.userId, userId),
+              eq(notes.kind, 'daily'),
+              eq(notes.dailyDate, command.date),
+              isNull(notes.deletedAt),
+            ),
+          );
+        if (existing) {
+          const response = await recordsFor(tx, userId, [existing.id]);
+          await tx.insert(idempotencyKeys).values({ userId, key, requestHash: hash, response });
+          return response;
+        }
+        await insertCapture(tx, userId, version, {
+          id: command.id,
+          type: 'note',
+          text: command.date,
+          plannedDate: null,
+        });
+        await tx
+          .update(notes)
+          .set({ kind: 'daily', dailyDate: command.date })
+          .where(and(eq(notes.id, command.id), eq(notes.userId, userId)));
+        ids = [command.id];
+      } else if (
+        command.op === 'project.create' ||
+        command.op === 'project.setNotes' ||
+        command.op === 'project.update' ||
+        command.op === 'project.setArchived' ||
+        command.op === 'project.move'
+      ) {
+        ids = await applyProjectCommand(tx, userId, version, command);
+      } else if (command.op === 'task.setProject') {
+        const task = await taskFor(tx, userId, command.id);
+        if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);
+        if (task.parentId)
+          throw new DomainError(
+            'SUBTASK_PROJECT',
+            'Change the parent task’s project to move its subtasks.',
+            422,
+          );
+        if (task.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This task changed on another device. Refresh and try again.',
+          );
+        if (command.projectId) {
+          const project = await requireProject(tx, userId, command.projectId);
+          if (project.status === 'archived')
+            throw new DomainError(
+              'PROJECT_ARCHIVED',
+              'Unarchive this project before adding tasks.',
+              422,
+            );
+        }
+        const changed = await tx
+          .update(tasks)
+          .set({ projectId: command.projectId, version, updatedAt: new Date() })
+          .where(
+            and(eq(tasks.userId, userId), or(eq(tasks.id, task.id), eq(tasks.parentId, task.id))),
+          )
+          .returning({ id: tasks.id });
+        ids = changed.map((r) => r.id);
+      } else if (
+        command.op === 'folder.create' ||
+        command.op === 'folder.rename' ||
+        command.op === 'folder.move' ||
+        command.op === 'folder.delete'
+      ) {
+        await applyFolderCommand(tx, userId, version, command);
+        ids = [command.id];
+        if (command.op === 'folder.delete')
+          ids.push(...(await purgeRecords(tx, userId, ids, version)));
+      } else if (command.op === 'note.setFolder') {
+        const note = await noteFor(tx, userId, command.id);
+        if (!note) throw new DomainError('NOTE_NOT_FOUND', 'This note was not found.', 404);
+        if (note.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This note changed on another device. Refresh and try again.',
+          );
+        if (command.folderId) await requireFolder(tx, userId, command.folderId);
+        await tx
+          .update(notes)
+          .set({ folderId: command.folderId, version, updatedAt: new Date() })
+          .where(and(eq(notes.id, note.id), eq(notes.userId, userId)));
+        ids = [note.id];
       } else if (command.op === 'inbox.convert') {
         const item = await inboxFor(tx, userId, command.id);
         if (!item) throw new DomainError('INBOX_NOT_FOUND', 'This inbox item was not found.', 404);
@@ -144,6 +375,44 @@ export function createCaptureService(db: Database) {
           relation: 'converted_from',
         });
         ids = [item.id, command.targetId];
+      } else if (command.op === 'note.restoreVersion') {
+        const note = await noteFor(tx, userId, command.id);
+        if (!note) throw new DomainError('NOTE_NOT_FOUND', 'This note was not found.', 404);
+        if (note.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This note changed on another device. Refresh before restoring.',
+          );
+        const [snapshot] = await tx
+          .select()
+          .from(noteVersions)
+          .where(
+            and(
+              eq(noteVersions.id, command.versionId),
+              eq(noteVersions.noteId, note.id),
+              eq(noteVersions.userId, userId),
+            ),
+          );
+        if (!snapshot)
+          throw new DomainError(
+            'NOTE_VERSION_NOT_FOUND',
+            'This version is no longer available.',
+            404,
+          );
+        const content = readDocument(snapshot.contentJson, snapshot.contentSchemaVersion);
+        await replaceNoteReferences(tx, userId, note.id, content, version);
+        await tx
+          .update(notes)
+          .set({
+            title: snapshot.title,
+            contentJson: content,
+            contentText: documentText(content),
+            contentSchemaVersion: snapshot.contentSchemaVersion,
+            version,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(notes.id, note.id), eq(notes.userId, userId)));
+        ids = [note.id];
       } else if (command.op === 'note.updateContent') {
         const note = await noteFor(tx, userId, command.id);
         if (!note) throw new DomainError('NOTE_NOT_FOUND', 'This note was not found.', 404);
@@ -153,6 +422,7 @@ export function createCaptureService(db: Database) {
             'This note changed on another device. Your local draft is preserved.',
           );
         const text = documentText(command.contentJson);
+        await replaceNoteReferences(tx, userId, note.id, command.contentJson, version);
         await tx
           .update(notes)
           .set({
@@ -201,6 +471,25 @@ export function createCaptureService(db: Database) {
       } else if (command.op === 'note.restore') {
         const note = await trashedNoteFor(tx, userId, command.id);
         if (!note) throw new DomainError('NOTE_NOT_FOUND', 'This note was not in Trash.', 404);
+        if (note.dailyDate) {
+          const [existing] = await tx
+            .select({ id: notes.id })
+            .from(notes)
+            .where(
+              and(
+                eq(notes.userId, userId),
+                eq(notes.kind, 'daily'),
+                eq(notes.dailyDate, note.dailyDate),
+                isNull(notes.deletedAt),
+              ),
+            );
+          if (existing)
+            throw new DomainError(
+              'DAILY_NOTE_EXISTS',
+              'Another daily note exists for this date. Move it to Trash before restoring this one.',
+              409,
+            );
+        }
         if (note.version !== command.baseVersion)
           throw new DomainError(
             'VERSION_CONFLICT',
@@ -212,10 +501,7 @@ export function createCaptureService(db: Database) {
           .where(and(eq(notes.id, note.id), eq(notes.userId, userId)));
         ids = [note.id];
       } else if (command.op === 'note.purge') {
-        // Purge is only offered for trashed notes, so every device has already recorded the
-        // deletion before the row is removed. Inbound foreign keys are RESTRICT, so clear the
-        // provenance link and any converted-from reference before deleting the entity, whose
-        // ON DELETE CASCADE then removes the note row.
+        // Remove private content and preserve an ordered deletion marker for offline devices.
         const note = await trashedNoteFor(tx, userId, command.id);
         if (!note) throw new DomainError('NOTE_NOT_FOUND', 'This note was not in Trash.', 404);
         if (note.version !== command.baseVersion)
@@ -223,20 +509,8 @@ export function createCaptureService(db: Database) {
             'VERSION_CONFLICT',
             'This note changed on another device. Refresh and try again.',
           );
-        await tx
-          .update(inboxItems)
-          .set({ convertedEntityId: null })
-          .where(and(eq(inboxItems.userId, userId), eq(inboxItems.convertedEntityId, note.id)));
-        await tx
-          .delete(entityLinks)
-          .where(
-            and(
-              eq(entityLinks.userId, userId),
-              or(eq(entityLinks.sourceId, note.id), eq(entityLinks.targetId, note.id)),
-            ),
-          );
-        await tx.delete(entities).where(and(eq(entities.id, note.id), eq(entities.userId, userId)));
         ids = [note.id];
+        ids.push(...(await purgeRecords(tx, userId, ids, version)));
       } else if (
         command.op === 'note.setPinned' ||
         command.op === 'note.setFavorite' ||
@@ -262,6 +536,43 @@ export function createCaptureService(db: Database) {
           .set({ ...patch, version, updatedAt: new Date() })
           .where(and(eq(notes.id, note.id), eq(notes.userId, userId)));
         ids = [note.id];
+      } else if (
+        command.op === 'task.updateDescription' ||
+        command.op === 'task.setEstimate' ||
+        command.op === 'task.setArchived'
+      ) {
+        const task = await taskFor(tx, userId, command.id);
+        if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);
+        if (task.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This task changed on another device. Refresh and try again.',
+          );
+        const patch =
+          command.op === 'task.updateDescription'
+            ? {
+                descriptionJson: command.contentJson,
+                descriptionSchemaVersion: command.contentSchemaVersion,
+                descriptionText: documentText(command.contentJson),
+              }
+            : command.op === 'task.setEstimate'
+              ? { estimatedMinutes: command.estimatedMinutes }
+              : { archivedAt: command.archived ? new Date() : null };
+        await tx
+          .update(tasks)
+          .set({ ...patch, version, updatedAt: new Date() })
+          .where(and(eq(tasks.id, task.id), eq(tasks.userId, userId)));
+        ids = [task.id];
+      } else if (command.op === 'task.setRecurrence') {
+        const task = await taskFor(tx, userId, command.id);
+        if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);
+        if (task.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This task changed elsewhere. Refresh and try again.',
+          );
+        await setRecurrence(tx, userId, task, command.recurrence, version);
+        ids = [task.id];
       } else if (command.op === 'task.setStatus') {
         const task = await taskFor(tx, userId, command.id);
         if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);
@@ -270,16 +581,34 @@ export function createCaptureService(db: Database) {
             'VERSION_CONFLICT',
             'This task changed on another device. Refresh and try again.',
           );
+        const completedAt = command.occurredAt ? new Date(command.occurredAt) : new Date();
+        if (completedAt.getTime() > Date.now() + 300000)
+          throw new DomainError(
+            'INVALID_COMPLETION_TIME',
+            'Check your device clock and try again.',
+            422,
+          );
+        const successors =
+          command.status === 'done' || command.status === 'cancelled'
+            ? await advanceRecurrence(
+                tx,
+                userId,
+                task,
+                version,
+                completedAt,
+                command.currentTimezone,
+              )
+            : [];
         await tx
           .update(tasks)
           .set({
             status: command.status,
-            completedAt: command.status === 'done' ? new Date() : null,
+            completedAt: command.status === 'done' ? completedAt : null,
             version,
             updatedAt: new Date(),
           })
           .where(and(eq(tasks.id, task.id), eq(tasks.userId, userId)));
-        ids = [task.id];
+        ids = [task.id, ...successors];
       } else if (command.op === 'task.reschedule') {
         const task = await taskFor(tx, userId, command.id);
         if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);
@@ -298,6 +627,21 @@ export function createCaptureService(db: Database) {
         if (!parent) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);
         if (parent.parentId)
           throw new DomainError('SUBTASK_NESTING', 'Subtasks cannot have their own subtasks.', 422);
+        if (parent.recurrenceRuleId) {
+          const children = await tx
+            .select({ id: tasks.id })
+            .from(tasks)
+            .where(
+              and(eq(tasks.userId, userId), eq(tasks.parentId, parent.id), isNull(tasks.deletedAt)),
+            )
+            .limit(100);
+          if (children.length >= 100)
+            throw new DomainError(
+              'RECURRENCE_SUBTASK_LIMIT',
+              'Repeating tasks support up to 100 subtasks.',
+              422,
+            );
+        }
         const inserted = await tx
           .insert(entities)
           .values({ id: command.id, userId, version, type: 'task' })
@@ -311,6 +655,7 @@ export function createCaptureService(db: Database) {
           version,
           title: command.text,
           parentId: parent.id,
+          projectId: parent.projectId,
           plannedDate: null,
         });
         ids = [command.id];
@@ -371,9 +716,7 @@ export function createCaptureService(db: Database) {
           .where(and(eq(tasks.userId, userId), inArray(tasks.id, targetIds)));
         ids = targetIds;
       } else if (command.op === 'task.purge') {
-        // Permanent delete of a trashed task and its subtasks. Subtask entities are removed
-        // first (cascading their task rows); inbound provenance keys on the parent are cleared
-        // before its entity is deleted, matching note purge.
+        // Parent and children share a deletion version, so pull never splits the cascade.
         const task = await trashedTaskFor(tx, userId, command.id);
         if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not in Trash.', 404);
         if (task.version !== command.baseVersion)
@@ -386,24 +729,8 @@ export function createCaptureService(db: Database) {
           .from(tasks)
           .where(and(eq(tasks.userId, userId), eq(tasks.parentId, task.id)));
         const subIds = subs.map((s) => s.id);
-        if (subIds.length)
-          await tx
-            .delete(entities)
-            .where(and(eq(entities.userId, userId), inArray(entities.id, subIds)));
-        await tx
-          .update(inboxItems)
-          .set({ convertedEntityId: null })
-          .where(and(eq(inboxItems.userId, userId), eq(inboxItems.convertedEntityId, task.id)));
-        await tx
-          .delete(entityLinks)
-          .where(
-            and(
-              eq(entityLinks.userId, userId),
-              or(eq(entityLinks.sourceId, task.id), eq(entityLinks.targetId, task.id)),
-            ),
-          );
-        await tx.delete(entities).where(and(eq(entities.id, task.id), eq(entities.userId, userId)));
         ids = [task.id, ...subIds];
+        ids.push(...(await purgeRecords(tx, userId, ids, version)));
       } else if (command.op === 'item.setTags') {
         // Tags live on the entity, so one command labels any item type. Deleted items keep
         // their tags but are not tagged from the UI.
@@ -432,6 +759,16 @@ export function createCaptureService(db: Database) {
         const patch = { version, updatedAt: new Date() };
         const where = and(eq(tasks.id, entity.id), eq(tasks.userId, userId));
         if (entity.type === 'task') await tx.update(tasks).set(patch).where(where);
+        else if (entity.type === 'project')
+          await tx
+            .update(projects)
+            .set(patch)
+            .where(and(eq(projects.id, entity.id), eq(projects.userId, userId)));
+        else if (entity.type === 'folder')
+          await tx
+            .update(noteFolders)
+            .set(patch)
+            .where(and(eq(noteFolders.id, entity.id), eq(noteFolders.userId, userId)));
         else if (entity.type === 'note')
           await tx
             .update(notes)
@@ -475,8 +812,6 @@ export function createCaptureService(db: Database) {
           .where(and(eq(inboxItems.id, item.id), eq(inboxItems.userId, userId)));
         ids = [item.id];
       } else if (command.op === 'inbox.purge') {
-        // A dismissed capture is never converted, so no provenance links reference it; deleting
-        // the entity cascades the inbox row.
         const item = await trashedInboxFor(tx, userId, command.id);
         if (!item)
           throw new DomainError('INBOX_NOT_FOUND', 'This inbox item was not in Trash.', 404);
@@ -485,8 +820,8 @@ export function createCaptureService(db: Database) {
             'VERSION_CONFLICT',
             'This item changed on another device. Refresh and try again.',
           );
-        await tx.delete(entities).where(and(eq(entities.id, item.id), eq(entities.userId, userId)));
         ids = [item.id];
+        ids.push(...(await purgeRecords(tx, userId, ids, version)));
       } else if (command.op === 'task.setPriority') {
         const task = await taskFor(tx, userId, command.id);
         if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);
@@ -500,6 +835,36 @@ export function createCaptureService(db: Database) {
           .set({ priority: command.priority, version, updatedAt: new Date() })
           .where(and(eq(tasks.id, task.id), eq(tasks.userId, userId)));
         ids = [task.id];
+      } else if (command.op === 'task.setDeadline') {
+        const task = await taskFor(tx, userId, command.id);
+        if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);
+        if (task.version !== command.baseVersion)
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This task changed on another device. Refresh and try again.',
+          );
+        let dueAt: string | null;
+        try {
+          dueAt = fixedDeadlineInstant(command.deadline);
+        } catch (error) {
+          if (error instanceof DeadlineTimeError)
+            throw new DomainError(error.code, error.message, 422);
+          throw error;
+        }
+        const { dueDate, dueTime, timeMode, timezone } = command.deadline;
+        await tx
+          .update(tasks)
+          .set({
+            dueDate,
+            dueTime,
+            timeMode,
+            timezone,
+            dueAt: dueAt ? new Date(dueAt) : null,
+            version,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(tasks.id, task.id), eq(tasks.userId, userId)));
+        ids = [task.id];
       } else if (command.op === 'task.setDueDate') {
         const task = await taskFor(tx, userId, command.id);
         if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);
@@ -510,7 +875,15 @@ export function createCaptureService(db: Database) {
           );
         await tx
           .update(tasks)
-          .set({ dueDate: command.dueDate, version, updatedAt: new Date() })
+          .set({
+            dueDate: command.dueDate,
+            dueTime: null,
+            timeMode: 'floating',
+            timezone: null,
+            dueAt: null,
+            version,
+            updatedAt: new Date(),
+          })
           .where(and(eq(tasks.id, task.id), eq(tasks.userId, userId)));
         ids = [task.id];
       } else {
@@ -522,21 +895,57 @@ export function createCaptureService(db: Database) {
             'This task changed on another device. Refresh and try again.',
           );
         const done = command.op === 'task.complete';
+        const completedAt = done && command.occurredAt ? new Date(command.occurredAt) : new Date();
+        if (completedAt.getTime() > Date.now() + 300000)
+          throw new DomainError(
+            'INVALID_COMPLETION_TIME',
+            'Check your device clock and try again.',
+            422,
+          );
+        const successors = done
+          ? await advanceRecurrence(tx, userId, task, version, completedAt, command.currentTimezone)
+          : [];
         await tx
           .update(tasks)
           .set({
             status: done ? 'done' : 'todo',
-            completedAt: done ? new Date() : null,
+            completedAt: done ? completedAt : null,
             version,
             updatedAt: new Date(),
           })
           .where(and(eq(tasks.id, task.id), eq(tasks.userId, userId)));
-        ids = [task.id];
+        ids = [task.id, ...successors];
+      }
+      if ('scope' in command && command.scope === 'future') {
+        const task = await taskFor(tx, userId, command.id);
+        if (task) await updateFutureRecurrence(tx, userId, task, version);
+      }
+      if (
+        command.op === 'capture' ||
+        command.op === 'note.openDaily' ||
+        command.op === 'note.copyDraft' ||
+        command.op === 'inbox.convert' ||
+        command.op === 'note.edit' ||
+        command.op === 'note.updateContent' ||
+        command.op === 'note.restoreVersion'
+      ) {
+        for (const id of ids)
+          await snapshotNote(
+            tx,
+            userId,
+            id,
+            command.op === 'note.restoreVersion' ? 'restore' : 'session_end',
+          );
       }
       for (const id of ids) {
         await tx
           .update(entities)
-          .set({ version, updatedAt: new Date() })
+          .set({
+            version,
+            updatedAt: new Date(),
+            ...(command.op.endsWith('.delete') ? { deletedAt: new Date() } : {}),
+            ...(command.op.endsWith('.restore') ? { deletedAt: null } : {}),
+          })
           .where(and(eq(entities.id, id), eq(entities.userId, userId)));
         await tx
           .insert(auditLogs)
@@ -549,21 +958,43 @@ export function createCaptureService(db: Database) {
         payload: { entityIds: ids, version },
       });
       const records = await recordsFor(tx, userId, ids);
+      await indexSearchRecords(tx, userId, ids, records);
       await tx
         .insert(idempotencyKeys)
         .values({ userId, key, requestHash: hash, response: records });
       return records;
     });
   }
-  async function pull(userId: string, cursor: number) {
+  async function pull(userId: string, cursor: number, full = false) {
     return withUser(
       db,
       userId,
       async (tx) => {
-        const page = await changedEntities(tx, userId, cursor);
+        const [state] = await tx
+          .select({ version: syncState.version })
+          .from(syncState)
+          .where(eq(syncState.userId, userId));
+        const watermark = state?.version ?? 0;
+        const [expired] = await tx
+          .select({ floor: sql<number>`coalesce(max(${entities.version}),0)`.mapWith(Number) })
+          .from(entities)
+          .where(
+            and(
+              eq(entities.userId, userId),
+              sql`${entities.purgedAt} < now() - interval '180 days'`,
+            ),
+          );
+        if ((!full && cursor < (expired?.floor ?? 0)) || cursor > watermark)
+          throw new DomainError(
+            'RESYNC_REQUIRED',
+            'Refresh this device’s saved data before syncing changes.',
+            410,
+          );
+        const page = await changedEntities(tx, userId, cursor, full);
         return {
           changes: await recordsFor(tx, userId, page.ids),
-          nextCursor: page.nextCursor,
+          tombstones: page.tombstones,
+          nextCursor: page.hasMore ? page.nextCursor : watermark,
           hasMore: page.hasMore,
         };
       },

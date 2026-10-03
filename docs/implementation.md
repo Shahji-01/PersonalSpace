@@ -1,6 +1,8 @@
 # Implementation status
 
-## Current increment: development foundation + capture path
+## Current increment: development foundation + notes/tasks
+
+See [the whole-project audit](project-audit.md) for specification coverage, defects addressed, remaining work and migration order.
 
 Implemented:
 
@@ -23,9 +25,24 @@ Implemented:
 - [x] Task priority (0–4) and a deadline separate from the planned date; Today shows due/overdue tasks and sorts by priority.
 - [x] Note pin, favorite, and archive (orthogonal to Trash); a separate Archived view and pinned-first note ordering.
 - [x] Full task status lifecycle (todo · in_progress · done · cancelled) with a status selector; cancelled tasks drop out of overdue.
+- [x] Projects with colors, rename/edit, ordering, archive/unarchive, task filtering and atomic parent/subtask assignment.
+- [x] Timed deadlines with floating/fixed timezone intent, explicit daylight-saving ambiguity handling and timezone-aware task views.
+- [x] Recurring tasks with fixed/after-completion schedules, finite ends, weekdays/month ends, occurrence/future edit scope, idempotent successors and subtask copying.
+- [x] Project-related notes with an offline link picker, ownership/version checks and synced cleanup on permanent deletion.
+- [x] Offline Today, next 7/30 days, Overdue, All tasks and recent Completed views, using separate planned/deadline dates and synced completion timestamps.
 - [x] Rich-text note editing: headings, bold/italic, lists, checklists, quotes, links, code, undo/redo; native note previews and account-scoped SQLite drafts.
+- [x] Structured note references with a `[[` picker, live title resolution, Linked from, draft-safe navigation, owner-validated relations and history/purge handling.
 - [x] Shared versioned note-document schema, bounded input validation, server-derived text, formatted JSON in sync, and protection against legacy plain-text edits flattening rich notes.
+- [x] Note folders: create, rename, move, empty-folder deletion, three-level depth/cycle checks, owner FKs/RLS, mobile management, filing and filtering.
+- [x] Note version history at creation/content save/restore; paginated authenticated API, offline cache, preview and restore as a new version, retention of the latest 50 plus all versions within 30 days.
+- [x] Ten-minute and session-end history checkpoints for changed notes, queued offline without publishing unfinished edits or erasing local drafts.
+- [x] Permanent-purge markers in incremental sync, legacy-purge backfill, private-content erasure from retry responses/history, and mobile protection against deleted-record resurrection.
+- [x] Backward-compatible cache response defaults and guards against stale acknowledgements and overlapping item mutations.
+- [x] Repeatable mobile-width browser editor tests in CI, including draft recovery and storage failures.
 - [x] Account-scoped durable SQLite cache/outbox, coalesced replay, incremental pull pages on version boundaries.
+- [x] Foreground sync backoff/jitter, server Retry-After, auth pause, manual retry and follow-up sync for edits queued during a running request.
+- [x] Expired-cursor detection and resumable full recovery before replay, preserving queued changes while erasing old purged content.
+- [x] Explicit recovery of conflicting rich note drafts as separate linked notes, with source preservation and acknowledgement-safe draft cleanup.
 - [x] Worker publishes deduplicated sync signal jobs and maintains a monotonic Redis watermark.
 - [x] Web landing page and explicitly marked privacy/terms drafts.
 - [x] Unit and real-PostgreSQL integration test suites.
@@ -48,11 +65,11 @@ These checks mean code exists. Validation results are recorded separately in `do
 ## Next implementation increments
 
 1. Finish the Phase 0 identity/account lifecycle and native build gates.
-2. M1: note editing/deletion/Trash, initial rich-text editor and drafts, task rescheduling, one-level subtasks, task Trash, and item tags landed; still pending are editor device acceptance (ADR-027), folders, attachments, backlinks/version history; projects, deeper subtask nesting, separate deadlines and recurrence.
+2. M1: rich notes/drafts/history/checkpoints, backlinks, daily notes, folders, tags/Trash, task descriptions/estimates/archive, statuses/views, timed deadlines, recurrence, priority, projects/related notes and one-level subtasks are implemented. Remaining: editor/native acceptance (ADR-027), attachments, project-related learning resources, versioned SQLite migrations and sync recovery/conflict work. One-level subtasks are the specified v1 scope.
 3. M2: complete onboarding, richer deterministic parsing, widgets/share capture, reminders and device delivery matrix.
 4. M3: learning library, safe URL fetching, metadata jobs, playlists and progress.
 5. M4: financial ledger with integer money, splits, debts, revisions/voids and reconciliation property tests.
-6. M5: search, export, deletion pipeline, final web account pages and transactional email.
+6. M5: complete search transliteration/later-module coverage, export, deletion pipeline, final web account pages and transactional email.
 7. M6: optional text AI, tools/policies, confirmations, citations, memory, quotas and the 300-case evaluation gate.
 8. M7: security/load/accessibility testing, legal review, stores and beta rollout.
 
@@ -64,21 +81,35 @@ Each milestone retains the specification's exit criteria. No milestone is waived
 - The development-preview checkbox is not final legal acceptance. Versioned purpose-specific consents remain required before public signup.
 - API authentication endpoints currently live under `/api/auth/*`; product routes use `/api/v1/*`. Domain endpoints accept bearer tokens only; browser domain writes will need CSRF before the full web app.
 - `/api/v1/commands` is a shared command endpoint for the initial slice. The full resource endpoint catalogue and generated client are pending. Current client uses the same Zod contracts and validates responses.
-- The initial parser only suggests simple tasks. It does not yet parse Hinglish amounts, dates, expenses or reminders.
-- Quick Capture creates paragraph notes; Edit opens the bundled Tiptap editor through Expo DOM. Formatting is stored as canonical JSON, with plain text derived on the server. Drafts persist locally after Close or a rejected save; successful sync clears only the acknowledged draft. Drafts are not themselves synced between devices. Images/attachments, backlinks, note history and the low-end Android/older iPhone/Hindi IME/accessibility acceptance gates remain open; ADR-027 is still proposed.
-- Mobile cache tables currently use the Expo SQLite API directly behind a store interface; shared Drizzle SQLite schema/migrations are still required for M1. Database initialization is version 1 only.
-- Mobile retries every 30 seconds while foregrounded and on resume/manual refresh. Exponential backoff, background connectivity triggers, attachments and full v1.1 conflict handling remain pending.
+- Capture suggests tasks and reviewed dates in a supported English/Hinglish/Hindi subset. Amounts, expenses, reminders, time-of-day and comprehensive language coverage remain pending.
+- Quick Capture creates paragraph notes; Edit opens the bundled Tiptap editor through Expo DOM. Formatting is canonical JSON with server-derived text. Drafts persist after Close or rejected saves; acknowledgement clears only the accepted draft. Unfinished edits can sync as history checkpoints, but cross-device draft merging is unavailable. Images/attachments and low-end Android/older iPhone/Hindi IME/accessibility acceptance remain open; ADR-027 is still proposed.
+- History snapshots cover explicit saves/restores and changed-content ten-minute/session-end checkpoints. Checkpoints preserve the published note and backlink relations. Previously loaded history is cached offline; unseen history requires connectivity. Retention applies on snapshot writes. Restore is version-checked and preserves folder, pin/favorite/archive flags and local drafts. See [note editor behavior](note-editor.md).
+- Mobile cache tables currently use the Expo SQLite API directly behind a store interface, with additive table creation and defaults when reading older JSON records. Explicit versioned Drizzle SQLite migrations are still required for M1.
+- Mobile sync uses foreground polling and exponential backoff/jitter, honors server retry delays, pauses on auth failures and drains new in-flight edits. OS background execution/connectivity triggers, attachment transfer and full v1.1 conflict handling remain pending. See [offline sync behavior](offline-sync.md).
 - Field-level last-writer-wins is not implemented; stale task commands return a visible conflict. Completion/conversion of an unsynced capture is disabled until its first acknowledgement.
-- Subtasks are one level deep and share the task table; a subtask carries no planned date and is shown nested under its parent. Rescheduling and the deadline control expose quick Today/Tomorrow/clear actions rather than a full date picker. Priority is set from a 0–4 selector. `due_time`, `time_mode`, extended statuses (`in_progress`/`cancelled`), projects, and recurrence are not modelled yet.
-- Only top-level tasks, notes, and unfiled inbox captures can be trashed; trashing a task cascades its subtasks to Trash on one shared version, and restore brings them back together. Subtasks themselves are managed through their parent (complete/reopen only) rather than trashed individually. Purge, for every type, is guarded to already-trashed items and does not yet emit a cross-device tombstone. A converted inbox item cannot be dismissed because it is preserved as provenance.
-- Tags are stored as a normalized lowercase array on the entity row and set atomically with `item.setTags` (up to 20 tags, 30 characters each). Filtering is client-side over synced records; server-side tag search, folders, and per-tag management screens are not built yet. A GIN index is in place for future server search.
-- Incremental pull supports the current three entity types; it is not the full specification's sync protocol. No deletion/tombstone expiry or 24-month history retention exists yet.
-- Note soft-delete (Trash) and restore propagate to every device through the version stream. Permanent purge is only offered on an already-trashed note and removes the row on the server, but it does not yet emit a cross-device tombstone: another device that already synced the soft-delete keeps the note in its own Trash until a full resync. Full tombstone propagation is part of the M5 deletion pipeline.
+- Subtasks are one level deep and shown nested under the parent; new subtasks start without a planned date. Priority is 0–4, planned dates and deadlines are separate, and timed deadlines preserve timezone intent. Recurring successors appear after sync, copy at most 100 live subtasks, and cannot contain independently recurring subtasks. See [recurrence behavior and limits](recurrence.md).
+- Projects support ordering, colors, archive, task assignment and related notes. Archiving a project does not hide its tasks from Today; assignment to archived projects requires unarchiving. Parent assignment moves subtasks atomically. Project-related learning resources remain pending. Upcoming includes today; Completed shows the last 30 calendar days.
+- The UI offers Trash for top-level tasks, notes and unfiled inbox captures; task Trash/restore cascades to subtasks on one shared version. Purge is guarded to already-trashed items. A converted inbox item cannot be dismissed because it is preserved as provenance. Folder deletion is permanent and allowed only when no notes (including archived/trashed notes) or subfolders remain.
+- Tags are normalized lowercase arrays set atomically with `item.setTags` (up to 20 tags, 30 characters each). Task/note filtering and global server/local search support tags. Per-tag management screens remain pending.
+- Incremental pull supports inbox items, notes, tasks, folders and projects. Deletion markers expire from incremental results after 180 days; stale cursors trigger resumable full recovery. Minimal UUID/owner reservations remain for idempotency and reference integrity, and full recovery includes those markers for local erasure. Physical reservation compaction and the 24-month money-history policy remain pending.
+- Permanent purge deletes content, note history and matching cached retry payloads while retaining ownership/UUID/version metadata. Mobile sync removes the cached item, draft, history and queued edits on receiving its marker. A permanent deletion takes precedence over unfinished edits. Account-wide deletion and backup erasure remain M5 work.
 - Idempotency records are retained indefinitely in this slice, preserving delayed offline retries. Retention/compaction is pending.
-- The worker only handles metadata sync signals. Reminders, search indexing, notification, email and other domain workers remain pending. Redis watermark loss is harmless because clients pull PostgreSQL directly.
+- The worker handles metadata sync signals. Search indexing currently runs transactionally with domain commands. Reminder, notification, email and other domain workers remain pending. Redis watermark loss is harmless because clients pull PostgreSQL directly.
 - Android development installation and initial sign-in/navigation were exercised on the Pixel 7 emulator on 30 September. Native accessibility, low-end-device/editor acceptance, iOS, app-lock/privacy screens, dark theme and store identifiers still require validation. Bundle export is not a native build.
 - Production startup is intentionally gated in `packages/config` until account lifecycle and launch requirements are implemented.
 
 ## External inputs when needed
 
 Provisioning will require the owner's chosen domain, hosting region/provider, email provider, Google/Apple developer credentials, EAS project and eventual AI provider. No paid services or deployments were created in this increment.
+
+## Task descriptions, estimates, archive and daily notes
+
+Migrations 0014–0015 add task description JSON/schema version/derived text, optional positive estimated minutes, task archive, and note kind/daily date with a partial uniqueness constraint. Commands `task.updateDescription`, `task.setEstimate`, `task.setArchived` and `note.openDaily` use the existing owner-scoped, versioned and idempotent command path. Daily-note open is a serialized get-or-create operation; an existing note is returned without changing its version/content/history. Restoring a trashed daily note checks for date collisions.
+
+Mobile task cards expose Details for the rich description editor and estimates, plus Archive/Unarchive. Archived tasks appear only in the Archived task view; task status stays independent. The shared editor keeps separate drafts by entity ID and clears only an exactly acknowledged description. Today opens the daily note for the local calendar date. Offline creation queues a placeholder until sync; if another device created that date first, acknowledgement replaces the placeholder. Existing daily notes retain the normal offline edit flow. Full new-screen native acceptance remains pending.
+
+## Unified search and reviewed capture dates
+
+Migration 0016 adds an owner-scoped search index with weighted simple/unaccent text vectors and title trigrams. Every content command updates the derived index transactionally, including removals. The authenticated `/api/v1/search` contract supports grouped types, tags, status, project/folder, inclusive UTC creation dates, archive inclusion, limit and offset. Mobile FTS5 is maintained by SQLite triggers and searches local records before merging server results. Incoming search data cannot overwrite pending edits, newer records or purge markers; caching it does not advance the sync cursor. See `search.md` for semantics and open acceptance gates.
+
+Quick capture now exposes an editable Date and secondary Add deadline. A reviewed task suggestion can populate each independently using supported date phrases. The capture command accepts an optional initial task deadline so creation and dates share one transaction and offline mutation. The original text is not rewritten. Ambiguous phrases prompt explicit date review; time-of-day, recurrence and comprehensive language coverage remain pending.

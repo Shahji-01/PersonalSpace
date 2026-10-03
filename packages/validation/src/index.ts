@@ -1,9 +1,38 @@
 import { z } from 'zod';
-import { noteDocumentSchema } from '@personalspace/editor-schema';
+import { noteDocumentSchema, noteReferenceIds } from '@personalspace/editor-schema';
+export { folderPlacementIssue } from './folders';
+export { searchQuerySchema, searchTokens, searchableTypes, type SearchQuery } from './search';
+import { searchableTypeSchema } from './search';
+import { deadlineSchema, timeZoneSchema, wallTimeSchema } from './time';
+import { recurrenceSetupSchema, recurrenceRecordSchema } from './recurrence';
+export {
+  recurrenceSetupSchema,
+  recurrenceRRule,
+  firstOccurrence,
+  nextOccurrence,
+  shiftCalendarDate,
+  calendarDayOffset,
+  recurringInstant,
+  taskEditOperations,
+  type RecurrenceSetup,
+} from './recurrence';
+export {
+  deadlineSchema,
+  fixedDeadlineInstant,
+  deadlineInstant,
+  deadlineLocalDate,
+  deadlineLabel,
+  currentTimeZone,
+  DeadlineTimeError,
+  type Deadline,
+} from './time';
 
 export const idSchema = z.uuidv7();
 export const dateSchema = z.iso.date();
 export const captureTypeSchema = z.enum(['inbox', 'note', 'task']);
+export const projectColorSchema = z
+  .string()
+  .regex(/^#[0-9a-fA-F]{6}$/, 'Choose a six-digit hex color.');
 // Tags are normalized to lowercase, trimmed, de-duplicated, and order-preserving so the same
 // label is never stored twice and the request hash is stable regardless of client input order.
 export const tagsSchema = z
@@ -34,8 +63,11 @@ export const captureSchema = z
     type: captureTypeSchema.default('inbox'),
     text: z.string().trim().min(1).max(20000),
     plannedDate: dateSchema.nullable().default(null),
+    dueDate: dateSchema.nullable().optional(),
   })
   .superRefine((value, ctx) => {
+    if (value.type !== 'task' && value.dueDate != null)
+      ctx.addIssue({ code: 'custom', path: ['dueDate'], message: 'Only tasks have a deadline.' });
     if (value.type === 'task' && value.text.length > 500)
       ctx.addIssue({
         code: 'custom',
@@ -50,9 +82,131 @@ export const captureSchema = z
       });
   });
 export const commandSchema = z.discriminatedUnion('op', [
+  z.strictObject({
+    op: z.literal('note.copyDraft'),
+    id: idSchema,
+    sourceId: idSchema,
+    sourceBaseVersion: z.number().int().nonnegative(),
+    contentJson: noteDocumentSchema,
+    contentSchemaVersion: z.literal(1),
+  }),
+  z.strictObject({
+    op: z.literal('task.setRecurrence'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+    recurrence: recurrenceSetupSchema.nullable(),
+  }),
   z.strictObject({ op: z.literal('capture'), payload: captureSchema }),
   z.strictObject({
+    op: z.literal('task.setDeadline'),
+    scope: z.enum(['occurrence', 'future']).optional(),
+    id: idSchema,
+    deadline: deadlineSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('note.openDaily'),
+    id: idSchema,
+    date: dateSchema,
+  }),
+  z.strictObject({
+    op: z.literal('task.updateDescription'),
+    scope: z.enum(['occurrence', 'future']).optional(),
+    id: idSchema,
+    contentJson: noteDocumentSchema.refine(
+      (content) => noteReferenceIds(content).length === 0,
+      'Note references are supported in notes only.',
+    ),
+    contentSchemaVersion: z.literal(1),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('task.setEstimate'),
+    scope: z.enum(['occurrence', 'future']).optional(),
+    id: idSchema,
+    estimatedMinutes: z.number().int().min(1).max(525600).nullable(),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('task.setArchived'),
+    id: idSchema,
+    archived: z.boolean(),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('project.create'),
+    id: idSchema,
+    name: z.string().trim().min(1).max(100),
+    color: projectColorSchema,
+  }),
+  z.strictObject({
+    op: z.literal('project.setNotes'),
+    id: idSchema,
+    noteIds: z
+      .array(idSchema)
+      .max(100)
+      .refine((ids) => new Set(ids).size === ids.length, 'Choose each note only once.'),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('project.update'),
+    id: idSchema,
+    name: z.string().trim().min(1).max(100),
+    color: projectColorSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('project.setArchived'),
+    id: idSchema,
+    archived: z.boolean(),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('project.move'),
+    id: idSchema,
+    beforeId: idSchema.nullable(),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('task.setProject'),
+    scope: z.enum(['occurrence', 'future']).optional(),
+    id: idSchema,
+    projectId: idSchema.nullable(),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('folder.create'),
+    id: idSchema,
+    name: z.string().trim().min(1).max(100),
+    parentId: idSchema.nullable(),
+  }),
+  z.strictObject({
+    op: z.literal('folder.rename'),
+    id: idSchema,
+    name: z.string().trim().min(1).max(100),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('folder.move'),
+    id: idSchema,
+    parentId: idSchema.nullable(),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('folder.delete'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('note.setFolder'),
+    id: idSchema,
+    folderId: idSchema.nullable(),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
     op: z.literal('task.complete'),
+    currentTimezone: timeZoneSchema.optional(),
+    occurredAt: z.iso.datetime().optional(),
     id: idSchema,
     baseVersion: z.number().int().nonnegative(),
   }),
@@ -82,6 +236,20 @@ export const commandSchema = z.discriminatedUnion('op', [
     baseVersion: z.number().int().nonnegative(),
   }),
   z.strictObject({
+    op: z.literal('note.checkpoint'),
+    id: idSchema,
+    contentJson: noteDocumentSchema,
+    contentSchemaVersion: z.literal(1),
+    baseVersion: z.number().int().nonnegative(),
+    reason: z.enum(['interval', 'session_end']),
+  }),
+  z.strictObject({
+    op: z.literal('note.restoreVersion'),
+    id: idSchema,
+    versionId: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
     op: z.literal('note.delete'),
     id: idSchema,
     baseVersion: z.number().int().nonnegative(),
@@ -98,6 +266,7 @@ export const commandSchema = z.discriminatedUnion('op', [
   }),
   z.strictObject({
     op: z.literal('task.reschedule'),
+    scope: z.enum(['occurrence', 'future']).optional(),
     id: idSchema,
     plannedDate: dateSchema.nullable(),
     baseVersion: z.number().int().nonnegative(),
@@ -110,6 +279,7 @@ export const commandSchema = z.discriminatedUnion('op', [
   }),
   z.strictObject({
     op: z.literal('task.rename'),
+    scope: z.enum(['occurrence', 'future']).optional(),
     id: idSchema,
     text: z.string().trim().min(1).max(500),
     baseVersion: z.number().int().nonnegative(),
@@ -131,6 +301,7 @@ export const commandSchema = z.discriminatedUnion('op', [
   }),
   z.strictObject({
     op: z.literal('item.setTags'),
+    scope: z.enum(['occurrence', 'future']).optional(),
     id: idSchema,
     tags: tagsSchema,
     baseVersion: z.number().int().nonnegative(),
@@ -152,12 +323,14 @@ export const commandSchema = z.discriminatedUnion('op', [
   }),
   z.strictObject({
     op: z.literal('task.setPriority'),
+    scope: z.enum(['occurrence', 'future']).optional(),
     id: idSchema,
     priority: z.number().int().min(0).max(4),
     baseVersion: z.number().int().nonnegative(),
   }),
   z.strictObject({
     op: z.literal('task.setDueDate'),
+    scope: z.enum(['occurrence', 'future']).optional(),
     id: idSchema,
     dueDate: dateSchema.nullable(),
     baseVersion: z.number().int().nonnegative(),
@@ -182,6 +355,8 @@ export const commandSchema = z.discriminatedUnion('op', [
   }),
   z.strictObject({
     op: z.literal('task.setStatus'),
+    currentTimezone: timeZoneSchema.optional(),
+    occurredAt: z.iso.datetime().optional(),
     id: idSchema,
     status: z.enum(['todo', 'in_progress', 'done', 'cancelled']),
     baseVersion: z.number().int().nonnegative(),
@@ -195,26 +370,86 @@ export const syncPushSchema = z.strictObject({
 });
 export const recordSchema = z.strictObject({
   id: idSchema,
-  type: captureTypeSchema,
+  recurrence: recurrenceRecordSchema.nullable().default(null),
+  type: z.enum(['inbox', 'note', 'task', 'folder', 'project']),
   text: z.string(),
   contentJson: noteDocumentSchema.nullable().optional(),
   contentSchemaVersion: z.literal(1).optional(),
-  status: z.enum(['new', 'converted', 'todo', 'in_progress', 'done', 'cancelled', 'active']),
+  status: z.enum([
+    'new',
+    'converted',
+    'todo',
+    'in_progress',
+    'done',
+    'cancelled',
+    'active',
+    'archived',
+  ]),
   plannedDate: dateSchema.nullable(),
-  dueDate: dateSchema.nullable(),
-  priority: z.number().int().min(0).max(4),
-  parentId: idSchema.nullable(),
-  pinned: z.boolean(),
-  favorite: z.boolean(),
-  archivedAt: z.iso.datetime().nullable(),
-  tags: z.array(z.string()),
+  dueDate: dateSchema.nullable().default(null),
+  dueTime: wallTimeSchema.nullable().default(null),
+  timeMode: z.enum(['floating', 'fixed']).default('floating'),
+  timezone: timeZoneSchema.nullable().default(null),
+  dueAt: z.iso.datetime().nullable().default(null),
+  priority: z.number().int().min(0).max(4).default(0),
+  parentId: idSchema.nullable().default(null),
+  folderId: idSchema.nullable().default(null),
+  kind: z.enum(['note', 'checklist', 'daily', 'voice']).default('note'),
+  dailyDate: dateSchema.nullable().default(null),
+  recoveredFromId: idSchema.nullable().default(null),
+  projectId: idSchema.nullable().default(null),
+  relatedNoteIds: z.array(idSchema).default([]),
+  color: projectColorSchema.nullable().default(null),
+  // Fractional positions are used only by the offline optimistic ordering; the
+  // authoritative project command compacts positions to integers in PostgreSQL.
+  sortOrder: z.number().default(0),
+  completedAt: z.iso.datetime().nullable().default(null),
+  descriptionJson: noteDocumentSchema.nullable().default(null),
+  descriptionSchemaVersion: z.literal(1).default(1),
+  estimatedMinutes: z.number().int().min(1).max(525600).nullable().default(null),
+  pinned: z.boolean().default(false),
+  favorite: z.boolean().default(false),
+  archivedAt: z.iso.datetime().nullable().default(null),
+  tags: z.array(z.string()).default([]),
   version: z.number().int().nonnegative(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
   deletedAt: z.iso.datetime().nullable(),
 });
+export const tombstoneSchema = z.strictObject({
+  id: idSchema,
+  version: z.number().int().positive(),
+  purgedAt: z.iso.datetime(),
+});
+export const searchResponseSchema = z.strictObject({
+  groups: z.array(
+    z.strictObject({
+      type: searchableTypeSchema,
+      records: z.array(recordSchema),
+      hasMore: z.boolean(),
+    }),
+  ),
+});
+export type SearchResponse = z.infer<typeof searchResponseSchema>;
+export type Tombstone = z.infer<typeof tombstoneSchema>;
+export const noteVersionSchema = z.strictObject({
+  id: idSchema,
+  noteId: idSchema,
+  version: z.number().int().positive(),
+  title: z.string(),
+  contentJson: noteDocumentSchema,
+  contentSchemaVersion: z.literal(1),
+  createdAt: z.iso.datetime(),
+  reason: z.enum(['session_end', 'interval', 'restore']),
+});
+export type NoteVersion = z.infer<typeof noteVersionSchema>;
+export const noteHistoryResponseSchema = z.strictObject({
+  versions: z.array(noteVersionSchema),
+  nextCursor: z.number().int().positive().nullable(),
+});
 export const pullResponseSchema = z.strictObject({
   changes: z.array(recordSchema),
+  tombstones: z.array(tombstoneSchema).default([]),
   nextCursor: z.number().int().nonnegative(),
   hasMore: z.boolean(),
 });

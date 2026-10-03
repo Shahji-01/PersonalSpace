@@ -22,12 +22,15 @@
     "db:migrate": "pnpm --filter @personalspace/db migrate",
     "infra:up": "docker compose up -d --wait",
     "infra:down": "docker compose down",
-    "test:web": "playwright test"
+    "test:web": "playwright test",
+    "test:editor": "playwright test --config playwright.editor.config.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",
+    "@playwright/test": "^1.55.0",
     "@testcontainers/postgresql": "^11.10.0",
     "@types/node": "^24.0.0",
+    "esbuild": "0.28.2",
     "eslint": "^9.39.0",
     "eslint-config-prettier": "^10.1.0",
     "prettier": "^3.6.0",
@@ -35,7 +38,6 @@
     "turbo": "^2.5.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.0",
-    "vitest": "^3.2.0",
-    "@playwright/test": "^1.55.0"
+    "vitest": "^3.2.0"
   }
 }

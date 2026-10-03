@@ -2,7 +2,7 @@
 
 A mobile-first personal space for life, learning, work, and money. Product source of truth: [Specification v1.2](PersonalSpace-Specification-v1.2.md).
 
-**Status: Phase 0 in progress.** This repository now contains a working development slice for accounts, quick capture, inbox filing, plain-text notes, tasks, and incremental sync. It is not the completed v1.0 product. Use synthetic data until the privacy, account-lifecycle, and security launch requirements are complete.
+**Status: Phase 0 / M1 in progress.** This repository contains a working development slice for accounts, quick capture, inbox filing, rich-text and daily notes, folders, note history, projects, tasks with rich descriptions/estimates/archive, unified search, reviewed capture dates, and incremental sync. It is not the completed v1.0 product. Use synthetic data until the privacy, account-lifecycle, and security launch requirements are complete. See the [whole-project audit](docs/project-audit.md) for coverage and the remaining build order.
 
 ## Run locally
 
@@ -44,6 +44,15 @@ For a physical phone, set `EXPO_PUBLIC_API_URL` in `apps/mobile/.env` to your co
 4. In Library → Inbox, file a synced capture as a task or note. The original capture remains linked on the server.
 5. Disable connectivity and capture another item. It persists in SQLite with pending status. Reconnect or pull to refresh to sync.
 6. Sign in on another device to retrieve the same account's records. A different account cannot see them.
+7. In Library → Notes, use Manage folders to organize notes up to three levels deep. A note's Folder control files it; Version history previews and restores earlier saved content. Previously loaded history is available offline.
+8. Permanently deleting a trashed item removes it on other devices when they next sync. Empty folders can be deleted from Manage folders.
+9. In the task view, use Manage projects to create, color, order or archive projects, then assign tasks. Explore Next 7/30 days, Overdue and Completed; these views work from the local cache.
+10. Open task Details to give a deadline an optional time. Local time follows your current timezone; Fixed timezone keeps the same instant when you travel. Repeated clock times require choosing an occurrence.
+11. Open a project's Related notes to link, unlink or open notes. Links survive Trash/restore and are removed when the note is permanently deleted.
+12. In a note, type `[[` or tap Link note to choose another synced note. Open its link to navigate; your current draft is saved first. The target note shows incoming links under Linked from.
+13. Task Details → Repeat supports fixed and after-completion schedules, weekday/month-end choices and finite series. Complete or skip an occurrence, then sync to see its successor. Edits ask whether to affect this occurrence or future ones too.
+14. Changed notes receive history checkpoints every ten minutes and when closing. Save changes publishes the note; Version history can recover synced unfinished edits. Discarding a local draft preserves its queued/synced history.
+15. If a note draft conflicts with a newer version, use Review draft → Save as separate note. The copy keeps its formatting and links back to the original; your draft is retained until the copy syncs. Expired sync cursors recover automatically without clearing queued captures.
 
 Creates work offline. Completion and conversion require the source item to have synced once. Failed changes are shown explicitly; local captures are not silently discarded. Signing out preserves that account's unsynced data on the device. Offline sign-out clears the local credential; server revocation requires connectivity.
 
@@ -76,6 +85,7 @@ pnpm test:integration
 pnpm build
 pnpm exec playwright install chromium
 pnpm test:web
+pnpm test:editor
 pnpm --filter @personalspace/mobile bundle
 ```
 
@@ -83,6 +93,6 @@ The integration suite needs Docker. It creates and removes an isolated PostgreSQ
 
 With the API, database, Redis, and worker running, `pnpm exec tsx --env-file=.env scripts/smoke.ts` verifies a real HTTP capture reaches the outbox, BullMQ, and Redis. It creates and removes only its own synthetic local fixture. Browser checks can use an installed Chrome with `PLAYWRIGHT_CHANNEL=chrome` instead of downloading Chromium.
 
-CI is defined in `.github/workflows/ci.yml`. No remote repository or deployment has been configured.
+CI is defined in `.github/workflows/ci.yml`. The GitHub remote is `Shahji-01/PersonalSpace`; no production deployment has been configured.
 
 See [implementation status and remaining milestones](docs/implementation.md) for the build sequence and explicit gaps. The original specification is unchanged.

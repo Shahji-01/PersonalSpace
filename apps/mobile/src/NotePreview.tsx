@@ -1,8 +1,9 @@
 import { Text, View, type TextStyle } from 'react-native';
 import type { BlockNode, InlineNode, NoteDocument } from '@personalspace/editor-schema';
 import { colors } from '@personalspace/ui';
+import type { RecordItem } from '@personalspace/validation';
 
-function inline(nodes: InlineNode[] = []) {
+function inline(nodes: InlineNode[] = [], records: RecordItem[] = []) {
   return nodes.slice(0, 100).map((node, index) => {
     if (node.type === 'hardBreak') return '\n';
     const style: TextStyle = {};
@@ -18,6 +19,16 @@ function inline(nodes: InlineNode[] = []) {
         style.textDecorationLine = 'underline';
       }
     }
+    if (node.type === 'noteReference') {
+      const target = records.find(
+        (record) => record.id === node.attrs.noteId && record.type === 'note' && !record.deletedAt,
+      );
+      return (
+        <Text key={index} style={[style, { color: colors.primary }]}>
+          [[{target?.text.split('\n')[0] || 'Unavailable note'}]]
+        </Text>
+      );
+    }
     return (
       <Text key={index} style={style}>
         {node.text.slice(0, 600)}
@@ -26,7 +37,12 @@ function inline(nodes: InlineNode[] = []) {
   });
 }
 
-function block(node: BlockNode, key: number, depth = 0): React.ReactNode {
+function block(
+  node: BlockNode,
+  key: number,
+  depth = 0,
+  records: RecordItem[] = [],
+): React.ReactNode {
   if (depth > 3) return <Text key={key}>…</Text>;
   if (node.type === 'bulletList' || node.type === 'orderedList' || node.type === 'taskList') {
     return (
@@ -43,7 +59,7 @@ function block(node: BlockNode, key: number, depth = 0): React.ReactNode {
                   : '•'}
             </Text>
             <View style={{ flex: 1 }}>
-              {item.content.slice(0, 3).map((child, j) => block(child, j, depth + 1))}
+              {item.content.slice(0, 3).map((child, j) => block(child, j, depth + 1, records))}
             </View>
           </View>
         ))}
@@ -56,7 +72,7 @@ function block(node: BlockNode, key: number, depth = 0): React.ReactNode {
         key={key}
         style={{ paddingLeft: 12, borderLeftWidth: 3, borderLeftColor: colors.primary }}
       >
-        {node.content.slice(0, 3).map((child, j) => block(child, j, depth + 1))}
+        {node.content.slice(0, 3).map((child, j) => block(child, j, depth + 1, records))}
       </View>
     );
   return (
@@ -73,15 +89,21 @@ function block(node: BlockNode, key: number, depth = 0): React.ReactNode {
           : {}),
       }}
     >
-      {inline(node.content)}
+      {inline(node.content, records)}
     </Text>
   );
 }
 
-export function NotePreview({ document }: { document: NoteDocument }) {
+export function NotePreview({
+  document,
+  records = [],
+}: {
+  document: NoteDocument;
+  records?: RecordItem[];
+}) {
   return (
     <View style={{ gap: 8 }}>
-      {document.content.slice(0, 4).map((node, i) => block(node, i))}
+      {document.content.slice(0, 4).map((node, i) => block(node, i, 0, records))}
       {document.content.length > 4 && <Text style={{ color: colors.muted }}>…</Text>}
     </View>
   );

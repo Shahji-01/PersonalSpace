@@ -23,4 +23,5 @@ jobs:
       - run: pnpm build
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:web
+      - run: pnpm test:editor
       - run: pnpm --filter @personalspace/mobile bundle

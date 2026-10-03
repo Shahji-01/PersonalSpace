@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@js-temporal/polyfill": "0.5.1",
     "@personalspace/editor-schema": "workspace:*",
+    "rrule": "2.8.1",
     "zod": "^4.1.0"
   }
 }

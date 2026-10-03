@@ -2,6 +2,23 @@ import { describe, expect, it } from 'vitest';
 import { captureSchema, commandSchema, signupSchema } from './index';
 const id = '01900000-0000-7000-8000-000000000001';
 describe('boundary validation', () => {
+  it('accepts an initial task deadline and prevents scheduling non-task captures', () => {
+    expect(
+      captureSchema.safeParse({
+        id,
+        type: 'task',
+        text: 'Report',
+        plannedDate: '2026-10-02',
+        dueDate: '2026-10-05',
+      }).success,
+    ).toBe(true);
+    expect(
+      captureSchema.safeParse({ id, type: 'note', text: 'Report', dueDate: '2026-10-05' }).success,
+    ).toBe(false);
+    expect(
+      captureSchema.safeParse({ id, type: 'task', text: 'Report', dueDate: '2026-02-30' }).success,
+    ).toBe(false);
+  });
   it('rejects ownership overrides and unknown commands', () => {
     expect(captureSchema.safeParse({ id, type: 'inbox', text: 'hi', userId: id }).success).toBe(
       false,
