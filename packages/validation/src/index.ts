@@ -1,4 +1,16 @@
 import { z } from 'zod';
+export {
+  attachmentLimits,
+  attachmentMimeSchema,
+  attachmentDescriptorSchema,
+  attachmentTransferSchema,
+  attachmentUploadStateSchema,
+  uploadedPartSchema,
+  type AttachmentDescriptor,
+  type AttachmentTransfer,
+  type AttachmentUploadState,
+  type UploadedPart,
+} from './attachments';
 import { noteDocumentSchema, noteReferenceIds } from '@personalspace/editor-schema';
 export { folderPlacementIssue } from './folders';
 export { searchQuerySchema, searchTokens, searchableTypes, type SearchQuery } from './search';
@@ -24,7 +36,11 @@ export {
   deadlineLabel,
   currentTimeZone,
   DeadlineTimeError,
+  reminderTimeSchema,
+  computeFireAt,
+  computeSnoozeUntil,
   type Deadline,
+  type ReminderTime,
 } from './time';
 
 export const idSchema = z.uuidv7();
@@ -81,7 +97,66 @@ export const captureSchema = z
         message: 'Only tasks have a planned date.',
       });
   });
+export const snoozeDurationSchema = z.enum(['10min', '1h', 'evening', 'tomorrow_morning']);
+export type SnoozeDuration = z.infer<typeof snoozeDurationSchema>;
 export const commandSchema = z.discriminatedUnion('op', [
+  z.strictObject({
+    op: z.literal('reminder.create'),
+    id: idSchema,
+    entityId: idSchema.nullable().default(null),
+    title: z.string().trim().min(1).max(500),
+    remindDate: dateSchema,
+    remindTime: wallTimeSchema,
+    timeMode: z.enum(['floating', 'fixed']),
+    timezone: timeZoneSchema,
+  }),
+  z.strictObject({
+    op: z.literal('reminder.update'),
+    id: idSchema,
+    title: z.string().trim().min(1).max(500).optional(),
+    remindDate: dateSchema.optional(),
+    remindTime: wallTimeSchema.optional(),
+    timeMode: z.enum(['floating', 'fixed']).optional(),
+    timezone: timeZoneSchema.optional(),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('reminder.snooze'),
+    id: idSchema,
+    duration: snoozeDurationSchema,
+    currentTimezone: timeZoneSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('reminder.dismiss'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('reminder.done'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('reminder.cancel'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('reminder.delete'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('reminder.restore'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('reminder.purge'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
   z.strictObject({
     op: z.literal('note.copyDraft'),
     id: idSchema,
@@ -371,7 +446,7 @@ export const syncPushSchema = z.strictObject({
 export const recordSchema = z.strictObject({
   id: idSchema,
   recurrence: recurrenceRecordSchema.nullable().default(null),
-  type: z.enum(['inbox', 'note', 'task', 'folder', 'project']),
+  type: z.enum(['inbox', 'note', 'task', 'folder', 'project', 'reminder']),
   text: z.string(),
   contentJson: noteDocumentSchema.nullable().optional(),
   contentSchemaVersion: z.literal(1).optional(),
@@ -384,6 +459,10 @@ export const recordSchema = z.strictObject({
     'cancelled',
     'active',
     'archived',
+    'scheduled',
+    'fired',
+    'snoozed',
+    'dismissed',
   ]),
   plannedDate: dateSchema.nullable(),
   dueDate: dateSchema.nullable().default(null),
@@ -411,6 +490,12 @@ export const recordSchema = z.strictObject({
   favorite: z.boolean().default(false),
   archivedAt: z.iso.datetime().nullable().default(null),
   tags: z.array(z.string()).default([]),
+  entityId: idSchema.nullable().default(null),
+  remindDate: dateSchema.nullable().default(null),
+  remindTime: wallTimeSchema.nullable().default(null),
+  fireAt: z.iso.datetime().nullable().default(null),
+  snoozedUntil: z.iso.datetime().nullable().default(null),
+  lastFiredAt: z.iso.datetime().nullable().default(null),
   version: z.number().int().nonnegative(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),

@@ -46,6 +46,7 @@ Implemented:
 - [x] Worker publishes deduplicated sync signal jobs and maintains a monotonic Redis watermark.
 - [x] Web landing page and explicitly marked privacy/terms drafts.
 - [x] Unit and real-PostgreSQL integration test suites.
+- [x] Reminders: standalone and entity-attached, floating/fixed timezone scheduling, fire_at computation, snooze (10 min/1 h/evening/tomorrow morning), dismiss/done/cancel lifecycle, Trash/restore/purge, RLS, incremental sync and search indexing.
 
 These checks mean code exists. Validation results are recorded separately in `docs/verification.md`; Phase 0 is **not** complete.
 
@@ -66,7 +67,7 @@ These checks mean code exists. Validation results are recorded separately in `do
 
 1. Finish the Phase 0 identity/account lifecycle and native build gates.
 2. M1: rich notes/drafts/history/checkpoints, backlinks, daily notes, folders, tags/Trash, task descriptions/estimates/archive, statuses/views, timed deadlines, recurrence, priority, projects/related notes and one-level subtasks are implemented. Remaining: editor/native acceptance (ADR-027), attachments, project-related learning resources, versioned SQLite migrations and sync recovery/conflict work. One-level subtasks are the specified v1 scope.
-3. M2: complete onboarding, richer deterministic parsing, widgets/share capture, reminders and device delivery matrix.
+3. M2: complete onboarding, richer deterministic parsing, widgets/share capture, reminder mobile UI/local notification delivery and device delivery matrix. The reminder data model, API commands and sync are implemented; delivery infrastructure and mobile screens remain.
 4. M3: learning library, safe URL fetching, metadata jobs, playlists and progress.
 5. M4: financial ledger with integer money, splits, debts, revisions/voids and reconciliation property tests.
 6. M5: complete search transliteration/later-module coverage, export, deletion pipeline, final web account pages and transactional email.
@@ -113,3 +114,15 @@ Mobile task cards expose Details for the rich description editor and estimates, 
 Migration 0016 adds an owner-scoped search index with weighted simple/unaccent text vectors and title trigrams. Every content command updates the derived index transactionally, including removals. The authenticated `/api/v1/search` contract supports grouped types, tags, status, project/folder, inclusive UTC creation dates, archive inclusion, limit and offset. Mobile FTS5 is maintained by SQLite triggers and searches local records before merging server results. Incoming search data cannot overwrite pending edits, newer records or purge markers; caching it does not advance the sync cursor. See `search.md` for semantics and open acceptance gates.
 
 Quick capture now exposes an editable Date and secondary Add deadline. A reviewed task suggestion can populate each independently using supported date phrases. The capture command accepts an optional initial task deadline so creation and dates share one transaction and offline mutation. The original text is not rewritten. Ambiguous phrases prompt explicit date review; time-of-day, recurrence and comprehensive language coverage remain pending.
+
+## Reminders increment
+
+Migration 0024 adds the `reminders` table with RLS, ownership FKs, fire-at scheduling index and entity attachment. Commands `reminder.create`, `reminder.update`, `reminder.snooze`, `reminder.dismiss`, `reminder.done`, `reminder.cancel`, `reminder.delete`, `reminder.restore` and `reminder.purge` use the existing owner-scoped, versioned and idempotent command path.
+
+Reminders can be standalone ("drink water at 4") or attached to any existing entity (task, note, etc.) via `entityId`. Time semantics match the specification: floating mode recomputes `fire_at` from the user's timezone; fixed mode stores an absolute instant. Both use compatible disambiguation so DST transitions never silently lose a reminder.
+
+Snooze durations follow the spec: 10 minutes, 1 hour, this evening (18:00 local, or tomorrow 18:00 if past), and tomorrow morning (09:00 local). Snoozing updates `fire_at` and sets status to `snoozed`. Updating a snoozed or fired reminder resets it to `scheduled` with a recomputed `fire_at`.
+
+Reminders are included in incremental sync, search indexing and permanent-purge cleanup. The record schema carries `entityId`, `remindDate`, `remindTime`, `fireAt`, `snoozedUntil` and `lastFiredAt`. Mobile record constructions include the new fields with null defaults.
+
+Remaining: mobile reminder UI/screens, local notification scheduling, push notification delivery, device token management, notification permission request flow, and reminder delivery acceptance on the device test matrix.

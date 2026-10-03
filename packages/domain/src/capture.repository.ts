@@ -7,6 +7,7 @@ import {
   noteFolders,
   projects,
   recurrenceRules,
+  reminders,
   tasks,
   type Transaction,
 } from '@personalspace/db';
@@ -53,6 +54,10 @@ export async function recordsFor(
     .select()
     .from(projects)
     .where(and(eq(projects.userId, userId), inArray(projects.id, ids)));
+  const reminderRows = await tx
+    .select()
+    .from(reminders)
+    .where(and(eq(reminders.userId, userId), inArray(reminders.id, ids)));
   const related = await tx
     .select({ sourceId: entityLinks.sourceId, targetId: entityLinks.targetId })
     .from(entityLinks)
@@ -70,7 +75,8 @@ export async function recordsFor(
       | typeof tasks.$inferSelect
       | typeof notes.$inferSelect
       | typeof noteFolders.$inferSelect
-      | typeof projects.$inferSelect,
+      | typeof projects.$inferSelect
+      | typeof reminders.$inferSelect,
     extra: object,
   ) =>
     recordSchema.parse({
@@ -153,6 +159,21 @@ export async function recordsFor(
         folderId: r.folderId,
         kind: r.kind,
         dailyDate: r.dailyDate,
+      }),
+    ),
+    ...reminderRows.map((r) =>
+      serialize(r, {
+        type: 'reminder',
+        text: r.title,
+        status: r.status,
+        entityId: r.entityId,
+        remindDate: r.remindDate,
+        remindTime: r.remindTime?.slice(0, 5) ?? null,
+        timeMode: r.timeMode,
+        timezone: r.timezone,
+        fireAt: r.fireAt?.toISOString() ?? null,
+        snoozedUntil: r.snoozedUntil?.toISOString() ?? null,
+        lastFiredAt: r.lastFiredAt?.toISOString() ?? null,
       }),
     ),
   ].sort((a, b) => a.version - b.version || a.id.localeCompare(b.id));

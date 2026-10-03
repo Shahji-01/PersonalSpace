@@ -13,7 +13,7 @@ import { documentText } from '@personalspace/editor-schema';
 import { Button, Card, Field, styles } from './components';
 import type { LocalStore } from './store';
 
-const labels = { note: 'Notes', task: 'Tasks', project: 'Projects', inbox: 'Inbox' };
+const labels = { note: 'Notes', task: 'Tasks', project: 'Projects', inbox: 'Inbox', reminder: 'Reminders' };
 export function SearchScreen({
   store,
   client,

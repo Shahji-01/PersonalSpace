@@ -9,6 +9,7 @@ import {
   noteVersions,
   noteFolders,
   projects,
+  reminders,
   inboxItems,
   entityLinks,
   idempotencyKeys,
@@ -50,6 +51,14 @@ import { indexSearchRecords } from './search';
 import { applyFolderCommand, requireFolder } from './folders';
 import { applyProjectCommand, requireProject } from './projects';
 import { replaceNoteReferences, validateNoteReferences } from './note-references';
+import {
+  createReminder,
+  updateReminder,
+  snoozeReminder,
+  setReminderStatus,
+  reminderFor,
+  trashedReminderFor,
+} from './reminders';
 import {
   documentText,
   hasFormatting,
@@ -118,6 +127,7 @@ async function purgeRecords(tx: Transaction, userId: string, ids: string[], vers
     );
   await tx.delete(notes).where(and(eq(notes.userId, userId), inArray(notes.id, ids)));
   await tx.delete(tasks).where(and(eq(tasks.userId, userId), inArray(tasks.id, ids)));
+  await tx.delete(reminders).where(and(eq(reminders.userId, userId), inArray(reminders.id, ids)));
   await purgeUnusedRecurrence(
     tx,
     userId,
@@ -886,6 +896,93 @@ export function createCaptureService(db: Database) {
           })
           .where(and(eq(tasks.id, task.id), eq(tasks.userId, userId)));
         ids = [task.id];
+      } else if (command.op === 'reminder.create') {
+        const inserted = await tx
+          .insert(entities)
+          .values({ id: command.id, userId, type: 'reminder', version })
+          .onConflictDoNothing()
+          .returning({ id: entities.id });
+        if (!inserted.length)
+          throw new DomainError('ID_UNAVAILABLE', 'This item ID is unavailable.');
+        if (command.entityId) {
+          // Verify the attached entity exists and belongs to this user.
+          const [target] = await tx
+            .select({ id: entities.id })
+            .from(entities)
+            .where(
+              and(
+                eq(entities.id, command.entityId),
+                eq(entities.userId, userId),
+                isNull(entities.purgedAt),
+              ),
+            );
+          if (!target)
+            throw new DomainError(
+              'ENTITY_NOT_FOUND',
+              'The item you are attaching this reminder to was not found.',
+              404,
+            );
+        }
+        ids = await createReminder(tx, userId, command.id, version, {
+          entityId: command.entityId,
+          title: command.title,
+          remindDate: command.remindDate,
+          remindTime: command.remindTime,
+          timeMode: command.timeMode,
+          timezone: command.timezone,
+        });
+      } else if (command.op === 'reminder.update') {
+        ids = await updateReminder(tx, userId, command.id, version, command.baseVersion, {
+          title: command.title,
+          remindDate: command.remindDate,
+          remindTime: command.remindTime,
+          timeMode: command.timeMode,
+          timezone: command.timezone,
+        });
+      } else if (command.op === 'reminder.snooze') {
+        ids = await snoozeReminder(
+          tx,
+          userId,
+          command.id,
+          version,
+          command.baseVersion,
+          command.duration,
+          command.currentTimezone,
+        );
+      } else if (command.op === 'reminder.dismiss') {
+        ids = await setReminderStatus(tx, userId, command.id, version, command.baseVersion, 'dismissed');
+      } else if (command.op === 'reminder.done') {
+        ids = await setReminderStatus(tx, userId, command.id, version, command.baseVersion, 'done');
+      } else if (command.op === 'reminder.cancel') {
+        ids = await setReminderStatus(tx, userId, command.id, version, command.baseVersion, 'cancelled');
+      } else if (command.op === 'reminder.delete') {
+        const reminder = await reminderFor(tx, userId, command.id);
+        if (!reminder) throw new DomainError('REMINDER_NOT_FOUND', 'This reminder was not found.', 404);
+        if (reminder.version !== command.baseVersion)
+          throw new DomainError('VERSION_CONFLICT', 'This reminder changed on another device. Refresh and try again.');
+        const now = new Date();
+        await tx
+          .update(reminders)
+          .set({ deletedAt: now, version, updatedAt: now })
+          .where(and(eq(reminders.id, reminder.id), eq(reminders.userId, userId)));
+        ids = [reminder.id];
+      } else if (command.op === 'reminder.restore') {
+        const reminder = await trashedReminderFor(tx, userId, command.id);
+        if (!reminder) throw new DomainError('REMINDER_NOT_FOUND', 'This reminder was not in Trash.', 404);
+        if (reminder.version !== command.baseVersion)
+          throw new DomainError('VERSION_CONFLICT', 'This reminder changed on another device. Refresh and try again.');
+        await tx
+          .update(reminders)
+          .set({ deletedAt: null, version, updatedAt: new Date() })
+          .where(and(eq(reminders.id, reminder.id), eq(reminders.userId, userId)));
+        ids = [reminder.id];
+      } else if (command.op === 'reminder.purge') {
+        const reminder = await trashedReminderFor(tx, userId, command.id);
+        if (!reminder) throw new DomainError('REMINDER_NOT_FOUND', 'This reminder was not in Trash.', 404);
+        if (reminder.version !== command.baseVersion)
+          throw new DomainError('VERSION_CONFLICT', 'This reminder changed on another device. Refresh and try again.');
+        ids = [reminder.id];
+        ids.push(...(await purgeRecords(tx, userId, ids, version)));
       } else {
         const task = await taskFor(tx, userId, command.id);
         if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);

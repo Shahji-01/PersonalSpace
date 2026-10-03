@@ -237,6 +237,28 @@ export const auditLogs = pgTable('audit_logs', {
   createdAt: instant('created_at').notNull().defaultNow(),
 });
 const tsvector = customType<{ data: string }>({ dataType: () => 'tsvector' });
+export const reminders = pgTable(
+  'reminders',
+  {
+    ...std(),
+    entityId: uuid('entity_id'),
+    title: text('title').notNull(),
+    remindDate: date('remind_date').notNull(),
+    remindTime: time('remind_time').notNull(),
+    timeMode: text('time_mode').notNull().default('floating'),
+    timezone: text('timezone').notNull(),
+    fireAt: instant('fire_at').notNull(),
+    status: text('status').notNull().default('scheduled'),
+    snoozedUntil: instant('snoozed_until'),
+    lastFiredAt: instant('last_fired_at'),
+    recurrenceRuleId: uuid('recurrence_rule_id'),
+  },
+  (t) => [
+    index().on(t.userId, t.version),
+    index('reminders_fire_at').on(t.fireAt),
+    index('reminders_user_entity').on(t.userId, t.entityId),
+  ],
+);
 export const searchDocuments = pgTable('search_documents', {
   entityId: uuid('entity_id').primaryKey(),
   userId: uuid('user_id').notNull(),

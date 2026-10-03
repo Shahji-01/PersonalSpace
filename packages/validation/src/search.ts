@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const searchableTypeSchema = z.enum(['note', 'task', 'project', 'inbox']);
+export const searchableTypeSchema = z.enum(['note', 'task', 'project', 'inbox', 'reminder']);
 export const searchQuerySchema = z.strictObject({
   q: z.string().trim().min(1).max(200),
   type: searchableTypeSchema.optional(),

@@ -106,3 +106,86 @@ export function deadlineLabel(record: DeadlineRecord, zone = currentTimeZone()):
   }
   return `${record.dueDate} ${record.dueTime} (local time)`;
 }
+
+// --- Reminder time ---
+
+export const reminderTimeSchema = z.strictObject({
+  remindDate: z.iso.date(),
+  remindTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, 'Use a 24-hour time (HH:mm).'),
+  timeMode: z.enum(['floating', 'fixed']),
+  timezone: z
+    .string()
+    .max(100)
+    .refine(isTimeZone, 'Choose a valid IANA timezone, such as Asia/Kolkata.'),
+});
+export type ReminderTime = z.infer<typeof reminderTimeSchema>;
+
+/**
+ * Compute the absolute instant at which a reminder should fire.
+ * - **Fixed**: the instant is determined by the date/time in the given timezone.
+ * - **Floating**: the instant is determined by the date/time in the given timezone, but
+ *   should be recomputed whenever the user's timezone changes.
+ *
+ * Both modes use compatible disambiguation (moves skipped times forward, picks the first
+ * repeated time) because reminders should never be silently lost.
+ */
+export function computeFireAt(
+  remindDate: string,
+  remindTime: string,
+  timezone: string,
+): Date {
+  const wall = Temporal.PlainDateTime.from(`${remindDate}T${remindTime}`);
+  const zoned = wall.toZonedDateTime(timezone, { disambiguation: 'compatible' });
+  return new Date(zoned.epochMilliseconds);
+}
+
+/**
+ * Compute the snoozed-until instant from a duration keyword.
+ * Snooze options from the spec §14.4:
+ * - 10min: now + 10 minutes
+ * - 1h: now + 1 hour
+ * - evening: today at 18:00 (or tomorrow if already past)
+ * - tomorrow_morning: tomorrow at 09:00
+ */
+export function computeSnoozeUntil(
+  duration: '10min' | '1h' | 'evening' | 'tomorrow_morning',
+  timezone: string,
+  now = new Date(),
+): Date {
+  const instant = Temporal.Instant.fromEpochMilliseconds(now.getTime());
+  const local = instant.toZonedDateTimeISO(timezone);
+
+  switch (duration) {
+    case '10min':
+      return new Date(local.add({ minutes: 10 }).epochMilliseconds);
+    case '1h':
+      return new Date(local.add({ hours: 1 }).epochMilliseconds);
+    case 'evening': {
+      let evening = local.toPlainDate().toZonedDateTime({
+        timeZone: timezone,
+        plainTime: Temporal.PlainTime.from('18:00'),
+      });
+      if (Temporal.ZonedDateTime.compare(evening, local) <= 0) {
+        evening = local
+          .toPlainDate()
+          .add({ days: 1 })
+          .toZonedDateTime({
+            timeZone: timezone,
+            plainTime: Temporal.PlainTime.from('18:00'),
+          });
+      }
+      return new Date(evening.epochMilliseconds);
+    }
+    case 'tomorrow_morning': {
+      const morning = local
+        .toPlainDate()
+        .add({ days: 1 })
+        .toZonedDateTime({
+          timeZone: timezone,
+          plainTime: Temporal.PlainTime.from('09:00'),
+        });
+      return new Date(morning.epochMilliseconds);
+    }
+  }
+}
+
