@@ -10,6 +10,8 @@ import {
   noteFolders,
   projects,
   reminders,
+  learningCollections,
+  learningResources,
   inboxItems,
   entityLinks,
   idempotencyKeys,
@@ -59,6 +61,19 @@ import {
   reminderFor,
   trashedReminderFor,
 } from './reminders';
+import {
+  createCollection,
+  renameCollection,
+  moveCollection,
+  collectionFor,
+  saveResource,
+  updateResource,
+  setResourceStatus,
+  setResourceProgress,
+  setResourceCollection,
+  resourceFor,
+  trashedResourceFor,
+} from './learning';
 import {
   documentText,
   hasFormatting,
@@ -128,6 +143,8 @@ async function purgeRecords(tx: Transaction, userId: string, ids: string[], vers
   await tx.delete(notes).where(and(eq(notes.userId, userId), inArray(notes.id, ids)));
   await tx.delete(tasks).where(and(eq(tasks.userId, userId), inArray(tasks.id, ids)));
   await tx.delete(reminders).where(and(eq(reminders.userId, userId), inArray(reminders.id, ids)));
+  await tx.delete(learningResources).where(and(eq(learningResources.userId, userId), inArray(learningResources.id, ids)));
+  await tx.delete(learningCollections).where(and(eq(learningCollections.userId, userId), inArray(learningCollections.id, ids)));
   await purgeUnusedRecurrence(
     tx,
     userId,
@@ -982,6 +999,101 @@ export function createCaptureService(db: Database) {
         if (reminder.version !== command.baseVersion)
           throw new DomainError('VERSION_CONFLICT', 'This reminder changed on another device. Refresh and try again.');
         ids = [reminder.id];
+        ids.push(...(await purgeRecords(tx, userId, ids, version)));
+      } else if (command.op === 'collection.create') {
+        const inserted = await tx
+          .insert(entities)
+          .values({ id: command.id, userId, type: 'collection', version })
+          .onConflictDoNothing()
+          .returning({ id: entities.id });
+        if (!inserted.length)
+          throw new DomainError('ID_UNAVAILABLE', 'This item ID is unavailable.');
+        ids = await createCollection(tx, userId, command.id, version, command.name, command.parentId);
+      } else if (command.op === 'collection.rename') {
+        ids = await renameCollection(tx, userId, command.id, version, command.baseVersion, command.name);
+      } else if (command.op === 'collection.move') {
+        ids = await moveCollection(tx, userId, command.id, version, command.baseVersion, command.parentId);
+      } else if (command.op === 'collection.delete') {
+        const collection = await collectionFor(tx, userId, command.id);
+        if (!collection) throw new DomainError('COLLECTION_NOT_FOUND', 'This collection was not found.', 404);
+        if (collection.version !== command.baseVersion)
+          throw new DomainError('VERSION_CONFLICT', 'This collection changed on another device. Refresh and try again.');
+        // Detach resources from this collection.
+        await tx
+          .update(learningResources)
+          .set({ collectionId: null, version, updatedAt: new Date() })
+          .where(and(eq(learningResources.userId, userId), eq(learningResources.collectionId, collection.id)));
+        // Detach child collections.
+        await tx
+          .update(learningCollections)
+          .set({ parentId: null, version, updatedAt: new Date() })
+          .where(and(eq(learningCollections.userId, userId), eq(learningCollections.parentId, collection.id)));
+        const now = new Date();
+        await tx
+          .update(learningCollections)
+          .set({ deletedAt: now, version, updatedAt: now })
+          .where(and(eq(learningCollections.id, collection.id), eq(learningCollections.userId, userId)));
+        ids = [collection.id];
+        ids.push(...(await purgeRecords(tx, userId, ids, version)));
+      } else if (command.op === 'resource.save') {
+        const inserted = await tx
+          .insert(entities)
+          .values({ id: command.id, userId, type: 'learning_resource', version })
+          .onConflictDoNothing()
+          .returning({ id: entities.id });
+        if (!inserted.length)
+          throw new DomainError('ID_UNAVAILABLE', 'This item ID is unavailable.');
+        ids = await saveResource(tx, userId, command.id, version, {
+          url: command.url,
+          title: command.title,
+          resourceType: command.resourceType,
+          source: command.source,
+          collectionId: command.collectionId,
+          externalId: command.externalId,
+        });
+      } else if (command.op === 'resource.update') {
+        ids = await updateResource(tx, userId, command.id, version, command.baseVersion, {
+          title: command.title,
+          author: command.author,
+          description: command.description,
+          resourceType: command.resourceType,
+        });
+      } else if (command.op === 'resource.setStatus') {
+        ids = await setResourceStatus(tx, userId, command.id, version, command.baseVersion, command.status);
+      } else if (command.op === 'resource.setProgress') {
+        ids = await setResourceProgress(
+          tx, userId, command.id, version, command.baseVersion,
+          command.progressPercent, command.progressSeconds, command.progressMode,
+        );
+      } else if (command.op === 'resource.setCollection') {
+        ids = await setResourceCollection(tx, userId, command.id, version, command.baseVersion, command.collectionId);
+      } else if (command.op === 'resource.delete') {
+        const resource = await resourceFor(tx, userId, command.id);
+        if (!resource) throw new DomainError('RESOURCE_NOT_FOUND', 'This resource was not found.', 404);
+        if (resource.version !== command.baseVersion)
+          throw new DomainError('VERSION_CONFLICT', 'This resource changed on another device. Refresh and try again.');
+        const now = new Date();
+        await tx
+          .update(learningResources)
+          .set({ deletedAt: now, version, updatedAt: now })
+          .where(and(eq(learningResources.id, resource.id), eq(learningResources.userId, userId)));
+        ids = [resource.id];
+      } else if (command.op === 'resource.restore') {
+        const resource = await trashedResourceFor(tx, userId, command.id);
+        if (!resource) throw new DomainError('RESOURCE_NOT_FOUND', 'This resource was not in Trash.', 404);
+        if (resource.version !== command.baseVersion)
+          throw new DomainError('VERSION_CONFLICT', 'This resource changed on another device. Refresh and try again.');
+        await tx
+          .update(learningResources)
+          .set({ deletedAt: null, version, updatedAt: new Date() })
+          .where(and(eq(learningResources.id, resource.id), eq(learningResources.userId, userId)));
+        ids = [resource.id];
+      } else if (command.op === 'resource.purge') {
+        const resource = await trashedResourceFor(tx, userId, command.id);
+        if (!resource) throw new DomainError('RESOURCE_NOT_FOUND', 'This resource was not in Trash.', 404);
+        if (resource.version !== command.baseVersion)
+          throw new DomainError('VERSION_CONFLICT', 'This resource changed on another device. Refresh and try again.');
+        ids = [resource.id];
         ids.push(...(await purgeRecords(tx, userId, ids, version)));
       } else {
         const task = await taskFor(tx, userId, command.id);

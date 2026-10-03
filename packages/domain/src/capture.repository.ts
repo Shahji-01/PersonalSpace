@@ -3,6 +3,8 @@ import {
   entities,
   entityLinks,
   inboxItems,
+  learningCollections,
+  learningResources,
   notes,
   noteFolders,
   projects,
@@ -58,6 +60,14 @@ export async function recordsFor(
     .select()
     .from(reminders)
     .where(and(eq(reminders.userId, userId), inArray(reminders.id, ids)));
+  const collectionRows = await tx
+    .select()
+    .from(learningCollections)
+    .where(and(eq(learningCollections.userId, userId), inArray(learningCollections.id, ids)));
+  const resourceRows = await tx
+    .select()
+    .from(learningResources)
+    .where(and(eq(learningResources.userId, userId), inArray(learningResources.id, ids)));
   const related = await tx
     .select({ sourceId: entityLinks.sourceId, targetId: entityLinks.targetId })
     .from(entityLinks)
@@ -76,7 +86,9 @@ export async function recordsFor(
       | typeof notes.$inferSelect
       | typeof noteFolders.$inferSelect
       | typeof projects.$inferSelect
-      | typeof reminders.$inferSelect,
+      | typeof reminders.$inferSelect
+      | typeof learningCollections.$inferSelect
+      | typeof learningResources.$inferSelect,
     extra: object,
   ) =>
     recordSchema.parse({
@@ -174,6 +186,39 @@ export async function recordsFor(
         fireAt: r.fireAt?.toISOString() ?? null,
         snoozedUntil: r.snoozedUntil?.toISOString() ?? null,
         lastFiredAt: r.lastFiredAt?.toISOString() ?? null,
+      }),
+    ),
+    ...collectionRows.map((r) =>
+      serialize(r, {
+        type: 'collection',
+        text: r.name,
+        status: 'active',
+        parentId: r.parentId,
+        sortOrder: r.sortOrder,
+      }),
+    ),
+    ...resourceRows.map((r) =>
+      serialize(r, {
+        type: 'learning_resource',
+        text: r.title,
+        status: r.status,
+        collectionId: r.collectionId,
+        url: r.url,
+        resourceType: r.resourceType,
+        resourceSource: r.source,
+        externalId: r.externalId,
+        parentResourceId: r.parentResourceId,
+        positionInParent: r.positionInParent,
+        author: r.author,
+        description: r.description,
+        thumbnailUrl: r.thumbnailUrl,
+        durationSeconds: r.durationSeconds,
+        progressPercent: r.progressPercent,
+        progressSeconds: r.progressSeconds,
+        progressMode: r.progressMode,
+        metadataStatus: r.metadataStatus,
+        lastOpenedAt: r.lastOpenedAt?.toISOString() ?? null,
+        completedAt: r.completedAt?.toISOString() ?? null,
       }),
     ),
   ].sort((a, b) => a.version - b.version || a.id.localeCompare(b.id));

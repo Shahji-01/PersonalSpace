@@ -47,6 +47,7 @@ Implemented:
 - [x] Web landing page and explicitly marked privacy/terms drafts.
 - [x] Unit and real-PostgreSQL integration test suites.
 - [x] Reminders: standalone and entity-attached, floating/fixed timezone scheduling, fire_at computation, snooze (10 min/1 h/evening/tomorrow morning), dismiss/done/cancel lifecycle, Trash/restore/purge, RLS, incremental sync and search indexing.
+- [x] Learning: collections (tree, max depth 3), resources (10 types, URL dedup, metadata/progress tracking, auto-completion at 90% for videos), collection CRUD, resource save/update/status/progress/collection/delete/restore/purge, RLS, incremental sync and search indexing.
 
 These checks mean code exists. Validation results are recorded separately in `docs/verification.md`; Phase 0 is **not** complete.
 
@@ -68,7 +69,7 @@ These checks mean code exists. Validation results are recorded separately in `do
 1. Finish the Phase 0 identity/account lifecycle and native build gates.
 2. M1: rich notes/drafts/history/checkpoints, backlinks, daily notes, folders, tags/Trash, task descriptions/estimates/archive, statuses/views, timed deadlines, recurrence, priority, projects/related notes and one-level subtasks are implemented. Remaining: editor/native acceptance (ADR-027), attachments, project-related learning resources, versioned SQLite migrations and sync recovery/conflict work. One-level subtasks are the specified v1 scope.
 3. M2: complete onboarding, richer deterministic parsing, widgets/share capture, reminder mobile UI/local notification delivery and device delivery matrix. The reminder data model, API commands and sync are implemented; delivery infrastructure and mobile screens remain.
-4. M3: learning library, safe URL fetching, metadata jobs, playlists and progress.
+4. M3: safe URL fetching, metadata worker jobs, playlists (parent/child expansion), in-app player progress, mobile learning UI/screens and YouTube integration. The learning data model, API commands and sync are implemented; fetching infrastructure and mobile screens remain.
 5. M4: financial ledger with integer money, splits, debts, revisions/voids and reconciliation property tests.
 6. M5: complete search transliteration/later-module coverage, export, deletion pipeline, final web account pages and transactional email.
 7. M6: optional text AI, tools/policies, confirmations, citations, memory, quotas and the 300-case evaluation gate.
@@ -126,3 +127,15 @@ Snooze durations follow the spec: 10 minutes, 1 hour, this evening (18:00 local,
 Reminders are included in incremental sync, search indexing and permanent-purge cleanup. The record schema carries `entityId`, `remindDate`, `remindTime`, `fireAt`, `snoozedUntil` and `lastFiredAt`. Mobile record constructions include the new fields with null defaults.
 
 Remaining: mobile reminder UI/screens, local notification scheduling, push notification delivery, device token management, notification permission request flow, and reminder delivery acceptance on the device test matrix.
+
+## Learning increment
+
+Migration 0025 adds `learning_collections` and `learning_resources` tables with RLS, composite ownership FKs, URL deduplication (SHA-256 hash unique index per user), collection tree support (max depth 3 with cycle detection), and playlist parent/child nesting.
+
+Collections support four commands: `collection.create`, `collection.rename`, `collection.move` and `collection.delete`. Deleting a collection detaches its child resources and subcollections rather than cascading deletion. Resources support eight commands: `resource.save`, `resource.update`, `resource.setStatus`, `resource.setProgress`, `resource.setCollection`, `resource.delete`, `resource.restore` and `resource.purge`.
+
+Ten resource types are supported: `youtube_video`, `youtube_playlist`, `article`, `website`, `documentation`, `course`, `pdf`, `book`, `podcast` and `other`. Six statuses follow the spec: `saved`, `want_to_learn`, `in_progress`, `completed`, `paused` and `archived`. Progress tracking includes percent (0-100), seconds and mode (`auto`/`manual`). Video resources auto-complete at >= 90% progress. First progress update on a `saved` or `want_to_learn` resource auto-transitions status to `in_progress`.
+
+URL deduplication prevents saving the same canonical URL twice per user. Metadata status tracks background fetch state (`pending`/`ok`/`failed`). The record schema carries all learning fields including `collectionId`, `url`, `resourceType`, `author`, `progressPercent`, `thumbnailUrl` and `metadataStatus`.
+
+Remaining: safe URL fetcher, metadata worker jobs (title/description/thumbnail extraction), YouTube oEmbed/Data API integration, playlist expansion into child resources, in-app player with auto-progress, mobile learning UI/screens, and collection/resource management screens.

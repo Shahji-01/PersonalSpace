@@ -259,6 +259,52 @@ export const reminders = pgTable(
     index('reminders_user_entity').on(t.userId, t.entityId),
   ],
 );
+export const learningCollections = pgTable(
+  'learning_collections',
+  {
+    ...std(),
+    name: text('name').notNull(),
+    parentId: uuid('parent_id'),
+    sortOrder: integer('sort_order').notNull().default(0),
+  },
+  (t) => [
+    index().on(t.userId, t.parentId),
+  ],
+);
+export const learningResources = pgTable(
+  'learning_resources',
+  {
+    ...std(),
+    collectionId: uuid('collection_id'),
+    url: text('url'),
+    canonicalUrl: text('canonical_url'),
+    urlHash: text('url_hash'),
+    resourceType: text('resource_type').notNull(),
+    source: text('source').notNull().default('manual'),
+    externalId: text('external_id'),
+    parentResourceId: uuid('parent_resource_id'),
+    positionInParent: integer('position_in_parent'),
+    title: text('title').notNull(),
+    author: text('author'),
+    description: text('description'),
+    thumbnailUrl: text('thumbnail_url'),
+    durationSeconds: integer('duration_seconds'),
+    status: text('status').notNull().default('saved'),
+    progressPercent: smallint('progress_percent').notNull().default(0),
+    progressSeconds: integer('progress_seconds'),
+    progressMode: text('progress_mode').notNull().default('manual'),
+    metadataStatus: text('metadata_status').notNull().default('pending'),
+    metadataFetchedAt: instant('metadata_fetched_at'),
+    lastOpenedAt: instant('last_opened_at'),
+    completedAt: instant('completed_at'),
+  },
+  (t) => [
+    index().on(t.userId, t.version),
+    index('learning_resources_user_collection').on(t.userId, t.collectionId),
+    index('learning_resources_user_status').on(t.userId, t.status),
+    index('learning_resources_parent').on(t.userId, t.parentResourceId),
+  ],
+);
 export const searchDocuments = pgTable('search_documents', {
   entityId: uuid('entity_id').primaryKey(),
   userId: uuid('user_id').notNull(),

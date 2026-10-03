@@ -99,6 +99,18 @@ export const captureSchema = z
   });
 export const snoozeDurationSchema = z.enum(['10min', '1h', 'evening', 'tomorrow_morning']);
 export type SnoozeDuration = z.infer<typeof snoozeDurationSchema>;
+export const resourceTypeSchema = z.enum([
+  'youtube_video', 'youtube_playlist', 'article', 'website', 'documentation',
+  'course', 'pdf', 'book', 'podcast', 'other',
+]);
+export type ResourceType = z.infer<typeof resourceTypeSchema>;
+export const resourceSourceSchema = z.enum(['youtube', 'web', 'pdf', 'book', 'share', 'manual']);
+export const learningStatusSchema = z.enum([
+  'saved', 'want_to_learn', 'in_progress', 'completed', 'paused', 'archived',
+]);
+export type LearningStatus = z.infer<typeof learningStatusSchema>;
+export const progressModeSchema = z.enum(['auto', 'manual']);
+export const metadataStatusSchema = z.enum(['pending', 'ok', 'failed']);
 export const commandSchema = z.discriminatedUnion('op', [
   z.strictObject({
     op: z.literal('reminder.create'),
@@ -154,6 +166,85 @@ export const commandSchema = z.discriminatedUnion('op', [
   }),
   z.strictObject({
     op: z.literal('reminder.purge'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  // --- Learning collection commands ---
+  z.strictObject({
+    op: z.literal('collection.create'),
+    id: idSchema,
+    name: z.string().trim().min(1).max(200),
+    parentId: idSchema.nullable().default(null),
+  }),
+  z.strictObject({
+    op: z.literal('collection.rename'),
+    id: idSchema,
+    name: z.string().trim().min(1).max(200),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('collection.move'),
+    id: idSchema,
+    parentId: idSchema.nullable(),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('collection.delete'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  // --- Learning resource commands ---
+  z.strictObject({
+    op: z.literal('resource.save'),
+    id: idSchema,
+    url: z.string().url().max(2048).nullable().default(null),
+    title: z.string().trim().min(1).max(500),
+    resourceType: resourceTypeSchema,
+    source: resourceSourceSchema.default('manual'),
+    collectionId: idSchema.nullable().default(null),
+    externalId: z.string().max(200).nullable().default(null),
+  }),
+  z.strictObject({
+    op: z.literal('resource.update'),
+    id: idSchema,
+    title: z.string().trim().min(1).max(500).optional(),
+    author: z.string().trim().max(300).nullable().optional(),
+    description: z.string().trim().max(10000).nullable().optional(),
+    resourceType: resourceTypeSchema.optional(),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('resource.setStatus'),
+    id: idSchema,
+    status: learningStatusSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('resource.setProgress'),
+    id: idSchema,
+    progressPercent: z.number().int().min(0).max(100),
+    progressSeconds: z.number().int().min(0).nullable().default(null),
+    progressMode: progressModeSchema.default('manual'),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('resource.setCollection'),
+    id: idSchema,
+    collectionId: idSchema.nullable(),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('resource.delete'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('resource.restore'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('resource.purge'),
     id: idSchema,
     baseVersion: z.number().int().nonnegative(),
   }),
@@ -446,7 +537,7 @@ export const syncPushSchema = z.strictObject({
 export const recordSchema = z.strictObject({
   id: idSchema,
   recurrence: recurrenceRecordSchema.nullable().default(null),
-  type: z.enum(['inbox', 'note', 'task', 'folder', 'project', 'reminder']),
+  type: z.enum(['inbox', 'note', 'task', 'folder', 'project', 'reminder', 'collection', 'learning_resource']),
   text: z.string(),
   contentJson: noteDocumentSchema.nullable().optional(),
   contentSchemaVersion: z.literal(1).optional(),
@@ -463,6 +554,9 @@ export const recordSchema = z.strictObject({
     'fired',
     'snoozed',
     'dismissed',
+    'want_to_learn',
+    'completed',
+    'paused',
   ]),
   plannedDate: dateSchema.nullable(),
   dueDate: dateSchema.nullable().default(null),
@@ -496,6 +590,23 @@ export const recordSchema = z.strictObject({
   fireAt: z.iso.datetime().nullable().default(null),
   snoozedUntil: z.iso.datetime().nullable().default(null),
   lastFiredAt: z.iso.datetime().nullable().default(null),
+  // --- Learning fields ---
+  collectionId: idSchema.nullable().default(null),
+  url: z.string().nullable().default(null),
+  resourceType: resourceTypeSchema.nullable().default(null),
+  resourceSource: resourceSourceSchema.nullable().default(null),
+  externalId: z.string().nullable().default(null),
+  parentResourceId: idSchema.nullable().default(null),
+  positionInParent: z.number().int().nullable().default(null),
+  author: z.string().nullable().default(null),
+  description: z.string().nullable().default(null),
+  thumbnailUrl: z.string().nullable().default(null),
+  durationSeconds: z.number().int().nullable().default(null),
+  progressPercent: z.number().int().min(0).max(100).default(0),
+  progressSeconds: z.number().int().nullable().default(null),
+  progressMode: progressModeSchema.nullable().default(null),
+  metadataStatus: metadataStatusSchema.nullable().default(null),
+  lastOpenedAt: z.iso.datetime().nullable().default(null),
   version: z.number().int().nonnegative(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),

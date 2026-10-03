@@ -10,3 +10,17 @@ export {
   reminderFor,
   trashedReminderFor,
 } from './reminders';
+export {
+  createCollection,
+  renameCollection,
+  moveCollection,
+  collectionFor,
+  requireCollection,
+  saveResource,
+  updateResource,
+  setResourceStatus,
+  setResourceProgress,
+  setResourceCollection,
+  resourceFor,
+  trashedResourceFor,
+} from './learning';
