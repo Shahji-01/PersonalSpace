@@ -42,7 +42,11 @@ async function validateCollectionDepth(
       throw new DomainError('COLLECTION_CYCLE', 'Moving here would create a loop.', 422);
     depth++;
     if (depth > 3)
-      throw new DomainError('COLLECTION_TOO_DEEP', 'Collections can be nested up to 3 levels.', 422);
+      throw new DomainError(
+        'COLLECTION_TOO_DEEP',
+        'Collections can be nested up to 3 levels.',
+        422,
+      );
     const parent = await collectionFor(tx, userId, current);
     if (!parent) break;
     current = parent.parentId!;
@@ -226,8 +230,7 @@ export async function updateResource(
   },
 ): Promise<string[]> {
   const resource = await resourceFor(tx, userId, id);
-  if (!resource)
-    throw new DomainError('RESOURCE_NOT_FOUND', 'This resource was not found.', 404);
+  if (!resource) throw new DomainError('RESOURCE_NOT_FOUND', 'This resource was not found.', 404);
   if (resource.version !== baseVersion)
     throw new DomainError(
       'VERSION_CONFLICT',
@@ -256,8 +259,7 @@ export async function setResourceStatus(
   status: string,
 ): Promise<string[]> {
   const resource = await resourceFor(tx, userId, id);
-  if (!resource)
-    throw new DomainError('RESOURCE_NOT_FOUND', 'This resource was not found.', 404);
+  if (!resource) throw new DomainError('RESOURCE_NOT_FOUND', 'This resource was not found.', 404);
   if (resource.version !== baseVersion)
     throw new DomainError(
       'VERSION_CONFLICT',
@@ -288,8 +290,7 @@ export async function setResourceProgress(
   progressMode: string,
 ): Promise<string[]> {
   const resource = await resourceFor(tx, userId, id);
-  if (!resource)
-    throw new DomainError('RESOURCE_NOT_FOUND', 'This resource was not found.', 404);
+  if (!resource) throw new DomainError('RESOURCE_NOT_FOUND', 'This resource was not found.', 404);
   if (resource.version !== baseVersion)
     throw new DomainError(
       'VERSION_CONFLICT',
@@ -307,7 +308,7 @@ export async function setResourceProgress(
   // Auto-complete at >= 90% for video resources.
   if (
     progressPercent >= 90 &&
-    (resource.resourceType === 'youtube_video') &&
+    resource.resourceType === 'youtube_video' &&
     resource.status !== 'completed'
   ) {
     patch.status = 'completed';
@@ -335,8 +336,7 @@ export async function setResourceCollection(
   collectionId: string | null,
 ): Promise<string[]> {
   const resource = await resourceFor(tx, userId, id);
-  if (!resource)
-    throw new DomainError('RESOURCE_NOT_FOUND', 'This resource was not found.', 404);
+  if (!resource) throw new DomainError('RESOURCE_NOT_FOUND', 'This resource was not found.', 404);
   if (resource.version !== baseVersion)
     throw new DomainError(
       'VERSION_CONFLICT',

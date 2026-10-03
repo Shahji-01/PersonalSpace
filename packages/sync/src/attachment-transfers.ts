@@ -100,6 +100,7 @@ export function createAttachmentTransferEngine(options: {
     throw new Error('Invalid attachment request timeout');
   const lifetime = new AbortController();
   let running: Promise<AttachmentDrainResult> | null = null;
+  let again = false;
 
   async function request<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
     if (lifetime.signal.aborted) throw new Error('Transfer engine disposed');
@@ -151,7 +152,13 @@ export function createAttachmentTransferEngine(options: {
       }
       return true;
     };
-    for (const candidate of await options.store.list()) {
+    if (lifetime.signal.aborted) return result;
+    const queued = await options.store.list();
+    if (queued.some((job) => job.state === 'auth_required')) {
+      result.authenticationRequired = true;
+      return result;
+    }
+    for (const candidate of queued) {
       if (lifetime.signal.aborted) break;
       let job = await options.store.get(candidate.descriptor.id);
       if (!job || job.state === 'ready' || job.state === 'failed') continue;
@@ -166,7 +173,11 @@ export function createAttachmentTransferEngine(options: {
       if (!permitted(job)) continue;
       const update = async (patch: Partial<AttachmentTransfer>) => {
         if (lifetime.signal.aborted || !job) return false;
-        const next = attachmentTransferSchema.parse({ ...job, ...patch, revision: job.revision + 1 });
+        const next = attachmentTransferSchema.parse({
+          ...job,
+          ...patch,
+          revision: job.revision + 1,
+        });
         if (!(await options.store.replace(job.revision, next))) return false;
         job = next;
         return true;
@@ -177,24 +188,35 @@ export function createAttachmentTransferEngine(options: {
       try {
         const descriptor = job.descriptor;
         const remote = attachmentUploadStateSchema.safeParse(
-          await request((signal) => options.transport.open(descriptor, job!.session?.id ?? null, signal)),
+          await request((signal) =>
+            options.transport.open(descriptor, job!.session?.id ?? null, signal),
+          ),
         );
         if (!remote.success) throw new AttachmentTransferError('protocol');
         if (!(await current())) continue;
         if (remote.data.status !== 'uploading') {
           const status = remote.data.status;
           const nextAttemptAt = status === 'processing' ? now() + 30000 : 0;
-          if (await update({ state: status === 'rejected' ? 'failed' : status, error: status === 'rejected' ? 'rejected' : null, failures: 0, nextAttemptAt }))
+          if (
+            await update({
+              state: status === 'rejected' ? 'failed' : status,
+              error: status === 'rejected' ? 'rejected' : null,
+              failures: 0,
+              nextAttemptAt,
+            })
+          )
             if (nextAttemptAt) due(nextAttemptAt);
           continue;
         }
         const { session, parts } = remote.data;
         const count = Math.ceil(descriptor.size / session.partSize);
         if (
-          (descriptor.size > attachmentLimits.multipartAboveBytes && session.partSize !== attachmentLimits.multipartAboveBytes) ||
+          (descriptor.size > attachmentLimits.multipartAboveBytes &&
+            session.partSize !== attachmentLimits.multipartAboveBytes) ||
           new Set(parts.map((part) => part.number)).size !== parts.length ||
           parts.some((part) => part.number > count)
-        ) throw new AttachmentTransferError('protocol');
+        )
+          throw new AttachmentTransferError('protocol');
         if (!(await update({ session, parts, state: 'uploading', error: null }))) continue;
         if (parts.length < count) {
           const fingerprint = await request((signal) => options.inspect(job!.localUri, signal));
@@ -204,43 +226,74 @@ export function createAttachmentTransferEngine(options: {
         for (let number = 1; number <= count; number++) {
           if (job.parts.some((part) => part.number === number)) continue;
           if (!(await current()) || !permitted(job)) break;
-          const etag = await request((signal) => options.transport.putPart({
-            descriptor,
-            sessionId: session.id,
-            number,
-            localUri: job!.localUri,
-            start: (number - 1) * session.partSize,
-            end: Math.min(descriptor.size, number * session.partSize),
-            signal,
-          }));
+          const etag = await request((signal) =>
+            options.transport.putPart({
+              descriptor,
+              sessionId: session.id,
+              number,
+              localUri: job!.localUri,
+              start: (number - 1) * session.partSize,
+              end: Math.min(descriptor.size, number * session.partSize),
+              signal,
+            }),
+          );
           const part = uploadedPartSchema.safeParse({ number, etag });
           if (!part.success) throw new AttachmentTransferError('protocol');
-          if (!(await update({ parts: [...job.parts, part.data].sort((a, b) => a.number - b.number) }))) break;
+          if (
+            !(await update({
+              parts: [...job.parts, part.data].sort((a, b) => a.number - b.number),
+            }))
+          )
+            break;
         }
         if (!(await current()) || !permitted(job) || job.parts.length !== count) continue;
         const completed = attachmentUploadStateSchema.safeParse(
-          await request((signal) => options.transport.complete(descriptor.id, session.id, job!.parts, signal)),
+          await request((signal) =>
+            options.transport.complete(descriptor.id, session.id, job!.parts, signal),
+          ),
         );
         if (!completed.success || completed.data.status === 'uploading')
           throw new AttachmentTransferError('protocol');
         const status = completed.data.status;
         const nextAttemptAt = status === 'processing' ? now() + 30000 : 0;
-        if (await update({ state: status === 'rejected' ? 'failed' : status, error: status === 'rejected' ? 'rejected' : null, failures: 0, nextAttemptAt }))
+        if (
+          await update({
+            state: status === 'rejected' ? 'failed' : status,
+            error: status === 'rejected' ? 'rejected' : null,
+            failures: 0,
+            nextAttemptAt,
+          })
+        )
           if (nextAttemptAt) due(nextAttemptAt);
       } catch (error) {
         if (lifetime.signal.aborted) break;
-        const failure = error instanceof AttachmentTransferError ? error : new AttachmentTransferError('retry');
+        const failure =
+          error instanceof AttachmentTransferError ? error : new AttachmentTransferError('retry');
         const ceiling = Math.min(300000, 2000 * 2 ** Math.min(job.failures, 8));
-        const retryAfter = Number.isFinite(failure.retryAfterMs) ? Math.max(0, failure.retryAfterMs) : 0;
-        const nextAttemptAt = failure.kind === 'retry'
-          ? Math.min(Number.MAX_SAFE_INTEGER, now() + Math.max(Math.round(ceiling * (0.5 + random() * 0.5)), retryAfter))
+        const retryAfter = Number.isFinite(failure.retryAfterMs)
+          ? Math.max(0, failure.retryAfterMs)
           : 0;
-        if (!(await update({
-          state: failure.kind === 'retry' ? job.state : failure.kind === 'auth' ? 'auth_required' : 'failed',
-          failures: Math.min(job.failures + 1, 1000),
-          error: failure.kind,
-          nextAttemptAt,
-        }))) continue;
+        const nextAttemptAt =
+          failure.kind === 'retry'
+            ? Math.min(
+                Number.MAX_SAFE_INTEGER,
+                now() + Math.max(Math.round(ceiling * (0.5 + random() * 0.5)), retryAfter),
+              )
+            : 0;
+        if (
+          !(await update({
+            state:
+              failure.kind === 'retry'
+                ? job.state
+                : failure.kind === 'auth'
+                  ? 'auth_required'
+                  : 'failed',
+            failures: Math.min(job.failures + 1, 1000),
+            error: failure.kind,
+            nextAttemptAt,
+          }))
+        )
+          continue;
         if (failure.kind === 'auth') {
           result.authenticationRequired = true;
           break;
@@ -252,9 +305,25 @@ export function createAttachmentTransferEngine(options: {
   }
   return {
     drain() {
-      running ??= drain().finally(() => { running = null; });
+      if (running) {
+        again = true;
+        return running;
+      }
+      const run = async () => {
+        let result: AttachmentDrainResult;
+        do {
+          again = false;
+          result = await drain();
+        } while (again && !lifetime.signal.aborted);
+        return result;
+      };
+      running = run().finally(() => {
+        running = null;
+      });
       return running;
     },
-    dispose() { lifetime.abort(); },
+    dispose() {
+      lifetime.abort();
+    },
   };
 }

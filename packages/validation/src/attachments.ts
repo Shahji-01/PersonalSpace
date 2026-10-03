@@ -25,7 +25,20 @@ export const attachmentMimeSchema = z.enum([
 export const attachmentDescriptorSchema = z.strictObject({
   id: z.uuidv7(),
   parentId: z.uuidv7(),
-  filename: z.string().trim().min(1).max(255).regex(/^[^/\\\x00-\x1f\x7f]+$/),
+  filename: z
+    .string()
+    .trim()
+    .min(1)
+    .max(255)
+    .regex(/^[^/\\]+$/)
+    .refine(
+      (name) =>
+        [...name].every((character) => {
+          const code = character.charCodeAt(0);
+          return code >= 32 && code !== 127;
+        }),
+      'Filenames cannot contain control characters.',
+    ),
   size: z.number().int().min(1).max(attachmentLimits.maxBytes),
   mime: attachmentMimeSchema,
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -34,13 +47,21 @@ export type AttachmentDescriptor = z.infer<typeof attachmentDescriptorSchema>;
 
 export const uploadedPartSchema = z.strictObject({
   number: z.number().int().min(1).max(5),
-  etag: z.string().min(1).max(1024).regex(/^[^\r\n]+$/),
+  etag: z
+    .string()
+    .min(1)
+    .max(1024)
+    .regex(/^[^\r\n]+$/),
 });
 export type UploadedPart = z.infer<typeof uploadedPartSchema>;
 
 export const attachmentUploadSessionSchema = z.strictObject({
   id: z.string().min(1).max(2048),
-  partSize: z.number().int().min(attachmentLimits.multipartAboveBytes).max(attachmentLimits.maxBytes),
+  partSize: z
+    .number()
+    .int()
+    .min(attachmentLimits.multipartAboveBytes)
+    .max(attachmentLimits.maxBytes),
 });
 
 export const attachmentUploadStateSchema = z.discriminatedUnion('status', [
@@ -59,7 +80,7 @@ export type AttachmentUploadState = z.infer<typeof attachmentUploadStateSchema>;
 export const attachmentTransferSchema = z.strictObject({
   descriptor: attachmentDescriptorSchema,
   // Set only after the picker asset has been copied to account-scoped durable app storage.
-  localUri: z.string().min(1).max(4096),
+  localUri: z.string().startsWith('file:///').max(4096),
   revision: z.number().int().nonnegative().safe(),
   state: z.enum(['queued', 'uploading', 'processing', 'ready', 'failed', 'auth_required']),
   session: attachmentUploadSessionSchema.nullable(),

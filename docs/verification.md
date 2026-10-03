@@ -1,5 +1,14 @@
 # Verification
 
+## Attachment queue increment — 3 October 2026
+
+- 95 unit tests passed, including 15 new transfer-engine tests and seven new actual-SQLite persistence/isolation/erasure tests.
+- 38 existing PostgreSQL/API integration tests passed with migrations through 0026 in the test database. These are regression checks; dedicated reminder/learning/money acceptance tests remain pending.
+- TypeScript passed for tools/tests and all 13 workspaces. ESLint and formatting passed after correcting the search-label map type and an unused money-domain import, and formatting the recently added module code.
+- API/worker builds and Android/iOS Hermes + DOM exports passed; the unchanged web build used its successful cache.
+
+The new checks cover lost part responses, session replacement, durable retry deadlines, Wi-Fi changes, auth pause, timeout/disposal, stale updates after cancellation, account isolation, idempotent enqueue, parent/attachment purge and rollback on failed SQLite transactions. The transfer transport is a test adapter: picker/editor integration, real object storage, native bytes and physical file deletion are not implemented or verified by this increment. No emulator interaction was performed.
+
 ## Sync recovery and draft copies — 3 October 2026
 
 Validated on Windows with Node 24.13.1, pnpm 9.15.4, PostgreSQL 17 in Docker and headless Chrome:

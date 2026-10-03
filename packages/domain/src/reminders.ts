@@ -76,7 +76,11 @@ export async function updateReminder(
       'This reminder changed on another device. Refresh and try again.',
     );
   // Only active reminders can be updated.
-  if (reminder.status === 'dismissed' || reminder.status === 'done' || reminder.status === 'cancelled')
+  if (
+    reminder.status === 'dismissed' ||
+    reminder.status === 'done' ||
+    reminder.status === 'cancelled'
+  )
     throw new DomainError(
       'REMINDER_CLOSED',
       'This reminder has already been completed or dismissed.',
@@ -122,7 +126,11 @@ export async function snoozeReminder(
       'VERSION_CONFLICT',
       'This reminder changed on another device. Refresh and try again.',
     );
-  if (reminder.status !== 'scheduled' && reminder.status !== 'fired' && reminder.status !== 'snoozed')
+  if (
+    reminder.status !== 'scheduled' &&
+    reminder.status !== 'fired' &&
+    reminder.status !== 'snoozed'
+  )
     throw new DomainError('REMINDER_CLOSED', 'This reminder cannot be snoozed.', 422);
 
   const snoozedUntil = computeSnoozeUntil(duration, currentTimezone);
@@ -154,7 +162,11 @@ export async function setReminderStatus(
       'VERSION_CONFLICT',
       'This reminder changed on another device. Refresh and try again.',
     );
-  if (reminder.status === 'dismissed' || reminder.status === 'done' || reminder.status === 'cancelled')
+  if (
+    reminder.status === 'dismissed' ||
+    reminder.status === 'done' ||
+    reminder.status === 'cancelled'
+  )
     throw new DomainError('REMINDER_CLOSED', 'This reminder has already been completed.', 422);
 
   await tx

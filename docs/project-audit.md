@@ -4,6 +4,8 @@ Source of truth: `PersonalSpace-Specification-v1.2.md`. This audit covers all fo
 
 ## Overall assessment
 
+The latest repository commits also add reminder, learning and money schemas/domain commands and sync/search serialization (migrations 0024–0026). These are partial implementations, not completed modules: dedicated mobile flows, reminder delivery, safe learning metadata jobs and financial acceptance/property tests are still open. The attachment transfer engine and SQLite queue are now implemented, while end-to-end file attachment remains open. See [attachment status](attachments.md). The feature table below describes the earlier validated product baseline; this paragraph records the subsequent code additions without marking their milestones complete.
+
 The repository is a functioning development preview of capture, notes and tasks, with a substantial PostgreSQL/RLS and offline-sync foundation. It is **not a completed v1.0 application**. Phase 0 and M1 are in progress; most of M2–M7 remains to be built. Production startup is intentionally gated in `packages/config`.
 
 The main architectural boundary is sound: mobile SQLite outbox → validated API commands → domain transaction → PostgreSQL entities, audit and outbox → incremental sync. The worker currently publishes only metadata sync signals. The web application is a landing/legal shell, not the full mobile product in a browser.

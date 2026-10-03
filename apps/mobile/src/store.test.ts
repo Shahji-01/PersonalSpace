@@ -3,6 +3,7 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { randomBytes } from 'node:crypto';
 import { v7 } from 'uuid';
 import { plainTextDocument } from '@personalspace/editor-schema';
+import { newAttachmentTransfer } from '@personalspace/sync';
 import {
   recordSchema,
   searchQuerySchema,
@@ -55,6 +56,170 @@ function note(version = 3): RecordItem {
     deletedAt: null,
   });
 }
+
+function attachment(parentId = v7()) {
+  return newAttachmentTransfer(
+    {
+      id: v7(),
+      parentId,
+      filename: 'private receipt.jpg',
+      mime: 'image/jpeg',
+      size: 12 * 1024 * 1024,
+      sha256: 'a'.repeat(64),
+    },
+    `file:///documents/account/${v7()}`,
+  );
+}
+
+describe('account-scoped attachment persistence', () => {
+  it('retains multipart progress and retry deadlines across reopening and duplicate enqueue', async () => {
+    const store = await openStore('a');
+    const original = attachment();
+    await store.attachmentTransfers.enqueue(original);
+    const progressed = {
+      ...original,
+      revision: 1,
+      state: 'uploading' as const,
+      session: { id: 'private-session', partSize: 5 * 1024 * 1024 },
+      parts: [{ number: 1, etag: 'first-part' }],
+      failures: 3,
+      nextAttemptAt: 1234567,
+      error: 'retry' as const,
+    };
+    expect(await store.attachmentTransfers.replace(0, progressed)).toBe(true);
+    await store.attachmentTransfers.enqueue(original);
+    const reopened = await openStore('a');
+    expect(await reopened.attachmentTransfers.get(original.descriptor.id)).toEqual(progressed);
+    expect(await reopened.attachmentTransfers.replace(0, { ...progressed, error: null })).toBe(
+      false,
+    );
+  });
+
+  it('isolates progress, auth resumption, cancellation and file cleanup between accounts', async () => {
+    const a = (await openStore('a')).attachmentTransfers;
+    const b = (await openStore('b')).attachmentTransfers;
+    const original = attachment();
+    await a.enqueue(original);
+    expect(await b.list()).toEqual([]);
+    expect(await b.get(original.descriptor.id)).toBeNull();
+    expect(await b.replace(0, { ...original, revision: 1 })).toBe(false);
+    await b.cancel(original.descriptor.id);
+    await a.replace(0, { ...original, revision: 1, state: 'auth_required', error: 'auth' });
+    await b.resumeAfterAuthentication();
+    expect((await a.get(original.descriptor.id))!.state).toBe('auth_required');
+    await a.resumeAfterAuthentication();
+    expect(await a.get(original.descriptor.id)).toMatchObject({
+      revision: 2,
+      state: 'queued',
+      error: null,
+    });
+    await a.cancel(original.descriptor.id);
+    expect(await b.pendingFileRemovals()).toEqual([]);
+    await b.acknowledgeFileRemoval(original.descriptor.id);
+    expect(await a.pendingFileRemovals()).toEqual([
+      { id: original.descriptor.id, localUri: original.localUri },
+    ]);
+  });
+
+  it('erases transfer metadata on parent purge and durably queues file removal without resurrection', async () => {
+    const store = await openStore('a');
+    const parent = note();
+    await store.merge([parent], parent.version);
+    const original = attachment(parent.id),
+      other = attachment();
+    await store.attachmentTransfers.enqueue(original);
+    await store.attachmentTransfers.enqueue(other);
+    await store.merge([], 9, [{ id: parent.id, version: 9, purgedAt: new Date().toISOString() }]);
+    expect(await store.attachmentTransfers.list()).toEqual([other]);
+    expect(
+      await store.attachmentTransfers.replace(0, { ...original, revision: 1, state: 'ready' }),
+    ).toBe(false);
+    await expect(store.attachmentTransfers.enqueue(original)).rejects.toThrow(
+      'permanently deleted',
+    );
+    await expect(store.attachmentTransfers.enqueue(attachment(parent.id))).rejects.toThrow(
+      'permanently deleted',
+    );
+    const reopened = (await openStore('a')).attachmentTransfers;
+    expect(await reopened.pendingFileRemovals()).toEqual([
+      { id: original.descriptor.id, localUri: original.localUri },
+    ]);
+    await reopened.acknowledgeFileRemoval(original.descriptor.id);
+    expect(await reopened.pendingFileRemovals()).toEqual([]);
+    const serializedRows = database.prepare('SELECT data FROM attachment_transfers').all();
+    expect(JSON.stringify(serializedRows)).not.toContain(original.descriptor.id);
+  });
+
+  it('handles attachment tombstones and cancellation idempotently, reserving cancelled IDs', async () => {
+    const store = await openStore('a');
+    const original = attachment();
+    await store.attachmentTransfers.enqueue(original);
+    await store.attachmentTransfers.cancel(original.descriptor.id);
+    await store.attachmentTransfers.cancel(original.descriptor.id);
+    await store.merge([], 1, [
+      { id: original.descriptor.id, version: 1, purgedAt: new Date().toISOString() },
+    ]);
+    expect(await store.attachmentTransfers.pendingFileRemovals()).toHaveLength(1);
+    await store.attachmentTransfers.acknowledgeFileRemoval(original.descriptor.id);
+    await expect(store.attachmentTransfers.enqueue(original)).rejects.toThrow(
+      'permanently deleted',
+    );
+    expect(await store.attachmentTransfers.list()).toEqual([]);
+  });
+
+  it('rejects ID reuse and identity changes while preserving the original transfer', async () => {
+    const store = (await openStore('a')).attachmentTransfers;
+    const original = attachment();
+    await store.enqueue(original);
+    await expect(
+      store.enqueue({
+        ...original,
+        descriptor: { ...original.descriptor, sha256: 'b'.repeat(64) },
+      }),
+    ).rejects.toThrow('already in use');
+    await expect(
+      store.replace(0, { ...original, revision: 1, localUri: 'file:///different-user' }),
+    ).rejects.toThrow('identity cannot change');
+    await expect(store.replace(0, { ...original, revision: 2 })).rejects.toThrow(
+      'Invalid transfer revision',
+    );
+    await expect(store.enqueue({ ...attachment(), state: 'ready' })).rejects.toThrow(
+      'Only a new transfer',
+    );
+    expect(await store.get(original.descriptor.id)).toEqual(original);
+  });
+
+  it('rolls back file-removal scheduling and parent erasure when the enclosing sync transaction fails', async () => {
+    const store = await openStore('a');
+    const parent = note(),
+      original = attachment(parent.id);
+    await store.merge([parent], parent.version);
+    await store.attachmentTransfers.enqueue(original);
+    database.exec(
+      `CREATE TRIGGER fail_purge BEFORE INSERT ON tombstones BEGIN SELECT RAISE(ABORT,'disk full'); END;`,
+    );
+    await expect(
+      store.merge([], 8, [{ id: parent.id, version: 8, purgedAt: new Date().toISOString() }]),
+    ).rejects.toThrow('disk full');
+    expect(await store.attachmentTransfers.get(original.descriptor.id)).toEqual(original);
+    expect(await store.attachmentTransfers.pendingFileRemovals()).toEqual([]);
+    expect((await store.list()).map((record) => record.id)).toEqual([parent.id]);
+    expect(await store.cursor()).toBe(parent.version);
+  });
+
+  it('prevents cleanup of one attachment from deleting another upload that shares its URI', async () => {
+    const store = (await openStore('a')).attachmentTransfers;
+    const original = attachment();
+    const other = { ...attachment(), localUri: original.localUri };
+    await store.enqueue(original);
+    await expect(store.enqueue(other)).rejects.toThrow('own durable local file');
+    await store.cancel(original.descriptor.id);
+    await expect(store.enqueue(other)).rejects.toThrow('own durable local file');
+    await store.acknowledgeFileRemoval(original.descriptor.id);
+    await store.enqueue(other);
+    expect(await store.list()).toEqual([other]);
+  });
+});
 
 describe('cache upgrades and deletion replay', () => {
   it('keeps source drafts until a copy is acknowledged and prevents duplicate/purged-source copies', async () => {

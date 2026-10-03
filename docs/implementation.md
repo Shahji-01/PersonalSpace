@@ -40,6 +40,7 @@ Implemented:
 - [x] Backward-compatible cache response defaults and guards against stale acknowledgements and overlapping item mutations.
 - [x] Repeatable mobile-width browser editor tests in CI, including draft recovery and storage failures.
 - [x] Account-scoped durable SQLite cache/outbox, coalesced replay, incremental pull pages on version boundaries.
+- [x] Attachment transfer foundation: resumable multipart engine, account-scoped SQLite progress/backoff, Wi-Fi policy and purge-safe cancellation. File picker, storage API and runtime wiring remain pending; see [attachment integration status](attachments.md).
 - [x] Foreground sync backoff/jitter, server Retry-After, auth pause, manual retry and follow-up sync for edits queued during a running request.
 - [x] Expired-cursor detection and resumable full recovery before replay, preserving queued changes while erasing old purged content.
 - [x] Explicit recovery of conflicting rich note drafts as separate linked notes, with source preservation and acknowledgement-safe draft cleanup.

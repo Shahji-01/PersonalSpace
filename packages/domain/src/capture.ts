@@ -166,12 +166,22 @@ async function purgeRecords(tx: Transaction, userId: string, ids: string[], vers
   await tx.delete(notes).where(and(eq(notes.userId, userId), inArray(notes.id, ids)));
   await tx.delete(tasks).where(and(eq(tasks.userId, userId), inArray(tasks.id, ids)));
   await tx.delete(reminders).where(and(eq(reminders.userId, userId), inArray(reminders.id, ids)));
-  await tx.delete(learningResources).where(and(eq(learningResources.userId, userId), inArray(learningResources.id, ids)));
-  await tx.delete(learningCollections).where(and(eq(learningCollections.userId, userId), inArray(learningCollections.id, ids)));
-  await tx.delete(financeTransactions).where(and(eq(financeTransactions.userId, userId), inArray(financeTransactions.id, ids)));
+  await tx
+    .delete(learningResources)
+    .where(and(eq(learningResources.userId, userId), inArray(learningResources.id, ids)));
+  await tx
+    .delete(learningCollections)
+    .where(and(eq(learningCollections.userId, userId), inArray(learningCollections.id, ids)));
+  await tx
+    .delete(financeTransactions)
+    .where(and(eq(financeTransactions.userId, userId), inArray(financeTransactions.id, ids)));
   await tx.delete(debts).where(and(eq(debts.userId, userId), inArray(debts.id, ids)));
-  await tx.delete(financeCategories).where(and(eq(financeCategories.userId, userId), inArray(financeCategories.id, ids)));
-  await tx.delete(financeAccounts).where(and(eq(financeAccounts.userId, userId), inArray(financeAccounts.id, ids)));
+  await tx
+    .delete(financeCategories)
+    .where(and(eq(financeCategories.userId, userId), inArray(financeCategories.id, ids)));
+  await tx
+    .delete(financeAccounts)
+    .where(and(eq(financeAccounts.userId, userId), inArray(financeAccounts.id, ids)));
   await tx.delete(people).where(and(eq(people.userId, userId), inArray(people.id, ids)));
   await purgeUnusedRecurrence(
     tx,
@@ -995,16 +1005,34 @@ export function createCaptureService(db: Database) {
           command.currentTimezone,
         );
       } else if (command.op === 'reminder.dismiss') {
-        ids = await setReminderStatus(tx, userId, command.id, version, command.baseVersion, 'dismissed');
+        ids = await setReminderStatus(
+          tx,
+          userId,
+          command.id,
+          version,
+          command.baseVersion,
+          'dismissed',
+        );
       } else if (command.op === 'reminder.done') {
         ids = await setReminderStatus(tx, userId, command.id, version, command.baseVersion, 'done');
       } else if (command.op === 'reminder.cancel') {
-        ids = await setReminderStatus(tx, userId, command.id, version, command.baseVersion, 'cancelled');
+        ids = await setReminderStatus(
+          tx,
+          userId,
+          command.id,
+          version,
+          command.baseVersion,
+          'cancelled',
+        );
       } else if (command.op === 'reminder.delete') {
         const reminder = await reminderFor(tx, userId, command.id);
-        if (!reminder) throw new DomainError('REMINDER_NOT_FOUND', 'This reminder was not found.', 404);
+        if (!reminder)
+          throw new DomainError('REMINDER_NOT_FOUND', 'This reminder was not found.', 404);
         if (reminder.version !== command.baseVersion)
-          throw new DomainError('VERSION_CONFLICT', 'This reminder changed on another device. Refresh and try again.');
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This reminder changed on another device. Refresh and try again.',
+          );
         const now = new Date();
         await tx
           .update(reminders)
@@ -1013,9 +1041,13 @@ export function createCaptureService(db: Database) {
         ids = [reminder.id];
       } else if (command.op === 'reminder.restore') {
         const reminder = await trashedReminderFor(tx, userId, command.id);
-        if (!reminder) throw new DomainError('REMINDER_NOT_FOUND', 'This reminder was not in Trash.', 404);
+        if (!reminder)
+          throw new DomainError('REMINDER_NOT_FOUND', 'This reminder was not in Trash.', 404);
         if (reminder.version !== command.baseVersion)
-          throw new DomainError('VERSION_CONFLICT', 'This reminder changed on another device. Refresh and try again.');
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This reminder changed on another device. Refresh and try again.',
+          );
         await tx
           .update(reminders)
           .set({ deletedAt: null, version, updatedAt: new Date() })
@@ -1023,9 +1055,13 @@ export function createCaptureService(db: Database) {
         ids = [reminder.id];
       } else if (command.op === 'reminder.purge') {
         const reminder = await trashedReminderFor(tx, userId, command.id);
-        if (!reminder) throw new DomainError('REMINDER_NOT_FOUND', 'This reminder was not in Trash.', 404);
+        if (!reminder)
+          throw new DomainError('REMINDER_NOT_FOUND', 'This reminder was not in Trash.', 404);
         if (reminder.version !== command.baseVersion)
-          throw new DomainError('VERSION_CONFLICT', 'This reminder changed on another device. Refresh and try again.');
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This reminder changed on another device. Refresh and try again.',
+          );
         ids = [reminder.id];
         ids.push(...(await purgeRecords(tx, userId, ids, version)));
       } else if (command.op === 'collection.create') {
@@ -1036,31 +1072,68 @@ export function createCaptureService(db: Database) {
           .returning({ id: entities.id });
         if (!inserted.length)
           throw new DomainError('ID_UNAVAILABLE', 'This item ID is unavailable.');
-        ids = await createCollection(tx, userId, command.id, version, command.name, command.parentId);
+        ids = await createCollection(
+          tx,
+          userId,
+          command.id,
+          version,
+          command.name,
+          command.parentId,
+        );
       } else if (command.op === 'collection.rename') {
-        ids = await renameCollection(tx, userId, command.id, version, command.baseVersion, command.name);
+        ids = await renameCollection(
+          tx,
+          userId,
+          command.id,
+          version,
+          command.baseVersion,
+          command.name,
+        );
       } else if (command.op === 'collection.move') {
-        ids = await moveCollection(tx, userId, command.id, version, command.baseVersion, command.parentId);
+        ids = await moveCollection(
+          tx,
+          userId,
+          command.id,
+          version,
+          command.baseVersion,
+          command.parentId,
+        );
       } else if (command.op === 'collection.delete') {
         const collection = await collectionFor(tx, userId, command.id);
-        if (!collection) throw new DomainError('COLLECTION_NOT_FOUND', 'This collection was not found.', 404);
+        if (!collection)
+          throw new DomainError('COLLECTION_NOT_FOUND', 'This collection was not found.', 404);
         if (collection.version !== command.baseVersion)
-          throw new DomainError('VERSION_CONFLICT', 'This collection changed on another device. Refresh and try again.');
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This collection changed on another device. Refresh and try again.',
+          );
         // Detach resources from this collection.
         await tx
           .update(learningResources)
           .set({ collectionId: null, version, updatedAt: new Date() })
-          .where(and(eq(learningResources.userId, userId), eq(learningResources.collectionId, collection.id)));
+          .where(
+            and(
+              eq(learningResources.userId, userId),
+              eq(learningResources.collectionId, collection.id),
+            ),
+          );
         // Detach child collections.
         await tx
           .update(learningCollections)
           .set({ parentId: null, version, updatedAt: new Date() })
-          .where(and(eq(learningCollections.userId, userId), eq(learningCollections.parentId, collection.id)));
+          .where(
+            and(
+              eq(learningCollections.userId, userId),
+              eq(learningCollections.parentId, collection.id),
+            ),
+          );
         const now = new Date();
         await tx
           .update(learningCollections)
           .set({ deletedAt: now, version, updatedAt: now })
-          .where(and(eq(learningCollections.id, collection.id), eq(learningCollections.userId, userId)));
+          .where(
+            and(eq(learningCollections.id, collection.id), eq(learningCollections.userId, userId)),
+          );
         ids = [collection.id];
         ids.push(...(await purgeRecords(tx, userId, ids, version)));
       } else if (command.op === 'resource.save') {
@@ -1087,19 +1160,43 @@ export function createCaptureService(db: Database) {
           resourceType: command.resourceType,
         });
       } else if (command.op === 'resource.setStatus') {
-        ids = await setResourceStatus(tx, userId, command.id, version, command.baseVersion, command.status);
+        ids = await setResourceStatus(
+          tx,
+          userId,
+          command.id,
+          version,
+          command.baseVersion,
+          command.status,
+        );
       } else if (command.op === 'resource.setProgress') {
         ids = await setResourceProgress(
-          tx, userId, command.id, version, command.baseVersion,
-          command.progressPercent, command.progressSeconds, command.progressMode,
+          tx,
+          userId,
+          command.id,
+          version,
+          command.baseVersion,
+          command.progressPercent,
+          command.progressSeconds,
+          command.progressMode,
         );
       } else if (command.op === 'resource.setCollection') {
-        ids = await setResourceCollection(tx, userId, command.id, version, command.baseVersion, command.collectionId);
+        ids = await setResourceCollection(
+          tx,
+          userId,
+          command.id,
+          version,
+          command.baseVersion,
+          command.collectionId,
+        );
       } else if (command.op === 'resource.delete') {
         const resource = await resourceFor(tx, userId, command.id);
-        if (!resource) throw new DomainError('RESOURCE_NOT_FOUND', 'This resource was not found.', 404);
+        if (!resource)
+          throw new DomainError('RESOURCE_NOT_FOUND', 'This resource was not found.', 404);
         if (resource.version !== command.baseVersion)
-          throw new DomainError('VERSION_CONFLICT', 'This resource changed on another device. Refresh and try again.');
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This resource changed on another device. Refresh and try again.',
+          );
         const now = new Date();
         await tx
           .update(learningResources)
@@ -1108,9 +1205,13 @@ export function createCaptureService(db: Database) {
         ids = [resource.id];
       } else if (command.op === 'resource.restore') {
         const resource = await trashedResourceFor(tx, userId, command.id);
-        if (!resource) throw new DomainError('RESOURCE_NOT_FOUND', 'This resource was not in Trash.', 404);
+        if (!resource)
+          throw new DomainError('RESOURCE_NOT_FOUND', 'This resource was not in Trash.', 404);
         if (resource.version !== command.baseVersion)
-          throw new DomainError('VERSION_CONFLICT', 'This resource changed on another device. Refresh and try again.');
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This resource changed on another device. Refresh and try again.',
+          );
         await tx
           .update(learningResources)
           .set({ deletedAt: null, version, updatedAt: new Date() })
@@ -1118,107 +1219,219 @@ export function createCaptureService(db: Database) {
         ids = [resource.id];
       } else if (command.op === 'resource.purge') {
         const resource = await trashedResourceFor(tx, userId, command.id);
-        if (!resource) throw new DomainError('RESOURCE_NOT_FOUND', 'This resource was not in Trash.', 404);
+        if (!resource)
+          throw new DomainError('RESOURCE_NOT_FOUND', 'This resource was not in Trash.', 404);
         if (resource.version !== command.baseVersion)
-          throw new DomainError('VERSION_CONFLICT', 'This resource changed on another device. Refresh and try again.');
+          throw new DomainError(
+            'VERSION_CONFLICT',
+            'This resource changed on another device. Refresh and try again.',
+          );
         ids = [resource.id];
         ids.push(...(await purgeRecords(tx, userId, ids, version)));
       } else if (command.op === 'person.create') {
-        const inserted = await tx.insert(entities).values({ id: command.id, userId, type: 'person', version }).onConflictDoNothing().returning({ id: entities.id });
-        if (!inserted.length) throw new DomainError('ID_UNAVAILABLE', 'This item ID is unavailable.');
+        const inserted = await tx
+          .insert(entities)
+          .values({ id: command.id, userId, type: 'person', version })
+          .onConflictDoNothing()
+          .returning({ id: entities.id });
+        if (!inserted.length)
+          throw new DomainError('ID_UNAVAILABLE', 'This item ID is unavailable.');
         ids = await createPerson(tx, userId, command.id, version, command.name, command.nickname);
       } else if (command.op === 'person.update') {
-        ids = await updatePerson(tx, userId, command.id, version, command.baseVersion, { name: command.name, nickname: command.nickname, note: command.note });
+        ids = await updatePerson(tx, userId, command.id, version, command.baseVersion, {
+          name: command.name,
+          nickname: command.nickname,
+          note: command.note,
+        });
       } else if (command.op === 'person.delete') {
         const person = await personFor(tx, userId, command.id);
         if (!person) throw new DomainError('PERSON_NOT_FOUND', 'This person was not found.', 404);
-        if (person.version !== command.baseVersion) throw new DomainError('VERSION_CONFLICT', 'This person changed on another device.');
-        await tx.update(people).set({ deletedAt: new Date(), version, updatedAt: new Date() }).where(and(eq(people.id, command.id), eq(people.userId, userId)));
+        if (person.version !== command.baseVersion)
+          throw new DomainError('VERSION_CONFLICT', 'This person changed on another device.');
+        await tx
+          .update(people)
+          .set({ deletedAt: new Date(), version, updatedAt: new Date() })
+          .where(and(eq(people.id, command.id), eq(people.userId, userId)));
         ids = [command.id];
         ids.push(...(await purgeRecords(tx, userId, ids, version)));
       } else if (command.op === 'account.create') {
-        const inserted = await tx.insert(entities).values({ id: command.id, userId, type: 'account', version }).onConflictDoNothing().returning({ id: entities.id });
-        if (!inserted.length) throw new DomainError('ID_UNAVAILABLE', 'This item ID is unavailable.');
+        const inserted = await tx
+          .insert(entities)
+          .values({ id: command.id, userId, type: 'account', version })
+          .onConflictDoNothing()
+          .returning({ id: entities.id });
+        if (!inserted.length)
+          throw new DomainError('ID_UNAVAILABLE', 'This item ID is unavailable.');
         ids = await createAccount(tx, userId, command.id, version, {
-          name: command.name, accountType: command.accountType, isLiability: command.isLiability,
-          currency: command.currency, openingBalanceMinor: command.openingBalanceMinor, openingDate: command.openingDate,
+          name: command.name,
+          accountType: command.accountType,
+          isLiability: command.isLiability,
+          currency: command.currency,
+          openingBalanceMinor: command.openingBalanceMinor,
+          openingDate: command.openingDate,
         });
       } else if (command.op === 'account.update') {
-        ids = await updateAccount(tx, userId, command.id, version, command.baseVersion, { name: command.name, labelLast4: command.labelLast4 });
+        ids = await updateAccount(tx, userId, command.id, version, command.baseVersion, {
+          name: command.name,
+          labelLast4: command.labelLast4,
+        });
       } else if (command.op === 'account.archive') {
         const acc = await requireAccountDomain(tx, userId, command.id);
-        if (acc.version !== command.baseVersion) throw new DomainError('VERSION_CONFLICT', 'This account changed on another device.');
-        await tx.update(financeAccounts).set({ archivedAt: new Date(), version, updatedAt: new Date() }).where(and(eq(financeAccounts.id, command.id), eq(financeAccounts.userId, userId)));
+        if (acc.version !== command.baseVersion)
+          throw new DomainError('VERSION_CONFLICT', 'This account changed on another device.');
+        await tx
+          .update(financeAccounts)
+          .set({ archivedAt: new Date(), version, updatedAt: new Date() })
+          .where(and(eq(financeAccounts.id, command.id), eq(financeAccounts.userId, userId)));
         ids = [command.id];
       } else if (command.op === 'account.unarchive') {
         const acc = await requireAccountDomain(tx, userId, command.id);
-        if (acc.version !== command.baseVersion) throw new DomainError('VERSION_CONFLICT', 'This account changed on another device.');
-        await tx.update(financeAccounts).set({ archivedAt: null, version, updatedAt: new Date() }).where(and(eq(financeAccounts.id, command.id), eq(financeAccounts.userId, userId)));
+        if (acc.version !== command.baseVersion)
+          throw new DomainError('VERSION_CONFLICT', 'This account changed on another device.');
+        await tx
+          .update(financeAccounts)
+          .set({ archivedAt: null, version, updatedAt: new Date() })
+          .where(and(eq(financeAccounts.id, command.id), eq(financeAccounts.userId, userId)));
         ids = [command.id];
       } else if (command.op === 'account.delete') {
         const acc = await requireAccountDomain(tx, userId, command.id);
-        if (acc.version !== command.baseVersion) throw new DomainError('VERSION_CONFLICT', 'This account changed on another device.');
-        await tx.update(financeAccounts).set({ deletedAt: new Date(), version, updatedAt: new Date() }).where(and(eq(financeAccounts.id, command.id), eq(financeAccounts.userId, userId)));
+        if (acc.version !== command.baseVersion)
+          throw new DomainError('VERSION_CONFLICT', 'This account changed on another device.');
+        await tx
+          .update(financeAccounts)
+          .set({ deletedAt: new Date(), version, updatedAt: new Date() })
+          .where(and(eq(financeAccounts.id, command.id), eq(financeAccounts.userId, userId)));
         ids = [command.id];
         ids.push(...(await purgeRecords(tx, userId, ids, version)));
       } else if (command.op === 'category.create') {
-        const inserted = await tx.insert(entities).values({ id: command.id, userId, type: 'category', version }).onConflictDoNothing().returning({ id: entities.id });
-        if (!inserted.length) throw new DomainError('ID_UNAVAILABLE', 'This item ID is unavailable.');
+        const inserted = await tx
+          .insert(entities)
+          .values({ id: command.id, userId, type: 'category', version })
+          .onConflictDoNothing()
+          .returning({ id: entities.id });
+        if (!inserted.length)
+          throw new DomainError('ID_UNAVAILABLE', 'This item ID is unavailable.');
         ids = await createCategory(tx, userId, command.id, version, {
-          kind: command.kind, name: command.name, parentId: command.parentId, icon: command.icon, color: command.color,
+          kind: command.kind,
+          name: command.name,
+          parentId: command.parentId,
+          icon: command.icon,
+          color: command.color,
         });
       } else if (command.op === 'category.update') {
-        ids = await updateCategory(tx, userId, command.id, version, command.baseVersion, { name: command.name, icon: command.icon, color: command.color });
+        ids = await updateCategory(tx, userId, command.id, version, command.baseVersion, {
+          name: command.name,
+          icon: command.icon,
+          color: command.color,
+        });
       } else if (command.op === 'category.archive') {
         const cat = await categoryForDomain(tx, userId, command.id);
         if (!cat) throw new DomainError('CATEGORY_NOT_FOUND', 'This category was not found.', 404);
-        if (cat.version !== command.baseVersion) throw new DomainError('VERSION_CONFLICT', 'This category changed on another device.');
-        await tx.update(financeCategories).set({ archivedAt: new Date(), version, updatedAt: new Date() }).where(and(eq(financeCategories.id, command.id), eq(financeCategories.userId, userId)));
+        if (cat.version !== command.baseVersion)
+          throw new DomainError('VERSION_CONFLICT', 'This category changed on another device.');
+        await tx
+          .update(financeCategories)
+          .set({ archivedAt: new Date(), version, updatedAt: new Date() })
+          .where(and(eq(financeCategories.id, command.id), eq(financeCategories.userId, userId)));
         ids = [command.id];
       } else if (command.op === 'category.delete') {
         const cat = await categoryForDomain(tx, userId, command.id);
         if (!cat) throw new DomainError('CATEGORY_NOT_FOUND', 'This category was not found.', 404);
-        if (cat.version !== command.baseVersion) throw new DomainError('VERSION_CONFLICT', 'This category changed on another device.');
-        await tx.update(financeCategories).set({ deletedAt: new Date(), version, updatedAt: new Date() }).where(and(eq(financeCategories.id, command.id), eq(financeCategories.userId, userId)));
+        if (cat.version !== command.baseVersion)
+          throw new DomainError('VERSION_CONFLICT', 'This category changed on another device.');
+        await tx
+          .update(financeCategories)
+          .set({ deletedAt: new Date(), version, updatedAt: new Date() })
+          .where(and(eq(financeCategories.id, command.id), eq(financeCategories.userId, userId)));
         ids = [command.id];
         ids.push(...(await purgeRecords(tx, userId, ids, version)));
       } else if (command.op === 'transaction.create') {
-        const inserted = await tx.insert(entities).values({ id: command.id, userId, type: 'transaction', version }).onConflictDoNothing().returning({ id: entities.id });
-        if (!inserted.length) throw new DomainError('ID_UNAVAILABLE', 'This item ID is unavailable.');
+        const inserted = await tx
+          .insert(entities)
+          .values({ id: command.id, userId, type: 'transaction', version })
+          .onConflictDoNothing()
+          .returning({ id: entities.id });
+        if (!inserted.length)
+          throw new DomainError('ID_UNAVAILABLE', 'This item ID is unavailable.');
         ids = await createTransaction(tx, userId, command.id, version, {
-          transactionType: command.transactionType, accountId: command.accountId, toAccountId: command.toAccountId,
-          amountMinor: command.amountMinor, currency: command.currency, toAmountMinor: command.toAmountMinor,
-          adjustmentSign: command.adjustmentSign, transactionDate: command.transactionDate,
-          description: command.description, merchant: command.merchant, paymentMethod: command.paymentMethod,
-          personId: command.personId, debtId: command.debtId, source: command.source, splits: command.splits,
+          transactionType: command.transactionType,
+          accountId: command.accountId,
+          toAccountId: command.toAccountId,
+          amountMinor: command.amountMinor,
+          currency: command.currency,
+          toAmountMinor: command.toAmountMinor,
+          adjustmentSign: command.adjustmentSign,
+          transactionDate: command.transactionDate,
+          description: command.description,
+          merchant: command.merchant,
+          paymentMethod: command.paymentMethod,
+          personId: command.personId,
+          debtId: command.debtId,
+          source: command.source,
+          splits: command.splits,
         });
       } else if (command.op === 'transaction.edit') {
         ids = await editTransaction(tx, userId, command.id, version, command.baseVersion, {
-          amountMinor: command.amountMinor, transactionDate: command.transactionDate,
-          description: command.description, merchant: command.merchant, paymentMethod: command.paymentMethod,
-          categoryId: command.categoryId, splits: command.splits, reason: command.reason,
+          amountMinor: command.amountMinor,
+          transactionDate: command.transactionDate,
+          description: command.description,
+          merchant: command.merchant,
+          paymentMethod: command.paymentMethod,
+          categoryId: command.categoryId,
+          splits: command.splits,
+          reason: command.reason,
         });
       } else if (command.op === 'transaction.void') {
-        ids = await voidTransaction(tx, userId, command.id, version, command.baseVersion, command.reason);
+        ids = await voidTransaction(
+          tx,
+          userId,
+          command.id,
+          version,
+          command.baseVersion,
+          command.reason,
+        );
       } else if (command.op === 'transaction.restore') {
         ids = await restoreTransaction(tx, userId, command.id, version, command.baseVersion);
       } else if (command.op === 'debt.create') {
-        const inserted = await tx.insert(entities).values({ id: command.id, userId, type: 'debt', version }).onConflictDoNothing().returning({ id: entities.id });
-        if (!inserted.length) throw new DomainError('ID_UNAVAILABLE', 'This item ID is unavailable.');
+        const inserted = await tx
+          .insert(entities)
+          .values({ id: command.id, userId, type: 'debt', version })
+          .onConflictDoNothing()
+          .returning({ id: entities.id });
+        if (!inserted.length)
+          throw new DomainError('ID_UNAVAILABLE', 'This item ID is unavailable.');
         ids = await createDebt(tx, userId, command.id, version, {
-          personId: command.personId, direction: command.direction, currency: command.currency,
-          title: command.title, dueOn: command.dueOn,
+          personId: command.personId,
+          direction: command.direction,
+          currency: command.currency,
+          title: command.title,
+          dueOn: command.dueOn,
         });
       } else if (command.op === 'debt.settleUp') {
         const debt = await debtForDomain(tx, userId, command.id);
         if (!debt) throw new DomainError('DEBT_NOT_FOUND', 'This debt was not found.', 404);
-        if (debt.version !== command.baseVersion) throw new DomainError('VERSION_CONFLICT', 'This debt changed on another device.');
+        if (debt.version !== command.baseVersion)
+          throw new DomainError('VERSION_CONFLICT', 'This debt changed on another device.');
         ids = await setDebtStatus(tx, userId, command.id, version, command.baseVersion, 'open');
         // The settle-up also creates a repayment transaction; handled by the caller.
       } else if (command.op === 'debt.writeOff') {
-        ids = await setDebtStatus(tx, userId, command.id, version, command.baseVersion, 'written_off');
+        ids = await setDebtStatus(
+          tx,
+          userId,
+          command.id,
+          version,
+          command.baseVersion,
+          'written_off',
+        );
       } else if (command.op === 'debt.cancel') {
-        ids = await setDebtStatus(tx, userId, command.id, version, command.baseVersion, 'cancelled');
+        ids = await setDebtStatus(
+          tx,
+          userId,
+          command.id,
+          version,
+          command.baseVersion,
+          'cancelled',
+        );
       } else {
         const task = await taskFor(tx, userId, command.id);
         if (!task) throw new DomainError('TASK_NOT_FOUND', 'This task was not found.', 404);

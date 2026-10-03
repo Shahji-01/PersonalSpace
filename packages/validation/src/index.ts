@@ -100,31 +100,65 @@ export const captureSchema = z
 export const snoozeDurationSchema = z.enum(['10min', '1h', 'evening', 'tomorrow_morning']);
 export type SnoozeDuration = z.infer<typeof snoozeDurationSchema>;
 export const resourceTypeSchema = z.enum([
-  'youtube_video', 'youtube_playlist', 'article', 'website', 'documentation',
-  'course', 'pdf', 'book', 'podcast', 'other',
+  'youtube_video',
+  'youtube_playlist',
+  'article',
+  'website',
+  'documentation',
+  'course',
+  'pdf',
+  'book',
+  'podcast',
+  'other',
 ]);
 export type ResourceType = z.infer<typeof resourceTypeSchema>;
 export const resourceSourceSchema = z.enum(['youtube', 'web', 'pdf', 'book', 'share', 'manual']);
 export const learningStatusSchema = z.enum([
-  'saved', 'want_to_learn', 'in_progress', 'completed', 'paused', 'archived',
+  'saved',
+  'want_to_learn',
+  'in_progress',
+  'completed',
+  'paused',
+  'archived',
 ]);
 export type LearningStatus = z.infer<typeof learningStatusSchema>;
 export const progressModeSchema = z.enum(['auto', 'manual']);
 export const metadataStatusSchema = z.enum(['pending', 'ok', 'failed']);
 // --- Money schemas ---
-export const accountTypeSchema = z.enum(['cash', 'bank', 'wallet', 'credit_card', 'loan', 'savings', 'other']);
+export const accountTypeSchema = z.enum([
+  'cash',
+  'bank',
+  'wallet',
+  'credit_card',
+  'loan',
+  'savings',
+  'other',
+]);
 export type AccountType = z.infer<typeof accountTypeSchema>;
 export const paymentMethodSchema = z.enum(['upi', 'card', 'cash', 'netbanking', 'wallet', 'other']);
 export const transactionTypeSchema = z.enum([
-  'income', 'expense', 'transfer', 'adjustment',
-  'lend', 'borrow', 'repayment_in', 'repayment_out',
+  'income',
+  'expense',
+  'transfer',
+  'adjustment',
+  'lend',
+  'borrow',
+  'repayment_in',
+  'repayment_out',
 ]);
 export type TransactionType = z.infer<typeof transactionTypeSchema>;
 export const transactionStatusSchema = z.enum(['posted', 'pending', 'void']);
 export const splitKindSchema = z.enum(['category', 'receivable']);
 export const debtDirectionSchema = z.enum(['owed_to_me', 'i_owe']);
 export const categoryKindSchema = z.enum(['expense', 'income']);
-export const transactionSourceSchema = z.enum(['app', 'ai', 'voice', 'import', 'recurring', 'inbox']);
+export const transactionSourceSchema = z.enum([
+  'app',
+  'ai',
+  'voice',
+  'import',
+  'recurring',
+  'inbox',
+]);
 const amountMinorSchema = z.number().int().positive();
 const splitSchema = z.strictObject({
   id: idSchema,
@@ -364,7 +398,10 @@ export const commandSchema = z.discriminatedUnion('op', [
     amountMinor: amountMinorSchema,
     currency: z.string().length(3).default('INR'),
     toAmountMinor: z.number().int().positive().nullable().default(null),
-    adjustmentSign: z.union([z.literal(-1), z.literal(1)]).nullable().default(null),
+    adjustmentSign: z
+      .union([z.literal(-1), z.literal(1)])
+      .nullable()
+      .default(null),
     transactionDate: dateSchema,
     description: z.string().trim().max(500).nullable().default(null),
     merchant: z.string().trim().max(200).nullable().default(null),
@@ -715,9 +752,19 @@ export const recordSchema = z.strictObject({
   id: idSchema,
   recurrence: recurrenceRecordSchema.nullable().default(null),
   type: z.enum([
-    'inbox', 'note', 'task', 'folder', 'project', 'reminder',
-    'collection', 'learning_resource',
-    'person', 'account', 'category', 'transaction', 'debt',
+    'inbox',
+    'note',
+    'task',
+    'folder',
+    'project',
+    'reminder',
+    'collection',
+    'learning_resource',
+    'person',
+    'account',
+    'category',
+    'transaction',
+    'debt',
   ]),
   text: z.string(),
   contentJson: noteDocumentSchema.nullable().optional(),

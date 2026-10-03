@@ -129,11 +129,7 @@ export type ReminderTime = z.infer<typeof reminderTimeSchema>;
  * Both modes use compatible disambiguation (moves skipped times forward, picks the first
  * repeated time) because reminders should never be silently lost.
  */
-export function computeFireAt(
-  remindDate: string,
-  remindTime: string,
-  timezone: string,
-): Date {
+export function computeFireAt(remindDate: string, remindTime: string, timezone: string): Date {
   const wall = Temporal.PlainDateTime.from(`${remindDate}T${remindTime}`);
   const zoned = wall.toZonedDateTime(timezone, { disambiguation: 'compatible' });
   return new Date(zoned.epochMilliseconds);
@@ -188,4 +184,3 @@ export function computeSnoozeUntil(
     }
   }
 }
-

@@ -267,9 +267,7 @@ export const learningCollections = pgTable(
     parentId: uuid('parent_id'),
     sortOrder: integer('sort_order').notNull().default(0),
   },
-  (t) => [
-    index().on(t.userId, t.parentId),
-  ],
+  (t) => [index().on(t.userId, t.parentId)],
 );
 export const learningResources = pgTable(
   'learning_resources',
@@ -359,7 +357,9 @@ export const debts = pgTable(
     dueOn: date('due_on'),
     manualStatus: text('manual_status').notNull().default('open'),
     isRunningLedger: boolean('is_running_ledger').notNull().default(true),
-    cachedOutstandingMinor: bigint('cached_outstanding_minor', { mode: 'number' }).notNull().default(0),
+    cachedOutstandingMinor: bigint('cached_outstanding_minor', { mode: 'number' })
+      .notNull()
+      .default(0),
   },
   (t) => [index().on(t.userId, t.personId)],
 );

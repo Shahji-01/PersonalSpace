@@ -14,6 +14,7 @@ import {
 import type { SyncStore } from '@personalspace/sync';
 import { readDocument, type NoteDocument } from '@personalspace/editor-schema';
 import { searchIndexSql, searchLocal } from './search-index';
+import { attachmentTablesSql, createAttachmentStore } from './attachment-store';
 
 export type NoteDraft = { content: NoteDocument; baseVersion: number };
 
@@ -38,7 +39,8 @@ export async function openStore(
     CREATE TABLE IF NOT EXISTS note_drafts (user_id TEXT NOT NULL, note_id TEXT NOT NULL, content TEXT NOT NULL, base_version INTEGER NOT NULL, PRIMARY KEY(user_id,note_id));
     CREATE TABLE IF NOT EXISTS tombstones (user_id TEXT NOT NULL, id TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY(user_id,id));
     CREATE TABLE IF NOT EXISTS note_history (user_id TEXT NOT NULL, note_id TEXT NOT NULL, id TEXT NOT NULL, version INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(user_id,id));
-    CREATE INDEX IF NOT EXISTS note_history_by_note ON note_history(user_id,note_id,version DESC);`);
+    CREATE INDEX IF NOT EXISTS note_history_by_note ON note_history(user_id,note_id,version DESC);
+    ${attachmentTablesSql}`);
   await transaction(async () => {
     await db.execAsync(searchIndexSql);
     if (!(await db.getFirstAsync('SELECT version FROM search_index_meta WHERE version = 1'))) {
@@ -50,6 +52,7 @@ export async function openStore(
   });
   const isPurged = async (id: string) =>
     !!(await db.getFirstAsync('SELECT id FROM tombstones WHERE user_id=? AND id=?', userId, id));
+  const attachmentStore = createAttachmentStore(db, userId, transaction, isPurged);
   const save = async (item: RecordItem) => {
     if (await isPurged(item.id)) return;
     await db.runAsync(
@@ -191,6 +194,7 @@ export async function openStore(
     merge: async (records, cursor, tombstones = []) => {
       await transaction(async () => {
         for (const item of tombstones) {
+          await attachmentStore.cancelForParentInTransaction(item.id);
           await db.runAsync(
             'INSERT INTO tombstones(user_id,id,version) VALUES (?,?,?) ON CONFLICT(user_id,id) DO UPDATE SET version=MAX(version,excluded.version)',
             userId,
@@ -242,6 +246,7 @@ export async function openStore(
   };
   return {
     ...store,
+    attachmentTransfers: attachmentStore.transfers,
     search: (query: SearchQuery) => searchLocal(db, userId, query),
     cacheSearch: async (response: SearchResponse): Promise<SearchResponse> => {
       const groups: SearchResponse['groups'] = [];

@@ -1,5 +1,7 @@
 # Offline sync scheduling
 
+Attachment transfers now have a separate engine and account-scoped durable queue. This component is not yet wired to a picker or storage API; its behavior and integration requirements are recorded in [attachments.md](attachments.md).
+
 The account-scoped SQLite outbox remains the durable source of pending mutations. Sync first pulls current state/deletion markers, then pushes ordered batches, applies explicit acknowledgements and pulls again after writes. A failed request preserves the mutation and its original idempotency key. Rejected domain mutations remain visible for review; transport retries do not silently turn them into new writes.
 
 Foreground sync polls every 30 seconds while healthy. Local changes request an immediate sync; changes queued after an in-flight run has read the outbox trigger a follow-up run on success. Requests never overlap. Network/server failures retry with exponential backoff and equal jitter, starting at 1–2 seconds and reaching a 2.5–5 minute cap. A successful run resets the delay. New local changes and foreground transitions respect an existing failure delay.
