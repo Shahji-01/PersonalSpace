@@ -41,12 +41,14 @@ import {
   nextVersion,
   noteFor,
   recordsFor,
+  scrubRetryRecords,
   taskFor,
   trashedInboxFor,
   trashedNoteFor,
   trashedTaskFor,
 } from './capture.repository';
 import { DomainError } from './errors';
+import { purgeParentAttachments, trashParentAttachments } from './attachments';
 import {
   setRecurrence,
   updateFutureRecurrence,
@@ -136,6 +138,7 @@ async function insertCapture(tx: Transaction, userId: string, version: number, i
 }
 
 async function purgeRecords(tx: Transaction, userId: string, ids: string[], version: number) {
+  ids.push(...(await purgeParentAttachments(tx, userId, ids)));
   const removedTasks = await tx
     .select({ ruleId: tasks.recurrenceRuleId })
     .from(tasks)
@@ -199,19 +202,7 @@ async function purgeRecords(tx: Transaction, userId: string, ids: string[], vers
     .update(entities)
     .set({ purgedAt: now, deletedAt: now, updatedAt: now, tags: [], version })
     .where(and(eq(entities.userId, userId), inArray(entities.id, ids)));
-  const removedIds = sql.join(
-    ids.map((id) => sql`${id}`),
-    sql`, `,
-  );
-  await tx.execute(sql`
-    UPDATE idempotency_keys k SET response = (
-      SELECT coalesce(jsonb_agg(entry ORDER BY ordinal), '[]'::jsonb)
-      FROM jsonb_array_elements(k.response) WITH ORDINALITY AS r(entry,ordinal)
-      WHERE entry->>'id' NOT IN (${removedIds})
-    ) WHERE k.user_id = ${userId} AND EXISTS (
-      SELECT 1 FROM jsonb_array_elements(k.response) entry WHERE entry->>'id' IN (${removedIds})
-    )
-  `);
+  await scrubRetryRecords(tx, userId, ids);
   const affected = relatedProjects.map((row) => row.id);
   if (affected.length)
     await tx
@@ -532,7 +523,7 @@ export function createCaptureService(db: Database) {
           .update(notes)
           .set({ deletedAt: now, version, updatedAt: now })
           .where(and(eq(notes.id, note.id), eq(notes.userId, userId)));
-        ids = [note.id];
+        ids = [note.id, ...(await trashParentAttachments(tx, userId, note.id, version, now))];
       } else if (command.op === 'note.restore') {
         const note = await trashedNoteFor(tx, userId, command.id);
         if (!note) throw new DomainError('NOTE_NOT_FOUND', 'This note was not in Trash.', 404);
@@ -564,7 +555,10 @@ export function createCaptureService(db: Database) {
           .update(notes)
           .set({ deletedAt: null, version, updatedAt: new Date() })
           .where(and(eq(notes.id, note.id), eq(notes.userId, userId)));
-        ids = [note.id];
+        ids = [
+          note.id,
+          ...(await trashParentAttachments(tx, userId, note.id, version, null, note.deletedAt!)),
+        ];
       } else if (command.op === 'note.purge') {
         // Remove private content and preserve an ordered deletion marker for offline devices.
         const note = await trashedNoteFor(tx, userId, command.id);

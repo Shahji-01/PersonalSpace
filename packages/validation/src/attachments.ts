@@ -55,6 +55,30 @@ export const uploadedPartSchema = z.strictObject({
 });
 export type UploadedPart = z.infer<typeof uploadedPartSchema>;
 
+export const attachmentUploadGrantSchema = z.strictObject({
+  url: z.url(),
+  method: z.literal('PUT'),
+  headers: z.record(z.string(), z.string()),
+  expiresAt: z.iso.datetime(),
+});
+export type AttachmentUploadGrant = z.infer<typeof attachmentUploadGrantSchema>;
+
+export const attachmentMetadataSchema = attachmentDescriptorSchema.extend({
+  status: z.enum(['pending', 'processing', 'ready', 'rejected']),
+});
+export const attachmentOpenSchema = z.strictObject({
+  descriptor: attachmentDescriptorSchema,
+  sessionId: z.string().min(1).max(2048).nullable().default(null),
+});
+export const attachmentPartRequestSchema = z.strictObject({
+  sessionId: z.string().min(1).max(2048),
+  number: z.number().int().min(1).max(5),
+});
+export const attachmentCompleteSchema = z.strictObject({
+  sessionId: z.string().min(1).max(2048),
+  parts: z.array(uploadedPartSchema).min(1).max(5),
+});
+
 export const attachmentUploadSessionSchema = z.strictObject({
   id: z.string().min(1).max(2048),
   partSize: z

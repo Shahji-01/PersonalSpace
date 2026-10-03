@@ -435,3 +435,20 @@ export const searchDocuments = pgTable('search_documents', {
   createdAt: instant('created_at').notNull(),
   updatedAt: instant('updated_at').notNull(),
 });
+
+export const attachments = pgTable(
+  'attachments',
+  {
+    ...std(),
+    parentId: uuid('parent_id').notNull(),
+    filename: text('filename').notNull(),
+    declaredMime: text('declared_mime').notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    sha256: text('sha256').notNull(),
+    status: text('status').notNull().default('pending'),
+    storageKey: text('storage_key').notNull().unique(),
+    uploadId: text('upload_id'),
+    sessionId: uuid('session_id').notNull().defaultRandom(),
+  },
+  (table) => [index().on(table.userId, table.parentId), index().on(table.userId, table.version)],
+);

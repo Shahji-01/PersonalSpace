@@ -5,12 +5,19 @@ export {
   attachmentDescriptorSchema,
   attachmentTransferSchema,
   attachmentUploadStateSchema,
+  attachmentUploadGrantSchema,
+  attachmentMetadataSchema,
+  attachmentOpenSchema,
+  attachmentPartRequestSchema,
+  attachmentCompleteSchema,
+  type AttachmentUploadGrant,
   uploadedPartSchema,
   type AttachmentDescriptor,
   type AttachmentTransfer,
   type AttachmentUploadState,
   type UploadedPart,
 } from './attachments';
+import { attachmentMetadataSchema } from './attachments';
 import { noteDocumentSchema, noteReferenceIds } from '@personalspace/editor-schema';
 export { folderPlacementIssue } from './folders';
 export { searchQuerySchema, searchTokens, searchableTypes, type SearchQuery } from './search';
@@ -750,6 +757,7 @@ export const syncPushSchema = z.strictObject({
 });
 export const recordSchema = z.strictObject({
   id: idSchema,
+  attachment: attachmentMetadataSchema.nullable().default(null),
   recurrence: recurrenceRecordSchema.nullable().default(null),
   type: z.enum([
     'inbox',
@@ -765,6 +773,7 @@ export const recordSchema = z.strictObject({
     'category',
     'transaction',
     'debt',
+    'attachment',
   ]),
   text: z.string(),
   contentJson: noteDocumentSchema.nullable().optional(),

@@ -1,5 +1,15 @@
 name: personalspace
 services:
+  storage:
+    image: personalspace-storage:2025-10-15
+    build: ./infra/storage
+    profiles: ['attachments']
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: local_storage_only
+      MINIO_ROOT_PASSWORD: local_storage_password_only
+    ports: ['127.0.0.1:9000:9000']
+    volumes: ['storage_data:/data']
   postgres:
     image: postgres:17-alpine
     environment:
@@ -24,4 +34,5 @@ services:
       timeout: 3s
       retries: 20
 volumes:
+  storage_data:
   postgres_data:

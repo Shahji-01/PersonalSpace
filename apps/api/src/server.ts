@@ -1,9 +1,12 @@
 import { Redis } from 'ioredis';
 import { readConfig } from '@personalspace/config';
 import { createDatabase } from '@personalspace/db';
+import { createS3Storage, readStorageConfig } from '@personalspace/storage';
 import { createApp } from './app';
 
 const config = readConfig(process.env);
+const storageConfig = readStorageConfig(process.env);
+const storage = storageConfig ? createS3Storage(storageConfig) : undefined;
 const domain = createDatabase(config.DATABASE_URL);
 const auth = createDatabase(config.AUTH_DATABASE_URL);
 const redis = new Redis(config.REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 1 });
@@ -14,8 +17,10 @@ const app = await createApp({
   config,
   db: domain.db,
   authDb: auth.db,
+  storage,
   ready: async () => {
     await Promise.all([domain.pool.query('select 1'), auth.pool.query('select 1'), redis.ping()]);
+    if (storage) await storage.ready();
   },
 });
 let closing = false;
@@ -23,6 +28,7 @@ async function close() {
   if (closing) return;
   closing = true;
   await app.close();
+  storage?.close();
   redis.disconnect();
   await Promise.all([domain.pool.end(), auth.pool.end()]);
 }

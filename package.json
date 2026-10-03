@@ -26,6 +26,7 @@
     "test:editor": "playwright test --config playwright.editor.config.ts"
   },
   "devDependencies": {
+    "testcontainers": "11.14.0",
     "@eslint/js": "^9.39.0",
     "@playwright/test": "^1.55.0",
     "@testcontainers/postgresql": "^11.10.0",

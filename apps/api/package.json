@@ -10,6 +10,7 @@
     "build": "tsup"
   },
   "dependencies": {
+    "@personalspace/storage": "workspace:*",
     "@personalspace/config": "workspace:*",
     "@personalspace/db": "workspace:*",
     "@personalspace/domain": "workspace:*",

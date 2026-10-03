@@ -28,6 +28,7 @@ export async function indexSearchRecords(
     if (
       record.deletedAt ||
       record.type === 'folder' ||
+      record.type === 'attachment' ||
       (record.type === 'inbox' && record.status !== 'new')
     )
       continue;

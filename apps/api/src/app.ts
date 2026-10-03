@@ -8,14 +8,19 @@ import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import type { ServerConfig } from '@personalspace/config';
 import type { Database } from '@personalspace/db';
+import type { AttachmentStorage } from '@personalspace/storage';
 import {
   createCaptureService,
+  createAttachmentService,
   createNoteHistoryService,
   createSearchService,
   DomainError,
 } from '@personalspace/domain';
 import {
   commandSchema,
+  attachmentOpenSchema,
+  attachmentPartRequestSchema,
+  attachmentCompleteSchema,
   searchQuerySchema,
   searchResponseSchema,
   idSchema,
@@ -34,6 +39,7 @@ export async function createApp(deps: {
   authDb: Database;
   ready: () => Promise<void>;
   logger?: boolean;
+  storage?: AttachmentStorage;
 }) {
   const { config } = deps;
   const app = Fastify({
@@ -56,6 +62,12 @@ export async function createApp(deps: {
   const auth = createAuth(deps.authDb, config);
   const capture = createCaptureService(deps.db);
   const noteHistory = createNoteHistoryService(deps.db);
+  const attachmentService = deps.storage ? createAttachmentService(deps.db, deps.storage) : null;
+  const files = () => {
+    if (!attachmentService)
+      throw new DomainError('STORAGE_UNAVAILABLE', 'Attachment storage is not configured.', 503);
+    return attachmentService;
+  };
   await app.register(helmet);
   await app.register(cors, {
     origin: config.WEB_URL,
@@ -95,10 +107,12 @@ export async function createApp(deps: {
           details: error.issues.map((i) => ({ field: i.path.join('.'), issue: i.message })),
         },
       });
-    if (error instanceof DomainError)
+    if (error instanceof DomainError) {
+      if (error.code === 'UPLOAD_RATE_LIMITED') reply.header('Retry-After', '3600');
       return reply
         .code(error.statusCode)
         .send({ error: { code: error.code, message: error.message, requestId: request.id } });
+    }
     const status =
       error instanceof Error && 'statusCode' in error && typeof error.statusCode === 'number'
         ? error.statusCode
@@ -192,6 +206,55 @@ export async function createApp(deps: {
         request.userId = session.user.id;
       });
       api.get('/me', async (request) => ({ data: { id: request.userId } }));
+      api.post(
+        '/attachments/uploads',
+        {
+          schema: {
+            security: [{ bearerAuth: [] }],
+            body: z.toJSONSchema(attachmentOpenSchema, { target: 'draft-7', io: 'input' }),
+          },
+        },
+        async (request) => {
+          const { descriptor } = attachmentOpenSchema.parse(request.body);
+          return files().open(request.userId, descriptor, request.id);
+        },
+      );
+      api.post(
+        '/attachments/:id/parts',
+        {
+          schema: {
+            security: [{ bearerAuth: [] }],
+            body: z.toJSONSchema(attachmentPartRequestSchema, { target: 'draft-7' }),
+          },
+        },
+        async (request) => {
+          const { id } = z.object({ id: idSchema }).parse(request.params);
+          const { sessionId, number } = attachmentPartRequestSchema.parse(request.body);
+          return files().part(request.userId, id, sessionId, number);
+        },
+      );
+      api.post(
+        '/attachments/:id/complete',
+        {
+          schema: {
+            security: [{ bearerAuth: [] }],
+            body: z.toJSONSchema(attachmentCompleteSchema, { target: 'draft-7' }),
+          },
+        },
+        async (request) => {
+          const { id } = z.object({ id: idSchema }).parse(request.params);
+          const { sessionId, parts } = attachmentCompleteSchema.parse(request.body);
+          return files().complete(request.userId, id, sessionId, parts, request.id);
+        },
+      );
+      api.post(
+        '/attachments/:id/cancel',
+        { schema: { security: [{ bearerAuth: [] }] } },
+        async (request) => {
+          const { id } = z.object({ id: idSchema }).parse(request.params);
+          return files().cancel(request.userId, id, request.id);
+        },
+      );
       api.get(
         '/search',
         {

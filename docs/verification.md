@@ -1,5 +1,15 @@
 # Verification
 
+## Private attachment upload API — 3 October 2026
+
+- 101 unit tests passed, including signed-grant constraints and client handling of storage failures versus expired sign-in sessions.
+- 48 integration tests passed: 38 existing PostgreSQL/API regressions and ten attachment tests using PostgreSQL plus a real private MinIO server built from pinned upstream source.
+- Attachment checks cover RLS/ownership, idempotent registration, independent note versions, private signed PUTs, checksum rejection, multipart resume/completion, concurrent/expired sessions, quota serialization, upload-rate history, Trash/restore/purge, retry-response erasure on cancellation, cleanup ownership/timing, and storage I/O outside the row-sync lock.
+- TypeScript passed for tools/tests and all 14 workspaces; ESLint, formatting and diff checks passed. API/worker builds and Android/iOS Hermes plus DOM exports passed; the unchanged web build used its successful cache.
+- Migration 0027 applied locally; isolated integration databases also verified repeat migration application. The optional persistent storage service and credentials were not enabled in the local environment.
+
+The local storage setup now installs only the supported quarantine expiration rule. MinIO does not support S3's incomplete-multipart lifecycle rule; see [storage setup and limits](attachments.md). Cleanup integration tests execute the worker handler against real objects and inspect durable outbox events; live BullMQ delivery of attachment cleanup was not exercised. Processing/scanning, validated downloads, native picker/file operations and editor integration remain pending. No emulator interaction, restart or installation was performed.
+
 ## Attachment queue increment — 3 October 2026
 
 - 95 unit tests passed, including 15 new transfer-engine tests and seven new actual-SQLite persistence/isolation/erasure tests.

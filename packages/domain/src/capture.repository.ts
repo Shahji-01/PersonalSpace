@@ -1,6 +1,7 @@
 import { and, eq, gt, gte, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import {
   entities,
+  attachments,
   entityLinks,
   inboxItems,
   learningCollections,
@@ -20,6 +21,23 @@ import {
   type Transaction,
 } from '@personalspace/db';
 import { recordSchema, type RecordItem, type Tombstone } from '@personalspace/validation';
+
+export async function scrubRetryRecords(tx: Transaction, userId: string, ids: string[]) {
+  if (!ids.length) return;
+  const removedIds = sql.join(
+    ids.map((id) => sql`${id}`),
+    sql`, `,
+  );
+  await tx.execute(sql`
+    UPDATE idempotency_keys k SET response = (
+      SELECT coalesce(jsonb_agg(entry ORDER BY ordinal), '[]'::jsonb)
+      FROM jsonb_array_elements(k.response) WITH ORDINALITY AS r(entry,ordinal)
+      WHERE entry->>'id' NOT IN (${removedIds})
+    ) WHERE k.user_id = ${userId} AND EXISTS (
+      SELECT 1 FROM jsonb_array_elements(k.response) entry WHERE entry->>'id' IN (${removedIds})
+    )
+  `);
+}
 
 export async function recordsFor(
   tx: Transaction,
@@ -48,6 +66,10 @@ export async function recordsFor(
   const ruleIds = taskRows.flatMap((task) =>
     task.recurrenceRuleId ? [task.recurrenceRuleId] : [],
   );
+  const attachmentRows = await tx
+    .select()
+    .from(attachments)
+    .where(and(eq(attachments.userId, userId), inArray(attachments.id, ids)));
   const rules = ruleIds.length
     ? await tx
         .select()
@@ -142,7 +164,8 @@ export async function recordsFor(
       | typeof financeAccounts.$inferSelect
       | typeof financeCategories.$inferSelect
       | typeof debts.$inferSelect
-      | typeof financeTransactions.$inferSelect,
+      | typeof financeTransactions.$inferSelect
+      | typeof attachments.$inferSelect,
     extra: object,
   ) =>
     recordSchema.parse({
@@ -162,6 +185,23 @@ export async function recordsFor(
       ...extra,
     });
   return [
+    ...attachmentRows.map((row) =>
+      serialize(row, {
+        type: 'attachment',
+        text: row.filename,
+        status: 'active',
+        parentId: row.parentId,
+        attachment: {
+          id: row.id,
+          parentId: row.parentId,
+          filename: row.filename,
+          mime: row.declaredMime,
+          size: row.sizeBytes,
+          sha256: row.sha256,
+          status: row.status,
+        },
+      }),
+    ),
     ...projectRows.map((r) =>
       serialize(r, {
         type: 'project',

@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@personalspace/storage": "workspace:*",
     "@personalspace/editor-schema": "workspace:*",
     "@personalspace/db": "workspace:*",
     "@personalspace/validation": "workspace:*",

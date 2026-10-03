@@ -1,6 +1,12 @@
 import { z } from 'zod';
+import { AttachmentTransferError, type AttachmentUploadTransport } from '@personalspace/sync';
 import {
   noteHistoryResponseSchema,
+  attachmentUploadStateSchema,
+  attachmentUploadGrantSchema,
+  type AttachmentDescriptor,
+  type UploadedPart,
+  type AttachmentUploadGrant,
   searchQuerySchema,
   searchResponseSchema,
   type SearchQuery,
@@ -20,7 +26,12 @@ export class ApiError extends Error {
   }
 }
 export function createClient(baseUrl: string, token: () => string | null) {
-  async function request<T>(path: string, schema: z.ZodType<T>, body?: unknown): Promise<T> {
+  async function request<T>(
+    path: string,
+    schema: z.ZodType<T>,
+    body?: unknown,
+    signal?: AbortSignal,
+  ): Promise<T> {
     const currentToken = token();
     const response = await fetch(`${baseUrl}${path}`, {
       method: body ? 'POST' : 'GET',
@@ -31,7 +42,7 @@ export function createClient(baseUrl: string, token: () => string | null) {
         ...(currentToken ? { Authorization: `Bearer ${currentToken}` } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(15000),
+      signal: signal ?? AbortSignal.timeout(15000),
     });
     // Proxies can return HTML or an empty body for rate limits/outages. Preserve
     // their HTTP status so sync can still apply the appropriate retry policy.
@@ -50,6 +61,42 @@ export function createClient(baseUrl: string, token: () => string | null) {
     return schema.parse(data);
   }
   return {
+    openAttachment: (
+      descriptor: AttachmentDescriptor,
+      sessionId: string | null,
+      signal?: AbortSignal,
+    ) =>
+      request(
+        '/api/v1/attachments/uploads',
+        attachmentUploadStateSchema,
+        { descriptor, sessionId },
+        signal,
+      ),
+    attachmentPart: (id: string, sessionId: string, number: number, signal?: AbortSignal) =>
+      request(
+        `/api/v1/attachments/${encodeURIComponent(id)}/parts`,
+        attachmentUploadGrantSchema,
+        { sessionId, number },
+        signal,
+      ),
+    completeAttachment: (
+      id: string,
+      sessionId: string,
+      parts: UploadedPart[],
+      signal?: AbortSignal,
+    ) =>
+      request(
+        `/api/v1/attachments/${encodeURIComponent(id)}/complete`,
+        attachmentUploadStateSchema,
+        { sessionId, parts },
+        signal,
+      ),
+    cancelAttachment: (id: string) =>
+      request(
+        `/api/v1/attachments/${encodeURIComponent(id)}/cancel`,
+        z.object({ cancelled: z.literal(true) }),
+        {},
+      ),
     search: (input: SearchQuery) => {
       const query = searchQuerySchema.parse(input);
       const params = new URLSearchParams();
@@ -79,4 +126,69 @@ function retryAfter(value: string | null): number | undefined {
   }
   const date = Date.parse(value);
   return Number.isFinite(date) ? Math.max(0, date - Date.now()) : undefined;
+}
+
+/** The native adapter sends only this grant's headers, never the API bearer token. */
+export function createAttachmentTransport(
+  client: Pick<
+    ReturnType<typeof createClient>,
+    'openAttachment' | 'attachmentPart' | 'completeAttachment'
+  >,
+  put: (input: {
+    localUri: string;
+    start: number;
+    end: number;
+    grant: AttachmentUploadGrant;
+    signal: AbortSignal;
+  }) => Promise<{ status: number; etag: string | null }>,
+): AttachmentUploadTransport {
+  async function api<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (error) {
+      if (error instanceof AttachmentTransferError) throw error;
+      if (error instanceof z.ZodError) throw new AttachmentTransferError('protocol');
+      if (!(error instanceof ApiError)) throw new AttachmentTransferError('retry');
+      if (error.status === 401 || error.status === 403) throw new AttachmentTransferError('auth');
+      if (
+        error.status === 429 ||
+        error.status >= 500 ||
+        ['UPLOAD_SESSION_CHANGED', 'UPLOAD_INCOMPLETE', 'NOTE_NOT_FOUND'].includes(error.code)
+      )
+        throw new AttachmentTransferError(
+          'retry',
+          error.retryAfterMs ?? (error.code === 'UPLOAD_RATE_LIMITED' ? 3600000 : 0),
+        );
+      throw new AttachmentTransferError('rejected');
+    }
+  }
+  return {
+    open: (descriptor, sessionId, signal) =>
+      api(() => client.openAttachment(descriptor, sessionId, signal)),
+    putPart: async ({ descriptor, sessionId, number, localUri, start, end, signal }) => {
+      const grant = await api(() =>
+        client.attachmentPart(descriptor.id, sessionId, number, signal),
+      );
+      if (
+        Object.keys(grant.headers).some((key) =>
+          ['authorization', 'cookie', 'proxy-authorization'].includes(key.toLowerCase()),
+        )
+      )
+        throw new AttachmentTransferError('protocol');
+      const response = await put({ localUri, start, end, grant, signal });
+      // A storage 403 means the short-lived grant needs refreshing, not that the API session expired.
+      if (response.status === 400 || response.status === 413)
+        throw new AttachmentTransferError('local_file');
+      if (response.status < 200 || response.status >= 300)
+        throw new AttachmentTransferError('retry');
+      if (!response.etag) throw new AttachmentTransferError('protocol');
+      return response.etag;
+    },
+    complete: (id, sessionId, parts, signal) =>
+      api(async () => {
+        const result = await client.completeAttachment(id, sessionId, parts, signal);
+        if (result.status === 'uploading') throw new AttachmentTransferError('protocol');
+        return result;
+      }),
+  };
 }

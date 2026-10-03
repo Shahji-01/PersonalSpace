@@ -3,12 +3,33 @@ import { Redis } from 'ioredis';
 import { z } from 'zod';
 import { and, eq, isNull } from 'drizzle-orm';
 import { createDatabase, outboxEvents } from '@personalspace/db';
+import { createS3Storage, readStorageConfig } from '@personalspace/storage';
+import { cleanAttachment, cleanupEventSchema } from './attachment-cleanup';
 
 const env = z.object({ WORKER_DATABASE_URL: z.url(), REDIS_URL: z.url() }).safeParse(process.env);
 if (!env.success) throw new Error('WORKER_DATABASE_URL and REDIS_URL are required.');
 const { db, pool } = createDatabase(env.data.WORKER_DATABASE_URL);
 const redis = new Redis(env.data.REDIS_URL, { maxRetriesPerRequest: null });
 const queue = new Queue('sync-signals', { connection: redis });
+const storageConfig = readStorageConfig(process.env);
+const storage = storageConfig ? createS3Storage(storageConfig) : null;
+const fileQueue = storage ? new Queue('attachment-cleanup', { connection: redis }) : null;
+const fileWorker = storage
+  ? new Worker(
+      'attachment-cleanup',
+      async (job) => {
+        const data = z.object({ userId: z.uuid(), payload: cleanupEventSchema }).parse(job.data);
+        await cleanAttachment(storage, data.userId, data.payload);
+      },
+      { connection: redis, concurrency: 2 },
+    )
+  : null;
+fileWorker?.on('failed', (job) =>
+  console.error(JSON.stringify({ event: 'attachment_cleanup_failed', jobId: job?.id })),
+);
+fileWorker?.on('error', () =>
+  console.error(JSON.stringify({ event: 'attachment_cleanup_unavailable' })),
+);
 const worker = new Worker(
   'sync-signals',
   async (job) => {
@@ -32,6 +53,33 @@ worker.on('error', () => console.error(JSON.stringify({ event: 'worker_unavailab
 redis.on('error', () => console.error(JSON.stringify({ event: 'redis_unavailable' })));
 let stopping = false;
 async function relay() {
+  if (fileQueue) {
+    const cleanup = await db
+      .select()
+      .from(outboxEvents)
+      .where(and(isNull(outboxEvents.processedAt), eq(outboxEvents.type, 'attachments.cleanup')))
+      .orderBy(outboxEvents.createdAt)
+      .limit(100);
+    for (const event of cleanup) {
+      const payload = cleanupEventSchema.parse(event.payload);
+      await fileQueue.add(
+        'remove',
+        { userId: event.userId, payload },
+        {
+          jobId: event.id,
+          delay: Math.max(0, payload.notBefore - Date.now()),
+          attempts: 12,
+          backoff: { type: 'exponential', delay: 5000 },
+          removeOnComplete: { age: 7 * 86400 },
+          removeOnFail: false,
+        },
+      );
+      await db
+        .update(outboxEvents)
+        .set({ processedAt: new Date() })
+        .where(eq(outboxEvents.id, event.id));
+    }
+  }
   const events = await db
     .select()
     .from(outboxEvents)
@@ -74,6 +122,9 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 } finally {
+  await fileWorker?.close();
+  await fileQueue?.close();
+  storage?.close();
   await worker.close();
   await queue.close();
   await redis.quit();

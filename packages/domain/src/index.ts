@@ -1,4 +1,5 @@
 export { createCaptureService } from './capture';
+export { createAttachmentService } from './attachments';
 export { DomainError } from './errors';
 export { createNoteHistoryService } from './note-history';
 export { createSearchService } from './search';
