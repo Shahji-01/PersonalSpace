@@ -1,5 +1,14 @@
 # Verification
 
+## Attachment processing and private downloads — 3 October 2026
+
+- 113 unit tests passed, including real Sharp image orientation/re-encoding/EXIF removal, thumbnail bounds, MIME mismatches, M4A/Opus aliases, UTF-8 validation, signed-download headers, and TCP scanner framing/error/timeout checks.
+- 56 integration tests passed against isolated PostgreSQL and private MinIO storage. Eight new cases cover the restricted processor role, ready-only downloads, processed-key isolation, image output/hash checks, source/output cleanup, scanner-outage retries, cancellation during processing, expired leases, output quota accounting, and real Redis/BullMQ event delivery.
+- TypeScript for tools/tests and all 14 workspaces, ESLint, formatting and diff checks passed. API/worker builds and Android/iOS Hermes + DOM exports passed; the unchanged web build reused its cache.
+- Migration 0028 applied to the local database. Processor login/secrets and the scanner were not enabled locally. No emulator interaction, restart or installation was performed.
+
+The processing integration suite injects deterministic scanner verdicts; the scanner protocol suite uses a local TCP fixture. These verify fail-closed behavior and wiring, not current ClamAV signatures or malware detection effectiveness. A live scanner, representative document/audio/HEIC fixtures, native picker/editor wiring and real-device acceptance remain open. WebM audio is currently rejected pending track validation. See [processing setup and limitations](attachments.md).
+
 ## Private attachment upload API — 3 October 2026
 
 - 101 unit tests passed, including signed-grant constraints and client handling of storage failures versus expired sign-in sessions.

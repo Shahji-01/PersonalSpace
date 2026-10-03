@@ -207,6 +207,18 @@ export async function createApp(deps: {
       });
       api.get('/me', async (request) => ({ data: { id: request.userId } }));
       api.post(
+        '/attachments/:id/download',
+        { schema: { security: [{ bearerAuth: [] }] } },
+        async (request, reply) => {
+          const { id } = z.object({ id: idSchema }).parse(request.params);
+          const { variant } = z
+            .strictObject({ variant: z.enum(['file', 'thumbnail']).default('file') })
+            .parse(request.body ?? {});
+          reply.header('Cache-Control', 'no-store');
+          return files().download(request.userId, id, variant === 'thumbnail');
+        },
+      );
+      api.post(
         '/attachments/uploads',
         {
           schema: {

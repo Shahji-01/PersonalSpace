@@ -4,6 +4,7 @@ import {
   noteHistoryResponseSchema,
   attachmentUploadStateSchema,
   attachmentUploadGrantSchema,
+  attachmentDownloadSchema,
   type AttachmentDescriptor,
   type UploadedPart,
   type AttachmentUploadGrant,
@@ -97,6 +98,10 @@ export function createClient(baseUrl: string, token: () => string | null) {
         z.object({ cancelled: z.literal(true) }),
         {},
       ),
+    downloadAttachment: (id: string, variant: 'file' | 'thumbnail' = 'file') =>
+      request(`/api/v1/attachments/${encodeURIComponent(id)}/download`, attachmentDownloadSchema, {
+        variant,
+      }),
     search: (input: SearchQuery) => {
       const query = searchQuerySchema.parse(input);
       const params = new URLSearchParams();

@@ -63,8 +63,32 @@ export const attachmentUploadGrantSchema = z.strictObject({
 });
 export type AttachmentUploadGrant = z.infer<typeof attachmentUploadGrantSchema>;
 
+export const attachmentDownloadSchema = z.strictObject({
+  url: z.url(),
+  expiresAt: z.iso.datetime(),
+  mime: z.string().min(1),
+  size: z.number().int().positive().max(attachmentLimits.maxBytes),
+  sha256: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .nullable(),
+});
+export const attachmentRejectionSchema = z.enum([
+  'integrity',
+  'type',
+  'malware',
+  'invalid_image',
+  'missing',
+  'quota',
+]);
+
 export const attachmentMetadataSchema = attachmentDescriptorSchema.extend({
   status: z.enum(['pending', 'processing', 'ready', 'rejected']),
+  processedMime: z.string().nullable().default(null),
+  processedSize: z.number().int().positive().nullable().default(null),
+  processedSha256: z.string().nullable().default(null),
+  hasThumbnail: z.boolean().default(false),
+  rejectionReason: attachmentRejectionSchema.nullable().default(null),
 });
 export const attachmentOpenSchema = z.strictObject({
   descriptor: attachmentDescriptorSchema,

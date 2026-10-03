@@ -1,5 +1,6 @@
 export { createCaptureService } from './capture';
 export { createAttachmentService } from './attachments';
+export { createAttachmentProcessor, type ProcessingResult } from './attachment-processing';
 export { DomainError } from './errors';
 export { createNoteHistoryService } from './note-history';
 export { createSearchService } from './search';

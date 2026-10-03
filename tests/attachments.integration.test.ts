@@ -4,13 +4,24 @@ import { GenericContainer, Wait, type StartedTestContainer } from 'testcontainer
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import sharp from 'sharp';
+import { Queue, QueueEvents, Worker } from 'bullmq';
+import { Redis } from 'ioredis';
 import { Pool } from 'pg';
 import { v7 } from 'uuid';
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { createDatabase, attachments, withUser } from '../packages/db/src/index';
 import { migrate } from '../packages/db/src/migrate';
-import { createAttachmentService, createCaptureService } from '../packages/domain/src/index';
+import {
+  createAttachmentService,
+  createAttachmentProcessor,
+  createCaptureService,
+} from '../packages/domain/src/index';
+import {
+  processAttachment,
+  relayAttachmentProcessing,
+} from '../apps/worker/src/attachment-processing';
 import { createS3Storage, readStorageConfig } from '../packages/storage/src/index';
 import { createApp } from '../apps/api/src/app';
 import { cleanAttachment } from '../apps/worker/src/attachment-cleanup';
@@ -27,6 +38,9 @@ let domain: ReturnType<typeof createDatabase>, auth: ReturnType<typeof createDat
 let storage: ReturnType<typeof createS3Storage>, app: FastifyInstance;
 let userA: string, userB: string, tokenA: string, tokenB: string;
 let endpoint: string;
+let processorDb: ReturnType<typeof createDatabase>, relayDb: ReturnType<typeof createDatabase>;
+const processor = () => createAttachmentProcessor(processorDb.db);
+const clean = async () => 'clean' as const;
 const MB = 1024 * 1024;
 const headers = (token = tokenA) => ({
   authorization: `Bearer ${token}`,
@@ -118,6 +132,17 @@ beforeAll(async () => {
   authUrl.password = 'local_auth_only';
   domain = createDatabase(appUrl.href);
   auth = createDatabase(authUrl.href);
+  await owner.query(
+    "ALTER ROLE personalspace_attachment_processor LOGIN PASSWORD 'processor_test_only'",
+  );
+  const processorUrl = new URL(postgres.getConnectionUri());
+  processorUrl.username = 'personalspace_attachment_processor';
+  processorUrl.password = 'processor_test_only';
+  processorDb = createDatabase(processorUrl.href);
+  const relayUrl = new URL(postgres.getConnectionUri());
+  relayUrl.username = 'personalspace_worker';
+  relayUrl.password = 'local_worker_only';
+  relayDb = createDatabase(relayUrl.href);
   const image = await GenericContainer.fromDockerfile(
     fileURLToPath(new URL('../infra/storage', import.meta.url)),
   )
@@ -189,7 +214,13 @@ beforeAll(async () => {
 afterAll(async () => {
   await app?.close();
   storage?.close();
-  await Promise.all([domain?.pool.end(), auth?.pool.end(), owner?.end()]);
+  await Promise.all([
+    domain?.pool.end(),
+    auth?.pool.end(),
+    processorDb?.pool.end(),
+    relayDb?.pool.end(),
+    owner?.end(),
+  ]);
   await minio?.stop();
   await postgres?.stop();
 });
@@ -500,4 +531,290 @@ describe('private attachment uploads', () => {
     });
     expect((await unlocked.open(userA, input, 'open')).status).toBe('uploading');
   });
+});
+
+async function uploaded(
+  bytes = Buffer.from('scanned document'),
+  mime: AttachmentDescriptor['mime'] = 'text/plain',
+) {
+  const parent = await note(),
+    input = { ...descriptor(parent.id, bytes), mime };
+  const initial = await open(input);
+  if (initial.status !== 'uploading') throw new Error('Expected upload');
+  await put(input.id, initial.session.id, 1, bytes);
+  await open(input);
+  return { parent, input, bytes };
+}
+const download = (id: string, token = tokenA, variant = 'file') =>
+  app.inject({
+    method: 'POST',
+    url: `/api/v1/attachments/${id}/download`,
+    headers: headers(token),
+    payload: { variant },
+  });
+
+describe('attachment processing and download', () => {
+  it('scopes the processor to attachment metadata and hides pending downloads', async () => {
+    const { input } = await uploaded();
+    expect(await processor().claim(userB, input.id)).toBeNull();
+    expect(await processorDb.db.select().from(attachments)).toEqual([]);
+    await expect(processorDb.pool.query('SELECT * FROM notes')).rejects.toThrow(
+      'permission denied',
+    );
+    await expect(processorDb.pool.query('SELECT * FROM auth_user')).rejects.toThrow(
+      'permission denied',
+    );
+    await expect(processorDb.pool.query('DELETE FROM attachments')).rejects.toThrow(
+      'permission denied',
+    );
+    expect((await download(input.id)).statusCode).toBe(409);
+    expect((await download(input.id, tokenB)).statusCode).toBe(404);
+  });
+
+  it('releases sanitized images and private short-lived downloads, then purges every artifact', async () => {
+    const bytes = await sharp({
+      create: { width: 600, height: 400, channels: 3, background: '#3467a1' },
+    })
+      .jpeg()
+      .withExif({ IFD0: { Artist: 'private author' } })
+      .toBuffer();
+    const { parent, input } = await uploaded(bytes, 'image/jpeg');
+    await processAttachment(processor(), storage, clean, userA, input.id);
+    const ready = await row(input.id);
+    expect(ready.status).toBe('ready');
+    expect(ready.processedKey).not.toBe(ready.storageKey);
+    expect(ready.processedMime).toBe('image/webp');
+    const response = await download(input.id);
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.headers['cache-control']).toBe('no-store');
+    const grant = response.json<{ url: string; sha256: string; size: number }>();
+    expect(new URL(grant.url).searchParams.get('X-Amz-Expires')).toBe('60');
+    const full = await fetch(grant.url);
+    expect(full.status).toBe(200);
+    expect(full.headers.get('content-type')).toBe('image/webp');
+    expect(full.headers.get('content-disposition')).toContain('attachment;');
+    const content = Buffer.from(await full.arrayBuffer());
+    expect(createHash('sha256').update(content).digest('hex')).toBe(grant.sha256);
+    expect(content.length).toBe(grant.size);
+    expect((await sharp(content).metadata()).exif).toBeUndefined();
+    const thumb = await download(input.id, tokenA, 'thumbnail');
+    expect(thumb.statusCode).toBe(200);
+    const small = Buffer.from(await (await fetch(thumb.json().url)).arrayBuffer());
+    expect((await sharp(small).metadata()).width).toBeLessThanOrEqual(320);
+    expect((await fetch(`${endpoint}/private-test-attachments/${ready.processedKey}`)).status).toBe(
+      403,
+    );
+    await storage.write(ready.storageKey, Buffer.from('late upload overwrite'), 'text/plain');
+    expect(await storage.read(ready.processedKey!, MB)).toEqual(content);
+    await processAttachment(processor(), storage, clean, userA, input.id);
+    expect((await row(input.id)).version).toBe(ready.version);
+    const page = await capture().pull(userA, parent.version);
+    expect(page.changes.find((item) => item.id === input.id)?.attachment).toMatchObject({
+      status: 'ready',
+      hasThumbnail: true,
+    });
+    expect(JSON.stringify(page)).not.toContain(ready.processedKey);
+    expect(
+      (await capture().pull(userA, 0)).changes.find((item) => item.id === parent.id)!.version,
+    ).toBe(parent.version);
+    const trashed = await capture().execute(
+      userA,
+      v7(),
+      { op: 'note.delete', id: parent.id, baseVersion: parent.version },
+      'trash',
+    );
+    expect((await download(input.id)).statusCode).toBe(404);
+    await capture().execute(
+      userA,
+      v7(),
+      { op: 'note.purge', id: parent.id, baseVersion: trashed[0]!.version },
+      'purge',
+    );
+    for (const key of [ready.storageKey, ready.processedKey, ready.thumbnailKey]) {
+      const events = await owner.query(
+        "SELECT payload FROM outbox_events WHERE type='attachments.cleanup' AND payload->>'key'=$1",
+        [key],
+      );
+      expect(events.rowCount).toBeGreaterThan(0);
+      await cleanAttachment(storage, userA, { ...events.rows[0]!.payload, notBefore: 0 });
+      expect(await storage.head(key!)).toBeNull();
+    }
+  });
+
+  it('rejects integrity failures, mismatched MIME and infected files without granting downloads', async () => {
+    const corrupt = await uploaded();
+    const raw = await row(corrupt.input.id);
+    await storage.write(raw.storageKey, Buffer.alloc(corrupt.bytes.length, 120), 'text/plain');
+    await processAttachment(processor(), storage, clean, userA, corrupt.input.id);
+    expect(await row(corrupt.input.id)).toMatchObject({
+      status: 'rejected',
+      rejectionReason: 'integrity',
+    });
+    const wrong = await uploaded(Buffer.from('%PDF-1.7\nprivate file'), 'image/jpeg');
+    await processAttachment(processor(), storage, clean, userA, wrong.input.id);
+    expect(await row(wrong.input.id)).toMatchObject({
+      status: 'rejected',
+      rejectionReason: 'type',
+    });
+    const infected = await uploaded();
+    await processAttachment(processor(), storage, async () => 'infected', userA, infected.input.id);
+    expect(await row(infected.input.id)).toMatchObject({
+      status: 'rejected',
+      rejectionReason: 'malware',
+    });
+    for (const id of [corrupt.input.id, wrong.input.id, infected.input.id])
+      expect((await download(id)).statusCode).toBe(409);
+  });
+
+  it('retries scanner outages without releasing files and cleans up abandoned output reservations', async () => {
+    const { input, bytes } = await uploaded();
+    await expect(
+      processAttachment(
+        processor(),
+        storage,
+        async () => {
+          throw new Error('offline');
+        },
+        userA,
+        input.id,
+      ),
+    ).rejects.toThrow('unavailable');
+    const abandoned = await row(input.id);
+    expect(abandoned.status).toBe('processing');
+    expect(abandoned.processingToken).toBeNull();
+    expect((await download(input.id)).statusCode).toBe(409);
+    await processAttachment(processor(), storage, clean, userA, input.id);
+    const ready = await row(input.id);
+    expect(ready.processedKey).not.toBe(abandoned.processedKey);
+    expect(await storage.read(ready.processedKey!, MB)).toEqual(bytes);
+    expect((await download(input.id, tokenA, 'thumbnail')).statusCode).toBe(404);
+    const cleanup = await owner.query(
+      "SELECT id FROM outbox_events WHERE type='attachments.cleanup' AND payload->>'key'=$1",
+      [abandoned.processedKey],
+    );
+    expect(cleanup.rowCount).toBe(1);
+  });
+
+  it('does not resurrect cancellation during processing and reserves cleanup before writes', async () => {
+    const { input } = await uploaded();
+    let cancelled: Awaited<ReturnType<typeof row>>;
+    await processAttachment(
+      processor(),
+      storage,
+      async () => {
+        cancelled = await row(input.id);
+        await service().cancel(userA, input.id, 'cancel-during-scan');
+        return 'clean';
+      },
+      userA,
+      input.id,
+    );
+    expect(await row(input.id)).toBeUndefined();
+    expect((await download(input.id)).statusCode).toBe(404);
+    const events = await owner.query(
+      "SELECT payload FROM outbox_events WHERE type='attachments.cleanup' AND payload->>'key'=$1",
+      [cancelled!.processedKey],
+    );
+    expect(events.rowCount).toBe(1);
+    await cleanAttachment(storage, userA, { ...events.rows[0]!.payload, notBefore: 0 });
+    expect(await storage.head(cancelled!.processedKey!)).toBeNull();
+    await processAttachment(processor(), storage, clean, userA, input.id);
+  });
+
+  it('recovers expired processing leases and prevents stale completion', async () => {
+    const { input } = await uploaded();
+    const first = await processor().claim(userA, input.id);
+    await expect(processor().claim(userA, input.id)).rejects.toMatchObject({
+      code: 'PROCESSING_BUSY',
+    });
+    await owner.query(
+      "UPDATE attachments SET processing_lease_until=now()-interval '1 second' WHERE id=$1",
+      [input.id],
+    );
+    const next = await processor().claim(userA, input.id);
+    expect(next!.processedKey).not.toBe(first!.processedKey);
+    expect(
+      await processor().finish(userA, input.id, first!.processingToken!, {
+        status: 'rejected',
+        reason: 'type',
+      }),
+    ).toBe(false);
+    expect((await row(input.id)).status).toBe('processing');
+    await processor().release(userA, input.id, next!.processingToken!);
+    await processAttachment(processor(), storage, clean, userA, input.id);
+    expect((await row(input.id)).status).toBe('ready');
+  });
+
+  it('includes processed file and thumbnail sizes in quota accounting before release', async () => {
+    const user = await fixtureUser(),
+      parent = await note(user);
+    const bytes = await sharp({
+      create: { width: 600, height: 400, channels: 3, background: '#3467a1' },
+    })
+      .jpeg()
+      .toBuffer();
+    const input = { ...descriptor(parent.id, bytes), mime: 'image/jpeg' as const };
+    await service().open(user, input, 'quota-upload');
+    const raw = (
+      await withUser(processorDb.db, user, (tx) => tx.select().from(attachments), true)
+    )[0]!;
+    await storage.write(raw.storageKey, bytes, 'application/octet-stream');
+    await service().open(user, input, 'complete');
+    const bounded = createAttachmentProcessor(processorDb.db, { quotaBytes: bytes.length });
+    await processAttachment(bounded, storage, clean, user, input.id);
+    const result = (
+      await withUser(processorDb.db, user, (tx) => tx.select().from(attachments), true)
+    )[0]!;
+    expect(result).toMatchObject({ status: 'rejected', rejectionReason: 'quota' });
+    await expect(service().download(user, input.id)).rejects.toMatchObject({
+      code: 'ATTACHMENT_NOT_READY',
+    });
+  });
+
+  it('delivers the durable processing event through BullMQ to the isolated processor role', async () => {
+    const redisContainer = await new GenericContainer('redis:7-alpine')
+      .withExposedPorts(6379)
+      .start();
+    const connection = new Redis({
+      host: redisContainer.getHost(),
+      port: redisContainer.getMappedPort(6379),
+      maxRetriesPerRequest: null,
+    });
+    const queue = new Queue('processing-integration', { connection });
+    const events = new QueueEvents('processing-integration', { connection });
+    const worker = new Worker(
+      'processing-integration',
+      async (job) => {
+        await processAttachment(
+          processor(),
+          storage,
+          clean,
+          job.data.userId,
+          job.data.payload.attachmentId,
+        );
+      },
+      { connection, concurrency: 1 },
+    );
+    try {
+      await events.waitUntilReady();
+      const { input } = await uploaded();
+      const event = await owner.query(
+        "SELECT id FROM outbox_events WHERE type='attachments.process' AND payload->>'attachmentId'=$1",
+        [input.id],
+      );
+      await relayAttachmentProcessing(relayDb.db, queue);
+      await relayAttachmentProcessing(relayDb.db, queue);
+      const job = await queue.getJob(event.rows[0]!.id);
+      expect(job).not.toBeNull();
+      await job!.waitUntilFinished(events, 20000);
+      expect((await row(input.id)).status).toBe('ready');
+      expect((await download(input.id)).statusCode).toBe(200);
+    } finally {
+      await worker.close();
+      await events.close();
+      await queue.close();
+      await connection.quit();
+      await redisContainer.stop();
+    }
+  }, 60000);
 });

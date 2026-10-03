@@ -6,6 +6,8 @@ export {
   attachmentTransferSchema,
   attachmentUploadStateSchema,
   attachmentUploadGrantSchema,
+  attachmentDownloadSchema,
+  attachmentRejectionSchema,
   attachmentMetadataSchema,
   attachmentOpenSchema,
   attachmentPartRequestSchema,

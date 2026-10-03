@@ -11,6 +11,26 @@ const environment = {
   S3_FORCE_PATH_STYLE: 'true',
 };
 describe('private object storage configuration and grants', () => {
+  it('signs downloads for one minute with encoded filenames and private cache headers', async () => {
+    const storage = createS3Storage(readStorageConfig(environment)!);
+    try {
+      const grant = await storage.download(
+        'u/test/processed-key',
+        'नोट "quoted".txt',
+        'text/plain',
+      );
+      const url = new URL(grant.url);
+      expect(url.searchParams.get('X-Amz-Expires')).toBe('60');
+      expect(url.searchParams.get('response-cache-control')).toBe('private, no-store');
+      expect(url.searchParams.get('response-content-type')).toBe('text/plain');
+      expect(url.searchParams.get('response-content-disposition')).toContain(
+        "filename*=UTF-8''%E0",
+      );
+      expect(url.searchParams.get('response-content-disposition')).not.toContain('"quoted"');
+    } finally {
+      storage.close();
+    }
+  });
   it('keeps storage optional and rejects partial configuration without exposing credentials', () => {
     expect(readStorageConfig({})).toBeNull();
     expect(() => readStorageConfig({ S3_ACCESS_KEY_ID: 'private-value' })).toThrow('S3_BUCKET');

@@ -25,12 +25,17 @@ import { nextVersion, scrubRetryRecords } from './capture.repository';
 import { DomainError } from './errors';
 
 type Attachment = typeof attachments.$inferSelect;
+export const attachmentUsage =
+  sql<number>`coalesce(sum(greatest(${attachments.sizeBytes},coalesce(${attachments.processedSize},0)) + ${attachments.thumbnailSize}),0)`.mapWith(
+    Number,
+  );
 const partSize = attachmentLimits.multipartAboveBytes;
-async function lock(tx: Transaction, userId: string) {
+export async function lockAttachmentAccount(tx: Transaction, userId: string) {
   await tx.insert(syncState).values({ userId }).onConflictDoNothing();
   await tx.select().from(syncState).where(eq(syncState.userId, userId)).for('update');
 }
-async function versionFor(tx: Transaction, userId: string) {
+const lock = lockAttachmentAccount;
+export async function attachmentVersion(tx: Transaction, userId: string) {
   const [state] = await tx
     .update(syncState)
     .set({ version: nextVersion })
@@ -38,7 +43,8 @@ async function versionFor(tx: Transaction, userId: string) {
     .returning();
   return state!.version;
 }
-async function changed(
+const versionFor = attachmentVersion;
+export async function attachmentChanged(
   tx: Transaction,
   userId: string,
   id: string,
@@ -51,6 +57,7 @@ async function changed(
     .insert(outboxEvents)
     .values({ id: v7(), userId, type: 'entities.changed', payload: { entityIds: [id], version } });
 }
+const changed = attachmentChanged;
 async function owned(tx: Transaction, userId: string, id: string) {
   const [found] = await tx
     .select({ row: attachments })
@@ -79,18 +86,25 @@ const terminal = (row: Attachment): AttachmentUploadState =>
 
 export async function queueAttachmentCleanup(
   tx: Transaction,
-  row: Pick<Attachment, 'userId' | 'storageKey' | 'uploadId'>,
+  row: Pick<Attachment, 'userId' | 'storageKey' | 'uploadId'> &
+    Partial<Pick<Attachment, 'processedKey' | 'thumbnailKey'>>,
 ) {
-  await tx.insert(outboxEvents).values({
-    id: v7(),
-    userId: row.userId,
-    type: 'attachments.cleanup',
-    payload: {
-      key: row.storageKey,
-      uploadId: row.uploadId,
-      notBefore: Date.now() + 10 * 60 * 1000,
-    },
-  });
+  for (const key of new Set(
+    [row.storageKey, row.processedKey, row.thumbnailKey].filter(
+      (value): value is string => !!value,
+    ),
+  )) {
+    await tx.insert(outboxEvents).values({
+      id: v7(),
+      userId: row.userId,
+      type: 'attachments.cleanup',
+      payload: {
+        key,
+        uploadId: key === row.storageKey ? row.uploadId : null,
+        notBefore: Date.now() + 10 * 60 * 1000,
+      },
+    });
+  }
 }
 
 /** Called inside the parent's mutation, before its metadata is deleted. */
@@ -178,7 +192,7 @@ export function createAttachmentService(
           404,
         );
       const [usage] = await tx
-        .select({ bytes: sql<number>`coalesce(sum(${attachments.sizeBytes}),0)`.mapWith(Number) })
+        .select({ bytes: attachmentUsage })
         .from(attachments)
         .where(and(eq(attachments.userId, userId), sql`${attachments.status} <> 'rejected'`));
       if (usage!.bytes + descriptor.size > (options.quotaBytes ?? 1024 * 1024 * 1024))
@@ -327,6 +341,41 @@ export function createAttachmentService(
     };
   }
   return {
+    download: async (userId: string, id: string, thumbnail = false) => {
+      const row = await read(userId, id);
+      if (row.status !== 'ready' || !row.processedKey || !row.processedMime || !row.processedSize)
+        throw new DomainError(
+          'ATTACHMENT_NOT_READY',
+          'This file is not available for download yet.',
+          409,
+        );
+      const key = thumbnail ? row.thumbnailKey : row.processedKey;
+      if (!key) throw new DomainError('THUMBNAIL_NOT_FOUND', 'This file has no thumbnail.', 404);
+      const object = await storage.head(key);
+      if (!object)
+        throw new DomainError(
+          'ATTACHMENT_UNAVAILABLE',
+          'This file is temporarily unavailable.',
+          503,
+        );
+      // Recheck Trash/purge after the storage request before issuing a grant.
+      const current = await read(userId, id);
+      if (current.status !== 'ready' || current.processedKey !== row.processedKey)
+        throw new DomainError(
+          'ATTACHMENT_NOT_READY',
+          'This file is not available for download yet.',
+          409,
+        );
+      const mime = thumbnail ? 'image/webp' : row.processedMime;
+      const filename =
+        mime === 'image/webp' ? `${row.filename.replace(/\.[^.]+$/, '')}.webp` : row.filename;
+      return {
+        ...(await storage.download(key, filename, mime)),
+        mime,
+        size: object.size,
+        sha256: thumbnail ? null : row.processedSha256,
+      };
+    },
     open: async (userId: string, descriptor: AttachmentDescriptor, requestId: string) =>
       reconcile(userId, await register(userId, descriptor, requestId), requestId),
     part: async (userId: string, id: string, sessionId: string, number: number) => {

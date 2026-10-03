@@ -5,6 +5,13 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { createDatabase, outboxEvents } from '@personalspace/db';
 import { createS3Storage, readStorageConfig } from '@personalspace/storage';
 import { cleanAttachment, cleanupEventSchema } from './attachment-cleanup';
+import { createAttachmentProcessor } from '@personalspace/domain';
+import { createClamScanner, readProcessorConfig } from './attachment-scanner';
+import {
+  processAttachment,
+  processingEventSchema,
+  relayAttachmentProcessing,
+} from './attachment-processing';
 
 const env = z.object({ WORKER_DATABASE_URL: z.url(), REDIS_URL: z.url() }).safeParse(process.env);
 if (!env.success) throw new Error('WORKER_DATABASE_URL and REDIS_URL are required.');
@@ -13,6 +20,39 @@ const redis = new Redis(env.data.REDIS_URL, { maxRetriesPerRequest: null });
 const queue = new Queue('sync-signals', { connection: redis });
 const storageConfig = readStorageConfig(process.env);
 const storage = storageConfig ? createS3Storage(storageConfig) : null;
+const processorConfig = readProcessorConfig(process.env);
+if (processorConfig && !storage) throw new Error('Attachment processing requires storage.');
+const processorDb = processorConfig
+  ? createDatabase(processorConfig.ATTACHMENT_DATABASE_URL)
+  : null;
+const processingQueue = processorDb
+  ? new Queue('attachment-processing', { connection: redis })
+  : null;
+const processingWorker =
+  processorDb && processorConfig && storage
+    ? new Worker(
+        'attachment-processing',
+        async (job) => {
+          const data = z
+            .object({ userId: z.uuid(), payload: processingEventSchema })
+            .parse(job.data);
+          await processAttachment(
+            createAttachmentProcessor(processorDb.db),
+            storage,
+            createClamScanner(processorConfig.CLAMAV_HOST, processorConfig.CLAMAV_PORT),
+            data.userId,
+            data.payload.attachmentId,
+          );
+        },
+        { connection: redis, concurrency: 1 },
+      )
+    : null;
+processingWorker?.on('failed', (job) =>
+  console.error(JSON.stringify({ event: 'attachment_processing_failed', jobId: job?.id })),
+);
+processingWorker?.on('error', () =>
+  console.error(JSON.stringify({ event: 'attachment_processing_unavailable' })),
+);
 const fileQueue = storage ? new Queue('attachment-cleanup', { connection: redis }) : null;
 const fileWorker = storage
   ? new Worker(
@@ -53,6 +93,14 @@ worker.on('error', () => console.error(JSON.stringify({ event: 'worker_unavailab
 redis.on('error', () => console.error(JSON.stringify({ event: 'redis_unavailable' })));
 let stopping = false;
 async function relay() {
+  // Independent relay attempts keep scanner/storage outages from blocking row-sync signals.
+  if (processingQueue) {
+    try {
+      await relayAttachmentProcessing(db, processingQueue);
+    } catch {
+      console.error(JSON.stringify({ event: 'attachment_processing_relay_failed' }));
+    }
+  }
   if (fileQueue) {
     const cleanup = await db
       .select()
@@ -122,6 +170,9 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 } finally {
+  await processingWorker?.close();
+  await processingQueue?.close();
+  await processorDb?.pool.end();
   await fileWorker?.close();
   await fileQueue?.close();
   storage?.close();

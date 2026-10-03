@@ -7,6 +7,7 @@ import {
   AbortMultipartUploadCommand,
   ListPartsCommand,
   HeadObjectCommand,
+  GetObjectCommand,
   PutObjectCommand,
   UploadPartCommand,
   CompleteMultipartUploadCommand,
@@ -14,9 +15,20 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { z } from 'zod';
-import type { UploadedPart, AttachmentUploadGrant } from '@personalspace/validation';
+import {
+  attachmentLimits,
+  type UploadedPart,
+  type AttachmentUploadGrant,
+} from '@personalspace/validation';
 
 export interface AttachmentStorage {
+  read(key: string, limit: number): Promise<Buffer | null>;
+  write(key: string, body: Buffer, mime: string): Promise<void>;
+  download(
+    key: string,
+    filename: string,
+    mime: string,
+  ): Promise<{ url: string; expiresAt: string }>;
   head(key: string): Promise<{ size: number; etag: string } | null>;
   createMultipart(key: string): Promise<string>;
   parts(key: string, uploadId: string): Promise<(UploadedPart & { size: number })[] | null>;
@@ -76,6 +88,78 @@ export function createS3Storage(config: NonNullable<ReturnType<typeof readStorag
   const missing = (error: unknown) =>
     error instanceof Error && ['NotFound', 'NoSuchKey', 'NoSuchUpload'].includes(error.name);
   const storage: AttachmentStorage = {
+    read: async (Key, limit) => {
+      if (!Number.isInteger(limit) || limit < 1 || limit > attachmentLimits.maxBytes)
+        throw new Error('Invalid object read limit');
+      try {
+        return await send(async (abortSignal) => {
+          const result = await client.send(new GetObjectCommand({ Bucket, Key }), { abortSignal });
+          const body = result.Body;
+          if (!body) throw new Error('Missing object body');
+          const abort = () => {
+            if ('destroy' in body && typeof body.destroy === 'function') body.destroy();
+          };
+          abortSignal.addEventListener('abort', abort, { once: true });
+          try {
+            abortSignal.throwIfAborted();
+            if (result.ContentLength === undefined || result.ContentLength > limit)
+              throw new Error('Object exceeds read limit');
+            const chunks: Buffer[] = [];
+            let length = 0;
+            for await (const chunk of body as AsyncIterable<Uint8Array>) {
+              abortSignal.throwIfAborted();
+              length += chunk.length;
+              if (length > limit) throw new Error('Object exceeds read limit');
+              chunks.push(Buffer.from(chunk));
+            }
+            abortSignal.throwIfAborted();
+            return Buffer.concat(chunks, length);
+          } finally {
+            abortSignal.removeEventListener('abort', abort);
+            if ('destroy' in body && typeof body.destroy === 'function') body.destroy();
+          }
+        });
+      } catch (error) {
+        if (missing(error)) return null;
+        throw error;
+      }
+    },
+    write: async (Key, Body, ContentType) => {
+      if (!Body.length || Body.length > attachmentLimits.maxBytes)
+        throw new Error('Invalid output size');
+      await send((abortSignal) =>
+        client.send(
+          new PutObjectCommand({
+            Bucket,
+            Key,
+            Body,
+            ContentLength: Body.length,
+            ContentType,
+            Tagging: 'stage=stored',
+            CacheControl: 'private, no-store',
+          }),
+          { abortSignal },
+        ),
+      );
+    },
+    download: async (Key, filename, mime) => {
+      const encoded = encodeURIComponent(filename).replace(
+        /[!'()*]/g,
+        (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+      );
+      const url = await getSignedUrl(
+        signer,
+        new GetObjectCommand({
+          Bucket,
+          Key,
+          ResponseContentType: mime,
+          ResponseCacheControl: 'private, no-store',
+          ResponseContentDisposition: `attachment; filename="attachment"; filename*=UTF-8''${encoded}`,
+        }),
+        { expiresIn: 60 },
+      );
+      return { url, expiresAt: new Date(Date.now() + 60000).toISOString() };
+    },
     head: async (Key) => {
       try {
         const object = await send((abortSignal) =>
