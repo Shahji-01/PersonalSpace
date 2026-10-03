@@ -1,5 +1,13 @@
 import type { Mutation, MutationResult, RecordItem, Tombstone } from '@personalspace/validation';
 export { createSyncScheduler, type SyncState } from './scheduler';
+export {
+  createAttachmentTransferEngine,
+  newAttachmentTransfer,
+  AttachmentTransferError,
+  type AttachmentTransferStore,
+  type AttachmentUploadTransport,
+  type AttachmentDrainResult,
+} from './attachment-transfers';
 
 export interface SyncStore {
   pending(): Promise<Mutation[]>;

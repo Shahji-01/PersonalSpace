@@ -305,6 +305,120 @@ export const learningResources = pgTable(
     index('learning_resources_parent').on(t.userId, t.parentResourceId),
   ],
 );
+export const people = pgTable(
+  'people',
+  {
+    ...std(),
+    name: text('name').notNull(),
+    nickname: text('nickname'),
+    note: text('note'),
+  },
+  (t) => [index().on(t.userId)],
+);
+export const financeAccounts = pgTable(
+  'finance_accounts',
+  {
+    ...std(),
+    name: text('name').notNull(),
+    accountType: text('account_type').notNull(),
+    isLiability: boolean('is_liability').notNull().default(false),
+    currency: text('currency').notNull().default('INR'),
+    openingBalanceMinor: bigint('opening_balance_minor', { mode: 'number' }).notNull().default(0),
+    openingDate: date('opening_date').notNull(),
+    labelLast4: text('label_last4'),
+    sortOrder: integer('sort_order').notNull().default(0),
+    cachedBalanceMinor: bigint('cached_balance_minor', { mode: 'number' }).notNull().default(0),
+    cachedBalanceVersion: bigint('cached_balance_version', { mode: 'number' }).notNull().default(0),
+    archivedAt: instant('archived_at'),
+  },
+  (t) => [index().on(t.userId)],
+);
+export const financeCategories = pgTable(
+  'finance_categories',
+  {
+    ...std(),
+    kind: text('kind').notNull(),
+    name: text('name').notNull(),
+    parentId: uuid('parent_id'),
+    icon: text('icon'),
+    color: text('color'),
+    isSystemSeed: boolean('is_system_seed').notNull().default(false),
+    archivedAt: instant('archived_at'),
+  },
+  (t) => [index().on(t.userId, t.kind)],
+);
+export const debts = pgTable(
+  'debts',
+  {
+    ...std(),
+    personId: uuid('person_id').notNull(),
+    direction: text('direction').notNull(),
+    currency: text('currency').notNull().default('INR'),
+    title: text('title'),
+    openedOn: date('opened_on').notNull(),
+    dueOn: date('due_on'),
+    manualStatus: text('manual_status').notNull().default('open'),
+    isRunningLedger: boolean('is_running_ledger').notNull().default(true),
+    cachedOutstandingMinor: bigint('cached_outstanding_minor', { mode: 'number' }).notNull().default(0),
+  },
+  (t) => [index().on(t.userId, t.personId)],
+);
+export const financeTransactions = pgTable(
+  'finance_transactions',
+  {
+    ...std(),
+    transactionType: text('transaction_type').notNull(),
+    status: text('status').notNull().default('posted'),
+    accountId: uuid('account_id').notNull(),
+    toAccountId: uuid('to_account_id'),
+    amountMinor: bigint('amount_minor', { mode: 'number' }).notNull(),
+    currency: text('currency').notNull().default('INR'),
+    toAmountMinor: bigint('to_amount_minor', { mode: 'number' }),
+    adjustmentSign: smallint('adjustment_sign'),
+    transactionDate: date('transaction_date').notNull(),
+    occurredAt: instant('occurred_at'),
+    description: text('description'),
+    merchant: text('merchant'),
+    paymentMethod: text('payment_method'),
+    personId: uuid('person_id'),
+    debtId: uuid('debt_id'),
+    source: text('source').notNull().default('app'),
+  },
+  (t) => [
+    index().on(t.userId, t.version),
+    index('finance_tx_user_date').on(t.userId, t.transactionDate),
+    index('finance_tx_user_account').on(t.userId, t.accountId, t.transactionDate),
+  ],
+);
+export const transactionSplits = pgTable(
+  'transaction_splits',
+  {
+    id: uuid('id').primaryKey(),
+    userId: uuid('user_id').notNull(),
+    transactionId: uuid('transaction_id').notNull(),
+    kind: text('kind').notNull(),
+    categoryId: uuid('category_id'),
+    personId: uuid('person_id'),
+    debtId: uuid('debt_id'),
+    amountMinor: bigint('amount_minor', { mode: 'number' }).notNull(),
+    note: text('note'),
+  },
+  (t) => [index().on(t.transactionId)],
+);
+export const transactionRevisions = pgTable(
+  'transaction_revisions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id').notNull(),
+    transactionId: uuid('transaction_id').notNull(),
+    snapshot: jsonb('snapshot').notNull(),
+    changedBy: text('changed_by').notNull(),
+    reason: text('reason'),
+    requestId: text('request_id'),
+    createdAt: instant('created_at').notNull().defaultNow(),
+  },
+  (t) => [index().on(t.transactionId, t.createdAt)],
+);
 export const searchDocuments = pgTable('search_documents', {
   entityId: uuid('entity_id').primaryKey(),
   userId: uuid('user_id').notNull(),

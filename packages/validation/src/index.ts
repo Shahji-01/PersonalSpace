@@ -111,6 +111,31 @@ export const learningStatusSchema = z.enum([
 export type LearningStatus = z.infer<typeof learningStatusSchema>;
 export const progressModeSchema = z.enum(['auto', 'manual']);
 export const metadataStatusSchema = z.enum(['pending', 'ok', 'failed']);
+// --- Money schemas ---
+export const accountTypeSchema = z.enum(['cash', 'bank', 'wallet', 'credit_card', 'loan', 'savings', 'other']);
+export type AccountType = z.infer<typeof accountTypeSchema>;
+export const paymentMethodSchema = z.enum(['upi', 'card', 'cash', 'netbanking', 'wallet', 'other']);
+export const transactionTypeSchema = z.enum([
+  'income', 'expense', 'transfer', 'adjustment',
+  'lend', 'borrow', 'repayment_in', 'repayment_out',
+]);
+export type TransactionType = z.infer<typeof transactionTypeSchema>;
+export const transactionStatusSchema = z.enum(['posted', 'pending', 'void']);
+export const splitKindSchema = z.enum(['category', 'receivable']);
+export const debtDirectionSchema = z.enum(['owed_to_me', 'i_owe']);
+export const categoryKindSchema = z.enum(['expense', 'income']);
+export const transactionSourceSchema = z.enum(['app', 'ai', 'voice', 'import', 'recurring', 'inbox']);
+const amountMinorSchema = z.number().int().positive();
+const splitSchema = z.strictObject({
+  id: idSchema,
+  kind: splitKindSchema,
+  categoryId: idSchema.nullable().default(null),
+  personId: idSchema.nullable().default(null),
+  debtId: idSchema.nullable().default(null),
+  amountMinor: amountMinorSchema,
+  note: z.string().trim().max(500).nullable().default(null),
+});
+export type Split = z.infer<typeof splitSchema>;
 export const commandSchema = z.discriminatedUnion('op', [
   z.strictObject({
     op: z.literal('reminder.create'),
@@ -245,6 +270,158 @@ export const commandSchema = z.discriminatedUnion('op', [
   }),
   z.strictObject({
     op: z.literal('resource.purge'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  // --- Money: People ---
+  z.strictObject({
+    op: z.literal('person.create'),
+    id: idSchema,
+    name: z.string().trim().min(1).max(200),
+    nickname: z.string().trim().max(100).nullable().default(null),
+  }),
+  z.strictObject({
+    op: z.literal('person.update'),
+    id: idSchema,
+    name: z.string().trim().min(1).max(200).optional(),
+    nickname: z.string().trim().max(100).nullable().optional(),
+    note: z.string().trim().max(2000).nullable().optional(),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('person.delete'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  // --- Money: Accounts ---
+  z.strictObject({
+    op: z.literal('account.create'),
+    id: idSchema,
+    name: z.string().trim().min(1).max(200),
+    accountType: accountTypeSchema,
+    isLiability: z.boolean().default(false),
+    currency: z.string().length(3).default('INR'),
+    openingBalanceMinor: z.number().int().default(0),
+    openingDate: dateSchema,
+  }),
+  z.strictObject({
+    op: z.literal('account.update'),
+    id: idSchema,
+    name: z.string().trim().min(1).max(200).optional(),
+    labelLast4: z.string().trim().max(10).nullable().optional(),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('account.archive'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('account.unarchive'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('account.delete'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  // --- Money: Categories ---
+  z.strictObject({
+    op: z.literal('category.create'),
+    id: idSchema,
+    kind: categoryKindSchema,
+    name: z.string().trim().min(1).max(100),
+    parentId: idSchema.nullable().default(null),
+    icon: z.string().max(50).nullable().default(null),
+    color: z.string().max(20).nullable().default(null),
+  }),
+  z.strictObject({
+    op: z.literal('category.update'),
+    id: idSchema,
+    name: z.string().trim().min(1).max(100).optional(),
+    icon: z.string().max(50).nullable().optional(),
+    color: z.string().max(20).nullable().optional(),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('category.archive'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('category.delete'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  // --- Money: Transactions ---
+  z.strictObject({
+    op: z.literal('transaction.create'),
+    id: idSchema,
+    transactionType: transactionTypeSchema,
+    accountId: idSchema,
+    toAccountId: idSchema.nullable().default(null),
+    amountMinor: amountMinorSchema,
+    currency: z.string().length(3).default('INR'),
+    toAmountMinor: z.number().int().positive().nullable().default(null),
+    adjustmentSign: z.union([z.literal(-1), z.literal(1)]).nullable().default(null),
+    transactionDate: dateSchema,
+    description: z.string().trim().max(500).nullable().default(null),
+    merchant: z.string().trim().max(200).nullable().default(null),
+    paymentMethod: paymentMethodSchema.nullable().default(null),
+    personId: idSchema.nullable().default(null),
+    debtId: idSchema.nullable().default(null),
+    source: transactionSourceSchema.default('app'),
+    splits: z.array(splitSchema).default([]),
+  }),
+  z.strictObject({
+    op: z.literal('transaction.edit'),
+    id: idSchema,
+    amountMinor: amountMinorSchema.optional(),
+    transactionDate: dateSchema.optional(),
+    description: z.string().trim().max(500).nullable().optional(),
+    merchant: z.string().trim().max(200).nullable().optional(),
+    paymentMethod: paymentMethodSchema.nullable().optional(),
+    categoryId: idSchema.nullable().optional(),
+    splits: z.array(splitSchema).optional(),
+    reason: z.string().trim().max(500).nullable().default(null),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('transaction.void'),
+    id: idSchema,
+    reason: z.string().trim().max(500).nullable().default(null),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('transaction.restore'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  // --- Money: Debts ---
+  z.strictObject({
+    op: z.literal('debt.create'),
+    id: idSchema,
+    personId: idSchema,
+    direction: debtDirectionSchema,
+    currency: z.string().length(3).default('INR'),
+    title: z.string().trim().max(200).nullable().default(null),
+    dueOn: dateSchema.nullable().default(null),
+  }),
+  z.strictObject({
+    op: z.literal('debt.settleUp'),
+    id: idSchema,
+    transactionId: idSchema,
+    accountId: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('debt.writeOff'),
+    id: idSchema,
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    op: z.literal('debt.cancel'),
     id: idSchema,
     baseVersion: z.number().int().nonnegative(),
   }),
@@ -537,7 +714,11 @@ export const syncPushSchema = z.strictObject({
 export const recordSchema = z.strictObject({
   id: idSchema,
   recurrence: recurrenceRecordSchema.nullable().default(null),
-  type: z.enum(['inbox', 'note', 'task', 'folder', 'project', 'reminder', 'collection', 'learning_resource']),
+  type: z.enum([
+    'inbox', 'note', 'task', 'folder', 'project', 'reminder',
+    'collection', 'learning_resource',
+    'person', 'account', 'category', 'transaction', 'debt',
+  ]),
   text: z.string(),
   contentJson: noteDocumentSchema.nullable().optional(),
   contentSchemaVersion: z.literal(1).optional(),
@@ -557,6 +738,12 @@ export const recordSchema = z.strictObject({
     'want_to_learn',
     'completed',
     'paused',
+    'posted',
+    'pending',
+    'void',
+    'open',
+    'written_off',
+    'saved',
   ]),
   plannedDate: dateSchema.nullable(),
   dueDate: dateSchema.nullable().default(null),
@@ -607,6 +794,41 @@ export const recordSchema = z.strictObject({
   progressMode: progressModeSchema.nullable().default(null),
   metadataStatus: metadataStatusSchema.nullable().default(null),
   lastOpenedAt: z.iso.datetime().nullable().default(null),
+  // --- Money fields ---
+  nickname: z.string().nullable().default(null),
+  personNote: z.string().nullable().default(null),
+  accountType: accountTypeSchema.nullable().default(null),
+  isLiability: z.boolean().default(false),
+  currency: z.string().nullable().default(null),
+  openingBalanceMinor: z.number().int().default(0),
+  openingDate: dateSchema.nullable().default(null),
+  labelLast4: z.string().nullable().default(null),
+  cachedBalanceMinor: z.number().int().default(0),
+  categoryKind: categoryKindSchema.nullable().default(null),
+  categoryIcon: z.string().nullable().default(null),
+  categoryColor: z.string().nullable().default(null),
+  isSystemSeed: z.boolean().default(false),
+  transactionType: transactionTypeSchema.nullable().default(null),
+  transactionStatus: transactionStatusSchema.nullable().default(null),
+  accountId: idSchema.nullable().default(null),
+  toAccountId: idSchema.nullable().default(null),
+  amountMinor: z.number().int().default(0),
+  toAmountMinor: z.number().int().nullable().default(null),
+  adjustmentSign: z.number().int().nullable().default(null),
+  transactionDate: dateSchema.nullable().default(null),
+  merchant: z.string().nullable().default(null),
+  paymentMethod: paymentMethodSchema.nullable().default(null),
+  personId: idSchema.nullable().default(null),
+  debtId: idSchema.nullable().default(null),
+  transactionSource: transactionSourceSchema.nullable().default(null),
+  splits: z.array(splitSchema).default([]),
+  debtDirection: debtDirectionSchema.nullable().default(null),
+  debtTitle: z.string().nullable().default(null),
+  openedOn: dateSchema.nullable().default(null),
+  dueOn: dateSchema.nullable().default(null),
+  manualStatus: z.string().nullable().default(null),
+  isRunningLedger: z.boolean().default(false),
+  cachedOutstandingMinor: z.number().int().default(0),
   version: z.number().int().nonnegative(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),

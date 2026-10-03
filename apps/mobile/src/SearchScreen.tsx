@@ -13,7 +13,11 @@ import { documentText } from '@personalspace/editor-schema';
 import { Button, Card, Field, styles } from './components';
 import type { LocalStore } from './store';
 
-const labels = { note: 'Notes', task: 'Tasks', project: 'Projects', inbox: 'Inbox', reminder: 'Reminders', learning_resource: 'Learning' };
+const labels: Record<string, string> = {
+  note: 'Notes', task: 'Tasks', project: 'Projects', inbox: 'Inbox', reminder: 'Reminders',
+  learning_resource: 'Learning', person: 'People', transaction: 'Transactions',
+  category: 'Categories', account: 'Accounts', debt: 'Debts',
+};
 export function SearchScreen({
   store,
   client,

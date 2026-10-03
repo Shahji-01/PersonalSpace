@@ -5,6 +5,12 @@ import {
   inboxItems,
   learningCollections,
   learningResources,
+  people,
+  financeAccounts,
+  financeCategories,
+  debts,
+  financeTransactions,
+  transactionSplits,
   notes,
   noteFolders,
   projects,
@@ -68,6 +74,49 @@ export async function recordsFor(
     .select()
     .from(learningResources)
     .where(and(eq(learningResources.userId, userId), inArray(learningResources.id, ids)));
+  const personRows = await tx
+    .select()
+    .from(people)
+    .where(and(eq(people.userId, userId), inArray(people.id, ids)));
+  const accountRows = await tx
+    .select()
+    .from(financeAccounts)
+    .where(and(eq(financeAccounts.userId, userId), inArray(financeAccounts.id, ids)));
+  const categoryRows = await tx
+    .select()
+    .from(financeCategories)
+    .where(and(eq(financeCategories.userId, userId), inArray(financeCategories.id, ids)));
+  const debtRows = await tx
+    .select()
+    .from(debts)
+    .where(and(eq(debts.userId, userId), inArray(debts.id, ids)));
+  const transactionRows = await tx
+    .select()
+    .from(financeTransactions)
+    .where(and(eq(financeTransactions.userId, userId), inArray(financeTransactions.id, ids)));
+  const splitRows = transactionRows.length
+    ? await tx
+        .select()
+        .from(transactionSplits)
+        .where(
+          and(
+            eq(transactionSplits.userId, userId),
+            inArray(
+              transactionSplits.transactionId,
+              transactionRows.map((t) => t.id),
+            ),
+          ),
+        )
+    : [];
+  const splitsByTx = new Map<string, typeof splitRows>();
+  for (const split of splitRows) {
+    let arr = splitsByTx.get(split.transactionId);
+    if (!arr) {
+      arr = [];
+      splitsByTx.set(split.transactionId, arr);
+    }
+    arr.push(split);
+  }
   const related = await tx
     .select({ sourceId: entityLinks.sourceId, targetId: entityLinks.targetId })
     .from(entityLinks)
@@ -88,7 +137,12 @@ export async function recordsFor(
       | typeof projects.$inferSelect
       | typeof reminders.$inferSelect
       | typeof learningCollections.$inferSelect
-      | typeof learningResources.$inferSelect,
+      | typeof learningResources.$inferSelect
+      | typeof people.$inferSelect
+      | typeof financeAccounts.$inferSelect
+      | typeof financeCategories.$inferSelect
+      | typeof debts.$inferSelect
+      | typeof financeTransactions.$inferSelect,
     extra: object,
   ) =>
     recordSchema.parse({
@@ -219,6 +273,89 @@ export async function recordsFor(
         metadataStatus: r.metadataStatus,
         lastOpenedAt: r.lastOpenedAt?.toISOString() ?? null,
         completedAt: r.completedAt?.toISOString() ?? null,
+      }),
+    ),
+    ...personRows.map((r) =>
+      serialize(r, {
+        type: 'person',
+        text: r.name,
+        status: 'active',
+        nickname: r.nickname,
+        personNote: r.note,
+      }),
+    ),
+    ...accountRows.map((r) =>
+      serialize(r, {
+        type: 'account',
+        text: r.name,
+        status: r.archivedAt ? 'archived' : 'active',
+        accountType: r.accountType,
+        isLiability: r.isLiability,
+        currency: r.currency,
+        openingBalanceMinor: r.openingBalanceMinor,
+        openingDate: r.openingDate,
+        labelLast4: r.labelLast4,
+        sortOrder: r.sortOrder,
+        cachedBalanceMinor: r.cachedBalanceMinor,
+      }),
+    ),
+    ...categoryRows.map((r) =>
+      serialize(r, {
+        type: 'category',
+        text: r.name,
+        status: r.archivedAt ? 'archived' : 'active',
+        categoryKind: r.kind,
+        parentId: r.parentId,
+        categoryIcon: r.icon,
+        categoryColor: r.color,
+        isSystemSeed: r.isSystemSeed,
+      }),
+    ),
+    ...debtRows.map((r) =>
+      serialize(r, {
+        type: 'debt',
+        text: r.title ?? '',
+        status: 'active',
+        personId: r.personId,
+        debtDirection: r.direction,
+        currency: r.currency,
+        debtTitle: r.title,
+        openedOn: r.openedOn,
+        dueOn: r.dueOn,
+        manualStatus: r.manualStatus,
+        isRunningLedger: r.isRunningLedger,
+        cachedOutstandingMinor: r.cachedOutstandingMinor,
+      }),
+    ),
+    ...transactionRows.map((r) =>
+      serialize(r, {
+        type: 'transaction',
+        text: r.description ?? r.merchant ?? '',
+        status: r.status,
+        transactionType: r.transactionType,
+        transactionStatus: r.status,
+        accountId: r.accountId,
+        toAccountId: r.toAccountId,
+        amountMinor: r.amountMinor,
+        currency: r.currency,
+        toAmountMinor: r.toAmountMinor,
+        adjustmentSign: r.adjustmentSign,
+        transactionDate: r.transactionDate,
+        description: r.description,
+        merchant: r.merchant,
+        paymentMethod: r.paymentMethod,
+        personId: r.personId,
+        debtId: r.debtId,
+        transactionSource: r.source,
+        splits: (splitsByTx.get(r.id) ?? []).map((s) => ({
+          id: s.id,
+          kind: s.kind,
+          categoryId: s.categoryId,
+          personId: s.personId,
+          debtId: s.debtId,
+          amountMinor: s.amountMinor,
+          note: s.note,
+        })),
       }),
     ),
   ].sort((a, b) => a.version - b.version || a.id.localeCompare(b.id));

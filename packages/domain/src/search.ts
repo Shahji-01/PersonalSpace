@@ -41,7 +41,15 @@ export async function indexSearchRecords(
           ? documentText(record.descriptionJson)
           : ''
         : record.text;
-    const extra = record.tags.join(' ');
+    const extraParts = [...record.tags];
+    if (record.type === 'transaction') {
+      if (record.merchant) extraParts.push(record.merchant);
+      if (record.amountMinor) extraParts.push((record.amountMinor / 100).toString());
+    } else if (record.type === 'person') {
+      if (record.nickname) extraParts.push(record.nickname);
+      if (record.personNote) extraParts.push(record.personNote);
+    }
+    const extra = extraParts.join(' ');
     await tx.execute(sql`INSERT INTO search_documents (entity_id,user_id,type,title,body,extra,title_normalized,document,status,archived,project_id,folder_id,created_at,updated_at)
       VALUES (${record.id},${userId},${record.type},${title},${body},${extra},lower(unaccent(${title})),
         setweight(to_tsvector('simple',unaccent(${title})),'A') || setweight(to_tsvector('simple',unaccent(${body})),'B') || setweight(to_tsvector('simple',unaccent(${extra})),'C'),

@@ -1,6 +1,9 @@
 import { z } from 'zod';
 
-export const searchableTypeSchema = z.enum(['note', 'task', 'project', 'inbox', 'reminder', 'learning_resource']);
+export const searchableTypeSchema = z.enum([
+  'note', 'task', 'project', 'inbox', 'reminder', 'learning_resource',
+  'person', 'transaction', 'category', 'account', 'debt',
+]);
 export const searchQuerySchema = z.strictObject({
   q: z.string().trim().min(1).max(200),
   type: searchableTypeSchema.optional(),
@@ -10,7 +13,10 @@ export const searchQuerySchema = z.strictObject({
   from: z.iso.date().optional(),
   to: z.iso.date().optional(),
   status: z
-    .enum(['todo', 'in_progress', 'done', 'cancelled', 'active', 'archived', 'new'])
+    .enum([
+      'todo', 'in_progress', 'done', 'cancelled', 'active', 'archived', 'new',
+      'posted', 'pending', 'void', 'open', 'written_off', 'saved',
+    ])
     .optional(),
   includeArchived: z.boolean().default(false),
   limit: z.number().int().min(1).max(50).default(3),

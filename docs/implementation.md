@@ -48,6 +48,7 @@ Implemented:
 - [x] Unit and real-PostgreSQL integration test suites.
 - [x] Reminders: standalone and entity-attached, floating/fixed timezone scheduling, fire_at computation, snooze (10 min/1 h/evening/tomorrow morning), dismiss/done/cancel lifecycle, Trash/restore/purge, RLS, incremental sync and search indexing.
 - [x] Learning: collections (tree, max depth 3), resources (10 types, URL dedup, metadata/progress tracking, auto-completion at 90% for videos), collection CRUD, resource save/update/status/progress/collection/delete/restore/purge, RLS, incremental sync and search indexing.
+- [x] Money: people, accounts, categories (two levels), transactions with sum-validated splits, tracking debts/receivables with statuses, revisions for audit trailing edits/voiding/restoring, incremental sync and search indexing.
 
 These checks mean code exists. Validation results are recorded separately in `docs/verification.md`; Phase 0 is **not** complete.
 
