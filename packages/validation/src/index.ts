@@ -23,6 +23,7 @@ import { attachmentMetadataSchema } from './attachments';
 import { noteDocumentSchema, noteReferenceIds } from '@personalspace/editor-schema';
 export { folderPlacementIssue } from './folders';
 export { searchQuerySchema, searchTokens, searchableTypes, type SearchQuery } from './search';
+export { transliterate, devanagariToRoman, canonicalRoman } from './transliterate';
 import { searchableTypeSchema } from './search';
 import { deadlineSchema, timeZoneSchema, wallTimeSchema } from './time';
 import { recurrenceSetupSchema, recurrenceRecordSchema } from './recurrence';

@@ -1923,6 +1923,38 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       (await owner.query('SELECT * FROM search_documents WHERE entity_id=$1', [id])).rows,
     ).toEqual([]);
   });
+  it('matches search queries across Devanagari and Hinglish scripts', async () => {
+    const service = createCaptureService(domain.db);
+    const search = createSearchService(domain.db);
+    const [deva] = await service.execute(
+      userA,
+      v7(),
+      { op: 'capture', payload: { id: v7(), type: 'note', text: 'मेरा घर', plannedDate: null } },
+      'translit',
+    );
+    const [latin] = await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'capture',
+        payload: { id: v7(), type: 'note', text: 'kitaab list', plannedDate: null },
+      },
+      'translit',
+    );
+    const find = async (q: string): Promise<RecordItem[]> =>
+      (await search.search(userA, searchQuerySchema.parse({ q, limit: 20 }))).groups.flatMap(
+        (g) => g.records,
+      );
+    // Hinglish query finds the Devanagari note.
+    expect(await find('ghar')).toContainEqual(deva);
+    // Devanagari query finds the Hinglish note (किताब → kitaab → kitab).
+    expect(await find('किताब')).toContainEqual(latin);
+    // Vowel-length and script folding still find each record by its own script.
+    expect(await find('घर')).toContainEqual(deva);
+    expect(await find('kitab')).toContainEqual(latin);
+    // Unrelated transliterated query does not match.
+    expect(await find('paani')).toEqual([]);
+  });
   it('links owned notes to projects and syncs link removal when notes are permanently deleted', async () => {
     const service = createCaptureService(domain.db);
     const [project] = await service.execute(

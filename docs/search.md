@@ -10,7 +10,9 @@ Each type returns a group with `records` and `hasMore`. The default is three per
 
 `search_documents` has owner RLS and a composite entity/owner foreign key. Migration 0016 backfills existing content. The domain command transaction replaces the affected index rows after producing authoritative records; soft deletion, conversion and purge remove searchable content in the same commit. Search results never include drafts or note-history snapshots.
 
-Weighted `simple`/`unaccent` vectors provide prefix matching; title trigrams provide online typo matching. Ranking includes text rank, title similarity, recency and an open-task boost. This follows PostgreSQL's [text-search controls](https://www.postgresql.org/docs/17/textsearch-controls.html) and [pg_trgm documentation](https://www.postgresql.org/docs/17/pgtrgm.html). English and Devanagari terms are tested; cross-script transliteration remains unimplemented.
+Weighted `simple`/`unaccent` vectors provide prefix matching; title trigrams provide online typo matching. Ranking includes text rank, title similarity, recency and an open-task boost. This follows PostgreSQL's [text-search controls](https://www.postgresql.org/docs/17/textsearch-controls.html) and [pg_trgm documentation](https://www.postgresql.org/docs/17/pgtrgm.html).
+
+Cross-script search is implemented server-side. Alongside the literal `document` vector, migration 0032 adds a `translit` vector holding a transliterated mirror of every searchable field. Both stored text and the query run through `packages/validation/transliterate`, which romanises Devanagari (schwa handling with word-final deletion, matras, viramas, anusvara and nukta forms) and folds common Hinglish ambiguities (vowel length, w/v, z/j) into a shared space. A Hinglish query (`ghar`) therefore matches a Devanagari record (`घर`) and vice versa. Transliteration is computed in application code, so the `translit` column is populated by `indexSearchRecords`; rows written before migration 0032 gain it when their next content command re-indexes them. Later-module records (reminders, learning, money) are indexed and searchable; migration 0031 widened the type constraint accordingly.
 
 ## Mobile
 
@@ -22,4 +24,4 @@ Filters apply to both local and online queries. Live edits may change result ord
 
 ## Acceptance still required
 
-Real-device FTS/keyboard/accessibility checks, large-account relevance and latency testing, complete multilingual transliteration and later-module indexing remain open. Node's real SQLite engine validates queries, triggers, upgrade backfill, account boundaries and deletion behavior; it does not replace testing the native Expo bridge. The emulator has not been controlled during this implementation.
+Real-device FTS/keyboard/accessibility checks and large-account relevance/latency testing remain open. Server-side cross-script transliteration is implemented and tested; the mobile FTS5 index is maintained by SQL triggers and so does not transliterate offline — a cross-script match surfaces through the merged online results rather than the local cache. Richer schwa/medial-deletion coverage can follow. Node's real SQLite engine validates queries, triggers, upgrade backfill, account boundaries and deletion behavior; it does not replace testing the native Expo bridge. The emulator has not been controlled during this implementation.
