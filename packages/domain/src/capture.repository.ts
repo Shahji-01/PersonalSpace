@@ -150,6 +150,17 @@ export async function recordsFor(
       ),
     )
     .orderBy(entityLinks.targetId);
+  const relatedResources = await tx
+    .select({ sourceId: entityLinks.sourceId, targetId: entityLinks.targetId })
+    .from(entityLinks)
+    .where(
+      and(
+        eq(entityLinks.userId, userId),
+        inArray(entityLinks.sourceId, ids),
+        eq(entityLinks.relation, 'related_resource'),
+      ),
+    )
+    .orderBy(entityLinks.targetId);
   const serialize = (
     row:
       | typeof inboxItems.$inferSelect
@@ -215,6 +226,9 @@ export async function recordsFor(
         color: r.color,
         sortOrder: r.sortOrder,
         relatedNoteIds: related
+          .filter((link) => link.sourceId === r.id)
+          .map((link) => link.targetId),
+        relatedResourceIds: relatedResources
           .filter((link) => link.sourceId === r.id)
           .map((link) => link.targetId),
       }),

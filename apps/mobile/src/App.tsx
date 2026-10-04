@@ -42,6 +42,7 @@ import { NoteHistoryScreen } from './NoteHistoryScreen';
 import { FolderScreen, folderPath } from './FolderScreen';
 import { ProjectScreen } from './ProjectScreen';
 import { ProjectNotesScreen } from './ProjectNotesScreen';
+import { ProjectResourcesScreen } from './ProjectResourcesScreen';
 import { taskIsClosed, taskIsOverdue, taskMatches, taskViews, type TaskView } from './task-views';
 import { SettingsScreen } from './SettingsScreen';
 
@@ -106,6 +107,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
   const [folderFilter, setFolderFilter] = useState<string | null>(null);
   const [projectScreen, setProjectScreen] = useState(false);
   const [projectNotes, setProjectNotes] = useState<RecordItem | null>(null);
+  const [projectResources, setProjectResources] = useState<RecordItem | null>(null);
   const [assigningTask, setAssigningTask] = useState<RecordItem | null>(null);
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
@@ -335,6 +337,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
           folderId: null,
           projectId: null,
           relatedNoteIds: [],
+          relatedResourceIds: [],
           recurrence: null,
           attachment: null,
           color: null,
@@ -578,6 +581,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
           folderId: null,
           projectId: parent.projectId,
           relatedNoteIds: [],
+          relatedResourceIds: [],
           recurrence: null,
           attachment: null,
           color: null,
@@ -962,11 +966,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
             disabled={!attachments}
             onPress={() => setStorageOpen(true)}
           />
-          <Button
-            secondary
-            label="Settings"
-            onPress={() => setSettingsOpen(true)}
-          />
+          <Button secondary label="Settings" onPress={() => setSettingsOpen(true)} />
         </View>
         <Text style={styles.subtitle}>
           {new Intl.DateTimeFormat('en-IN', {
@@ -1881,6 +1881,10 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
               setProjectScreen(false);
               setProjectNotes(project);
             }}
+            onViewResources={(project) => {
+              setProjectScreen(false);
+              setProjectResources(project);
+            }}
           />
         )}
       </Modal>
@@ -1906,6 +1910,28 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
             onOpenNote={(note) => {
               setProjectNotes(null);
               setEditingNote(note);
+            }}
+          />
+        )}
+      </Modal>
+      <Modal
+        visible={projectResources !== null}
+        animationType="slide"
+        onRequestClose={() => setProjectResources(null)}
+      >
+        {projectResources && store.current && (
+          <ProjectResourcesScreen
+            key={projectResources.id}
+            project={projectResources}
+            records={records}
+            pendingIds={pendingIds}
+            store={store.current}
+            onClose={() => setProjectResources(null)}
+            onSaved={async () => {
+              setProjectResources(null);
+              setStatus('Project resources saved on this device. Sync pending.');
+              await refreshLocal();
+              void sync();
             }}
           />
         )}

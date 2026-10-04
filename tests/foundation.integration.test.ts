@@ -2033,6 +2033,138 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       (await service.pull(userB, foreign!.version)).changes.some((r) => r.id === project!.id),
     ).toBe(false);
   });
+  it('links owned learning resources to projects and syncs link removal when resources are permanently deleted', async () => {
+    const service = createCaptureService(domain.db);
+    const [project] = await service.execute(
+      userA,
+      v7(),
+      { op: 'project.create', id: v7(), name: 'Study plan', color: '#3563A5' },
+      'resource-links',
+    );
+    const [resource] = await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'resource.save',
+        id: v7(),
+        url: null,
+        title: 'Related course',
+        resourceType: 'course',
+        source: 'manual',
+        collectionId: null,
+        externalId: null,
+      },
+      'resource-links',
+    );
+    const [foreign] = await service.execute(
+      userB,
+      v7(),
+      {
+        op: 'resource.save',
+        id: v7(),
+        url: null,
+        title: 'Private course',
+        resourceType: 'course',
+        source: 'manual',
+        collectionId: null,
+        externalId: null,
+      },
+      'resource-links',
+    );
+    const command = {
+      op: 'project.setResources' as const,
+      id: project!.id,
+      baseVersion: project!.version,
+      resourceIds: [resource!.id],
+    };
+    await expect(service.execute(userB, v7(), command, 'foreign-project')).rejects.toMatchObject({
+      code: 'PROJECT_NOT_FOUND',
+    });
+    await expect(
+      service.execute(userA, v7(), { ...command, resourceIds: [foreign!.id] }, 'foreign-resource'),
+    ).rejects.toMatchObject({ code: 'RESOURCE_NOT_FOUND' });
+    await expect(
+      service.execute(
+        userA,
+        v7(),
+        { ...command, resourceIds: [resource!.id, resource!.id] },
+        'duplicate',
+      ),
+    ).rejects.toThrow();
+    const key = v7();
+    const [linked] = await service.execute(userA, key, command, 'resource-links');
+    expect(linked!.relatedResourceIds).toEqual([resource!.id]);
+    expect(await service.execute(userA, key, command, 'retry')).toEqual([linked]);
+    await expect(service.execute(userA, v7(), command, 'stale')).rejects.toMatchObject({
+      code: 'VERSION_CONFLICT',
+    });
+    expect((await service.pull(userA, project!.version)).changes).toContainEqual(linked);
+    const [unlinked] = await service.execute(
+      userA,
+      v7(),
+      { ...command, baseVersion: linked!.version, resourceIds: [] },
+      'unlink',
+    );
+    expect(unlinked!.relatedResourceIds).toEqual([]);
+    expect(
+      (await service.pull(userA, project!.version)).changes.find((r) => r.id === resource!.id)
+        ?.text,
+    ).toBe('Related course');
+    const [trashed] = await service.execute(
+      userA,
+      v7(),
+      { op: 'resource.delete', id: resource!.id, baseVersion: resource!.version },
+      'trash',
+    );
+    await expect(
+      service.execute(userA, v7(), { ...command, baseVersion: unlinked!.version }, 'link-trash'),
+    ).rejects.toMatchObject({ code: 'RESOURCE_NOT_FOUND' });
+    const [restored] = await service.execute(
+      userA,
+      v7(),
+      { op: 'resource.restore', id: resource!.id, baseVersion: trashed!.version },
+      'restore',
+    );
+    const [relinked] = await service.execute(
+      userA,
+      v7(),
+      { ...command, baseVersion: unlinked!.version },
+      'relink',
+    );
+    const [retrashed] = await service.execute(
+      userA,
+      v7(),
+      { op: 'resource.delete', id: resource!.id, baseVersion: restored!.version },
+      'trash',
+    );
+    const [retained] = await service.execute(
+      userA,
+      v7(),
+      { ...command, baseVersion: relinked!.version },
+      'retain-existing-trash',
+    );
+    expect(retained!.relatedResourceIds).toEqual([resource!.id]);
+    const purgeKey = v7();
+    const purge = {
+      op: 'resource.purge' as const,
+      id: resource!.id,
+      baseVersion: retrashed!.version,
+    };
+    const [cleaned] = await service.execute(userA, purgeKey, purge, 'purge');
+    expect(cleaned).toMatchObject({ id: project!.id, relatedResourceIds: [], deletedAt: null });
+    expect(cleaned!.version).toBeGreaterThan(retained!.version);
+    expect(await service.execute(userA, purgeKey, purge, 'purge-retry')).toEqual([cleaned]);
+    const page = await service.pull(userA, retained!.version);
+    expect(page.changes).toContainEqual(cleaned);
+    expect(page.tombstones).toContainEqual({
+      id: resource!.id,
+      version: cleaned!.version,
+      purgedAt: expect.any(String),
+    });
+    expect(
+      (await service.pull(userB, foreign!.version)).changes.some((r) => r.id === project!.id),
+    ).toBe(false);
+  });
   it('persists owner-scoped note references atomically through retries, history, Trash and permanent purge', async () => {
     const service = createCaptureService(domain.db);
     const history = createNoteHistoryService(domain.db);

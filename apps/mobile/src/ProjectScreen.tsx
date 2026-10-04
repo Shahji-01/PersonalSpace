@@ -28,6 +28,7 @@ export function ProjectScreen({
   onChanged,
   onViewTasks,
   onViewNotes,
+  onViewResources,
 }: {
   records: RecordItem[];
   pendingIds: string[];
@@ -37,6 +38,7 @@ export function ProjectScreen({
   onChanged: () => Promise<void>;
   onViewTasks: (id: string) => void;
   onViewNotes: (project: RecordItem) => void;
+  onViewResources: (project: RecordItem) => void;
 }) {
   const projects = records
     .filter((r) => r.type === 'project' && !r.deletedAt)
@@ -256,6 +258,12 @@ export function ProjectScreen({
                       label={`Related notes (${project.relatedNoteIds.length})`}
                       disabled={saving}
                       onPress={() => onViewNotes(project)}
+                    />
+                    <Button
+                      secondary
+                      label={`Related resources (${project.relatedResourceIds.length})`}
+                      disabled={saving}
+                      onPress={() => onViewResources(project)}
                     />
                     <Button
                       secondary

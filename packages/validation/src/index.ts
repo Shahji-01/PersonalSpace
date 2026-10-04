@@ -538,6 +538,15 @@ export const commandSchema = z.discriminatedUnion('op', [
     baseVersion: z.number().int().nonnegative(),
   }),
   z.strictObject({
+    op: z.literal('project.setResources'),
+    id: idSchema,
+    resourceIds: z
+      .array(idSchema)
+      .max(100)
+      .refine((ids) => new Set(ids).size === ids.length, 'Choose each resource only once.'),
+    baseVersion: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
     op: z.literal('project.update'),
     id: idSchema,
     name: z.string().trim().min(1).max(100),
@@ -817,6 +826,7 @@ export const recordSchema = z.strictObject({
   recoveredFromId: idSchema.nullable().default(null),
   projectId: idSchema.nullable().default(null),
   relatedNoteIds: z.array(idSchema).default([]),
+  relatedResourceIds: z.array(idSchema).default([]),
   color: projectColorSchema.nullable().default(null),
   // Fractional positions are used only by the offline optimistic ordering; the
   // authoritative project command compacts positions to integers in PostgreSQL.

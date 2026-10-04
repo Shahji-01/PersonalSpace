@@ -151,7 +151,7 @@ async function purgeRecords(tx: Transaction, userId: string, ids: string[], vers
       and(
         eq(entityLinks.userId, userId),
         inArray(entityLinks.targetId, ids),
-        eq(entityLinks.relation, 'related'),
+        inArray(entityLinks.relation, ['related', 'related_resource']),
       ),
     );
   await tx
@@ -331,6 +331,7 @@ export function createCaptureService(db: Database) {
       } else if (
         command.op === 'project.create' ||
         command.op === 'project.setNotes' ||
+        command.op === 'project.setResources' ||
         command.op === 'project.update' ||
         command.op === 'project.setArchived' ||
         command.op === 'project.move'

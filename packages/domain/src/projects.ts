@@ -1,6 +1,13 @@
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import { v7 } from 'uuid';
-import { entities, projects, notes, entityLinks, type Transaction } from '@personalspace/db';
+import {
+  entities,
+  projects,
+  notes,
+  learningResources,
+  entityLinks,
+  type Transaction,
+} from '@personalspace/db';
 import type { Command } from '@personalspace/validation';
 import { DomainError } from './errors';
 
@@ -12,7 +19,8 @@ type ProjectCommand = Extract<
       | 'project.update'
       | 'project.setArchived'
       | 'project.move'
-      | 'project.setNotes';
+      | 'project.setNotes'
+      | 'project.setResources';
   }
 >;
 
@@ -103,6 +111,64 @@ export async function applyProjectCommand(
           sourceId: project.id,
           targetId,
           relation: 'related',
+          version,
+        })),
+      );
+    await tx
+      .update(projects)
+      .set({ version, updatedAt: new Date() })
+      .where(and(eq(projects.id, project.id), eq(projects.userId, userId)));
+    return [project.id];
+  }
+  if (command.op === 'project.setResources') {
+    const existing = await tx
+      .select({ targetId: entityLinks.targetId })
+      .from(entityLinks)
+      .where(
+        and(
+          eq(entityLinks.userId, userId),
+          eq(entityLinks.sourceId, project.id),
+          eq(entityLinks.relation, 'related_resource'),
+        ),
+      );
+    const existingIds = new Set(existing.map((row) => row.targetId));
+    const selected = command.resourceIds.length
+      ? await tx
+          .select({ id: learningResources.id, deletedAt: learningResources.deletedAt })
+          .from(learningResources)
+          .where(
+            and(
+              eq(learningResources.userId, userId),
+              inArray(learningResources.id, command.resourceIds),
+            ),
+          )
+      : [];
+    if (
+      selected.length !== command.resourceIds.length ||
+      selected.some((resource) => resource.deletedAt && !existingIds.has(resource.id))
+    )
+      throw new DomainError(
+        'RESOURCE_NOT_FOUND',
+        'One of the selected resources is unavailable. Refresh and try again.',
+        404,
+      );
+    await tx
+      .delete(entityLinks)
+      .where(
+        and(
+          eq(entityLinks.userId, userId),
+          eq(entityLinks.sourceId, project.id),
+          eq(entityLinks.relation, 'related_resource'),
+        ),
+      );
+    if (command.resourceIds.length)
+      await tx.insert(entityLinks).values(
+        command.resourceIds.map((targetId) => ({
+          id: v7(),
+          userId,
+          sourceId: project.id,
+          targetId,
+          relation: 'related_resource',
           version,
         })),
       );
