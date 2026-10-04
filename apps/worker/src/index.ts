@@ -332,7 +332,7 @@ const emailWorker = new Worker(
   'email',
   async () => {
     try {
-      const sent = await processPendingEmails(db, emailProvider);
+      const sent = await processPendingEmails(maintenanceDb, emailProvider);
       if (sent > 0) {
         console.log(JSON.stringify({ event: 'emails_sent', count: sent }));
       }

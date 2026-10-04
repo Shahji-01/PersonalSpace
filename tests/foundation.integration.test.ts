@@ -31,6 +31,7 @@ import {
   cleanupIdempotencyKeys,
   expireExports,
   deliverDueReminders,
+  processPendingEmails,
 } from '../packages/domain/src/index';
 import { searchQuerySchema, type RecordItem } from '../packages/validation/src/index';
 import { eq, sql } from 'drizzle-orm';
@@ -3607,5 +3608,40 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       (await owner.query('SELECT last_fired_at FROM reminders WHERE id=$1', [reminderId])).rows[0]
         .last_fired_at,
     ).not.toBeNull();
+  });
+  it('sends pending transactional emails to the recipient under the background role', async () => {
+    const dedupe = `email-test-${v7()}`;
+    await owner.query(
+      `INSERT INTO notification_log (user_id, type, dedupe_key, title, body, channel, status)
+       VALUES ($1, 'export_ready', $2, 'Your export is ready', 'Download it within 24 hours.', 'email', 'pending')`,
+      [userA, dedupe],
+    );
+    const sent: Array<{ to: string; subject: string; body: string }> = [];
+    const provider = {
+      async sendEmail(to: string, subject: string, body: string) {
+        sent.push({ to, subject, body });
+      },
+    };
+    // The background role can read only id+email from auth_user (column grant).
+    expect(await processPendingEmails(maintenance.db, provider)).toBe(1);
+    expect(sent).toEqual([
+      {
+        to: 'a@example.test',
+        subject: 'Your export is ready',
+        body: 'Download it within 24 hours.',
+      },
+    ]);
+    const row = await owner.query(
+      'SELECT status, sent_at FROM notification_log WHERE dedupe_key=$1',
+      [dedupe],
+    );
+    expect(row.rows[0]).toMatchObject({ status: 'sent' });
+    expect(row.rows[0].sent_at).not.toBeNull();
+    // Already-sent rows are not reprocessed.
+    expect(await processPendingEmails(maintenance.db, provider)).toBe(0);
+    expect(sent).toHaveLength(1);
+    // The column grant does not expose credentials: selecting password-bearing
+    // auth_account is denied for the background role.
+    await expect(maintenance.db.execute(sql`SELECT password FROM auth_account`)).rejects.toThrow();
   });
 });

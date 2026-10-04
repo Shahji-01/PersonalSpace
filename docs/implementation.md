@@ -58,7 +58,7 @@ Implemented:
 - [x] Learning Metadata: safe URL fetcher with SSRF protection, size limits, and regex-based OpenGraph/Twitter meta tag extraction in a background worker.
 - [x] Reminders Delivery: background worker to push due reminders to registered device tokens idempotently. Runs under the privileged background role, skips devices that scheduled the reminder locally (watermark), dedupes per device/fire-time, and is owner-isolated. Covered by an integration test.
 - [x] YouTube Integration: parse YouTube video/playlist URLs, fetch Data API v3 metadata, and expand playlists into child resources.
-- [x] Transactional Email Worker: background worker for delivering transactional emails logged in the notificationLog.
+- [x] Transactional Email Worker: background worker for delivering transactional emails logged in the notificationLog. Runs under the privileged background role with a column-level `SELECT (id, email)` grant on `auth_user` (never the credential-bearing `auth_account`), marks rows sent/failed and does not reprocess sent rows. Covered by an integration test.
 
 These checks mean code exists. Validation results are recorded separately in `docs/verification.md`; Phase 0 is **not** complete.
 
@@ -109,7 +109,8 @@ Each milestone retains the specification's exit criteria. No milestone is waived
 - Idempotency records are retained indefinitely in this slice, preserving delayed offline retries. Retention/compaction is pending.
 - The worker handles metadata sync signals and nightly maintenance (the latter via the dedicated `personalspace_maintenance` role). Search indexing currently runs transactionally with domain commands. Redis watermark loss is harmless because clients pull PostgreSQL directly.
 - Reminder delivery now also runs under the privileged background role (`MAINTENANCE_DATABASE_URL`), with migration 0034 granting it the device-token/notification-log access it needs.
-- Known gap: the export, account-deletion, learning-metadata and transactional-email background jobs still run under `personalspace_worker`, which is granted only `outbox_events`, so they are not yet functional end-to-end (their per-job errors are caught and logged). Each needs the same treatment reminder delivery just received — route it through the background role and grant the specific tables it touches. Left as incremental follow-ups; account deletion additionally needs DELETE on auth tables, a more sensitive grant.
+- Reminder delivery and transactional email now run under the privileged background role (`MAINTENANCE_DATABASE_URL`); migrations 0034–0035 grant each the specific tables it touches (email uses a column-level `SELECT (id, email)` on `auth_user`).
+- Known gap: the export-generation, account-deletion and learning-metadata background jobs still run under `personalspace_worker` (outbox-only grants), so they are not yet functional end-to-end (their per-job errors are caught and logged). Each needs the same treatment — route it through the background role and grant the specific tables it touches. Left as incremental follow-ups; account deletion additionally needs DELETE on auth tables, a more sensitive grant.
 - Android development installation and initial sign-in/navigation were exercised on the Pixel 7 emulator on 30 September. Native accessibility, low-end-device/editor acceptance, iOS, app-lock/privacy screens, dark theme and store identifiers still require validation. Bundle export is not a native build.
 - Production startup is intentionally gated in `packages/config` until account lifecycle and launch requirements are implemented.
 
