@@ -306,7 +306,7 @@ const notificationsWorker = new Worker(
   'notifications',
   async () => {
     try {
-      const delivered = await deliverDueReminders(db);
+      const delivered = await deliverDueReminders(maintenanceDb);
       if (delivered > 0) {
         console.log(JSON.stringify({ event: 'reminders_delivered', count: delivered }));
       }

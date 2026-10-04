@@ -30,6 +30,7 @@ import {
   cleanupTombstones,
   cleanupIdempotencyKeys,
   expireExports,
+  deliverDueReminders,
 } from '../packages/domain/src/index';
 import { searchQuerySchema, type RecordItem } from '../packages/validation/src/index';
 import { eq, sql } from 'drizzle-orm';
@@ -3146,8 +3147,24 @@ describe('authenticated capture → PostgreSQL → sync', () => {
         debtId: null,
         source: 'app',
         splits: [
-          { id: v7(), kind: 'category', categoryId: childCat, amountMinor: 6000, personId: null, debtId: null, note: null },
-          { id: v7(), kind: 'category', categoryId: diningCat, amountMinor: 3000, personId: null, debtId: null, note: null },
+          {
+            id: v7(),
+            kind: 'category',
+            categoryId: childCat,
+            amountMinor: 6000,
+            personId: null,
+            debtId: null,
+            note: null,
+          },
+          {
+            id: v7(),
+            kind: 'category',
+            categoryId: diningCat,
+            amountMinor: 3000,
+            personId: null,
+            debtId: null,
+            note: null,
+          },
         ],
       }),
     ).rejects.toMatchObject({ code: 'SPLITS_MISMATCH' });
@@ -3215,8 +3232,24 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       debtId: null,
       source: 'app',
       splits: [
-        { id: v7(), kind: 'category', categoryId: childCat, amountMinor: 12000, personId: null, debtId: null, note: null },
-        { id: v7(), kind: 'category', categoryId: diningCat, amountMinor: 8000, personId: null, debtId: null, note: null },
+        {
+          id: v7(),
+          kind: 'category',
+          categoryId: childCat,
+          amountMinor: 12000,
+          personId: null,
+          debtId: null,
+          note: null,
+        },
+        {
+          id: v7(),
+          kind: 'category',
+          categoryId: diningCat,
+          amountMinor: 8000,
+          personId: null,
+          debtId: null,
+          note: null,
+        },
       ],
     });
     expect(expense!.splits).toHaveLength(2);
@@ -3265,7 +3298,17 @@ describe('authenticated capture → PostgreSQL → sync', () => {
         op: 'transaction.edit',
         id: expenseId,
         amountMinor: 25000,
-        splits: [{ id: v7(), kind: 'category', categoryId: childCat, amountMinor: 20000, personId: null, debtId: null, note: null }],
+        splits: [
+          {
+            id: v7(),
+            kind: 'category',
+            categoryId: childCat,
+            amountMinor: 20000,
+            personId: null,
+            debtId: null,
+            note: null,
+          },
+        ],
         reason: 'fix',
         baseVersion: expense!.version,
       }),
@@ -3274,7 +3317,17 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       op: 'transaction.edit',
       id: expenseId,
       amountMinor: 25000,
-      splits: [{ id: v7(), kind: 'category', categoryId: childCat, amountMinor: 25000, personId: null, debtId: null, note: null }],
+      splits: [
+        {
+          id: v7(),
+          kind: 'category',
+          categoryId: childCat,
+          amountMinor: 25000,
+          personId: null,
+          debtId: null,
+          note: null,
+        },
+      ],
       reason: 'fix',
       baseVersion: expense!.version,
     });
@@ -3496,5 +3549,63 @@ describe('authenticated capture → PostgreSQL → sync', () => {
     } finally {
       await relay.end();
     }
+  });
+  it('delivers due reminders idempotently to server-push devices under the background role', async () => {
+    const service = createCaptureService(domain.db);
+    const reminderId = v7();
+    await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'reminder.create',
+        id: reminderId,
+        entityId: null,
+        title: 'Drink water',
+        remindDate: '2026-10-04',
+        remindTime: '16:00',
+        timeMode: 'fixed',
+        timezone: 'Asia/Kolkata',
+      },
+      'reminder',
+    );
+    // Make it due now.
+    await owner.query(
+      "UPDATE reminders SET fire_at = now() - interval '5 minutes', status='scheduled', last_fired_at=NULL WHERE id=$1",
+      [reminderId],
+    );
+    // One device needs a server push; one already scheduled it locally (watermark ahead).
+    await owner.query(
+      "INSERT INTO device_tokens (user_id, platform, token) VALUES ($1,'android','push-device')",
+      [userA],
+    );
+    await owner.query(
+      "INSERT INTO device_tokens (user_id, platform, token, reminders_scheduled_through) VALUES ($1,'ios','local-device', now() + interval '1 day')",
+      [userA],
+    );
+    // Another account's device must never receive this reminder.
+    await owner.query(
+      "INSERT INTO device_tokens (user_id, platform, token) VALUES ($1,'android','other-device')",
+      [userB],
+    );
+
+    expect(await deliverDueReminders(maintenance.db)).toBe(1);
+    const logs = await owner.query(
+      'SELECT user_id, type, channel, dedupe_key FROM notification_log WHERE entity_id=$1',
+      [reminderId],
+    );
+    expect(logs.rows).toHaveLength(1);
+    expect(logs.rows[0]).toMatchObject({ user_id: userA, type: 'reminder', channel: 'push' });
+    expect(logs.rows[0].dedupe_key).toContain('push-device');
+
+    // Re-running is idempotent: the reminder is no longer due and no duplicate push is logged.
+    expect(await deliverDueReminders(maintenance.db)).toBe(0);
+    expect(
+      (await owner.query('SELECT 1 FROM notification_log WHERE entity_id=$1', [reminderId]))
+        .rowCount,
+    ).toBe(1);
+    expect(
+      (await owner.query('SELECT last_fired_at FROM reminders WHERE id=$1', [reminderId])).rows[0]
+        .last_fired_at,
+    ).not.toBeNull();
   });
 });
