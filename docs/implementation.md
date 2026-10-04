@@ -58,7 +58,8 @@ Implemented:
 - [x] Learning Metadata: safe URL fetcher with SSRF protection, size limits, and regex-based OpenGraph/Twitter meta tag extraction in a background worker. Runs under the privileged background role (migration 0037 adds UPDATE/INSERT on learning_resources and INSERT on entities for playlist expansion). Covered by an integration test with a mocked fetch.
 - [x] Reminders Delivery: background worker to push due reminders to registered device tokens idempotently. Runs under the privileged background role, skips devices that scheduled the reminder locally (watermark), dedupes per device/fire-time, and is owner-isolated. Covered by an integration test.
 - [x] YouTube Integration: parse YouTube video/playlist URLs, fetch Data API v3 metadata, and expand playlists into child resources.
-- [x] Transactional Email Worker: background worker for delivering transactional emails logged in the notificationLog. Runs under the privileged background role with a column-level `SELECT (id, email)` grant on `auth_user` (never the credential-bearing `auth_account`), marks rows sent/failed and does not reprocess sent rows. Covered by an integration test.
+- [x] Transactional Email Worker: background worker for delivering transactional emails logged in the notificationLog.
+- [x] Mobile "More" hub with full Reminders, Learning and Money screens consuming the existing offline command/sync path (create/list/act across each domain). Native-device acceptance and richer sub-features (notification scheduling, in-app player, splits/debt UI) remain. Runs under the privileged background role with a column-level `SELECT (id, email)` grant on `auth_user` (never the credential-bearing `auth_account`), marks rows sent/failed and does not reprocess sent rows. Covered by an integration test.
 
 These checks mean code exists. Validation results are recorded separately in `docs/verification.md`; Phase 0 is **not** complete.
 
@@ -81,7 +82,7 @@ These checks mean code exists. Validation results are recorded separately in `do
 2. M1: rich notes/drafts/history/checkpoints, backlinks, daily notes, folders, tags/Trash, task descriptions/estimates/archive, statuses/views, timed deadlines, recurrence, priority, projects/related notes and one-level subtasks are implemented. Remaining: editor/native acceptance (ADR-027), attachments, versioned SQLite migrations and sync recovery/conflict work. Project-related learning resources are now implemented. One-level subtasks are the specified v1 scope.
 3. M2: complete onboarding, richer deterministic parsing, widgets/share capture, reminder mobile UI/local notification delivery and device delivery matrix. The reminder data model, API commands and sync are implemented; delivery infrastructure and mobile screens remain.
 4. M3: safe URL fetching, metadata worker jobs, playlists (parent/child expansion), in-app player progress, mobile learning UI/screens and YouTube integration. The learning data model, API commands and sync are implemented; fetching infrastructure and mobile screens remain.
-5. M4: financial ledger with integer money, splits, debts, revisions/voids and reconciliation. Backend and the ledger-invariant integration tests (split-sum validation, void/restore revisions, RLS isolation and double-entry balance reconciliation) are implemented. Remaining: money mobile screens, reports and larger-scale property/fuzz testing.
+5. M4: financial ledger with integer money, splits, debts, revisions/voids and reconciliation. Backend, the ledger-invariant integration tests (split-sum validation, void/restore revisions, RLS isolation and double-entry balance reconciliation) and a mobile Money screen (accounts, income/expense transactions with void, people) are implemented. Remaining: categories/splits/debt UI, reports, native acceptance and larger-scale property/fuzz testing.
 6. M5: search transliteration (cross-script Hinglish↔Devanagari) and later-module coverage, export, deletion pipeline, final web account pages and transactional email are implemented server-side. Remaining: mobile offline transliteration, relevance/latency acceptance and the verified web account-deletion flow.
 7. M6: optional text AI, tools/policies, confirmations, citations, memory, quotas and the 300-case evaluation gate.
 8. M7: security/load/accessibility testing, legal review, stores and beta rollout.
@@ -140,7 +141,7 @@ Snooze durations follow the spec: 10 minutes, 1 hour, this evening (18:00 local,
 
 Reminders are included in incremental sync, search indexing and permanent-purge cleanup. The record schema carries `entityId`, `remindDate`, `remindTime`, `fireAt`, `snoozedUntil` and `lastFiredAt`. Mobile record constructions include the new fields with null defaults.
 
-Remaining: mobile reminder UI/screens, local notification scheduling, push notification delivery, device token management, notification permission request flow, and reminder delivery acceptance on the device test matrix.
+A mobile Reminders screen (under the new "More" hub) now creates standalone reminders with floating/fixed timezone intent and supports done/snooze/dismiss/delete, consuming the existing command path and optimistic cache. Remaining: local notification scheduling, push notification delivery wiring, device token registration from the app, notification permission flow, and native device acceptance.
 
 ## Learning increment
 
@@ -152,7 +153,7 @@ Ten resource types are supported: `youtube_video`, `youtube_playlist`, `article`
 
 URL deduplication prevents saving the same canonical URL twice per user. Metadata status tracks background fetch state (`pending`/`ok`/`failed`). The record schema carries all learning fields including `collectionId`, `url`, `resourceType`, `author`, `progressPercent`, `thumbnailUrl` and `metadataStatus`.
 
-Remaining: in-app player with auto-progress, mobile learning UI/screens, and collection/resource management screens. Safe URL fetching, metadata worker jobs and YouTube integration are implemented.
+A mobile Learning screen (under "More") now saves resources (URL/title/type), tracks status and manual progress, files resources into collections, and creates/deletes collections. Remaining: in-app player with auto-progress, richer collection tree UI, and native device acceptance. Safe URL fetching, metadata worker jobs and YouTube integration are implemented.
 
 ## Project-related learning resources increment
 

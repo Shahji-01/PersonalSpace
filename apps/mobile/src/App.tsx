@@ -45,6 +45,9 @@ import { ProjectNotesScreen } from './ProjectNotesScreen';
 import { ProjectResourcesScreen } from './ProjectResourcesScreen';
 import { taskIsClosed, taskIsOverdue, taskMatches, taskViews, type TaskView } from './task-views';
 import { SettingsScreen } from './SettingsScreen';
+import { RemindersScreen } from './RemindersScreen';
+import { LearningScreen } from './LearningScreen';
+import { MoneyScreen } from './MoneyScreen';
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -101,6 +104,10 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
   const [openingDaily, setOpeningDaily] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [remindersOpen, setRemindersOpen] = useState(false);
+  const [learningOpen, setLearningOpen] = useState(false);
+  const [moneyOpen, setMoneyOpen] = useState(false);
   const [historyNote, setHistoryNote] = useState<RecordItem | null>(null);
   const [folderScreen, setFolderScreen] = useState(false);
   const [filingNote, setFilingNote] = useState<RecordItem | null>(null);
@@ -1630,6 +1637,14 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
         <View style={{ flex: 1 }}>
           <Button secondary={tab !== 'library'} label="Library" onPress={() => setTab('library')} />
         </View>
+        <View style={{ flex: 1 }}>
+          <Button
+            secondary
+            label="More"
+            disabled={!store.current}
+            onPress={() => setMoreOpen(true)}
+          />
+        </View>
         <Button label="＋ Capture" disabled={!store.current} onPress={() => setCaptureOpen(true)} />
       </View>
       <Modal
@@ -1819,6 +1834,99 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
       >
         {attachments && (
           <StorageScreen runtime={attachments} onClose={() => setStorageOpen(false)} />
+        )}
+      </Modal>
+      <Modal visible={moreOpen} animationType="slide" onRequestClose={() => setMoreOpen(false)}>
+        <SafeAreaView style={styles.root}>
+          <ScrollView contentContainerStyle={styles.page}>
+            <Text style={styles.eyebrow}>MORE</Text>
+            <Text style={styles.title}>Everything else.</Text>
+            <Button secondary label="Close" onPress={() => setMoreOpen(false)} />
+            <Card>
+              <Button
+                label="Reminders"
+                disabled={!store.current}
+                onPress={() => {
+                  setMoreOpen(false);
+                  setRemindersOpen(true);
+                }}
+              />
+              <Button
+                label="Learning"
+                disabled={!store.current}
+                onPress={() => {
+                  setMoreOpen(false);
+                  setLearningOpen(true);
+                }}
+              />
+              <Button
+                label="Money"
+                disabled={!store.current}
+                onPress={() => {
+                  setMoreOpen(false);
+                  setMoneyOpen(true);
+                }}
+              />
+              <Button
+                secondary
+                label="Settings"
+                onPress={() => {
+                  setMoreOpen(false);
+                  setSettingsOpen(true);
+                }}
+              />
+            </Card>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+      <Modal
+        visible={remindersOpen}
+        animationType="slide"
+        onRequestClose={() => setRemindersOpen(false)}
+      >
+        {remindersOpen && store.current && (
+          <RemindersScreen
+            records={records}
+            pendingIds={pendingIds}
+            store={store.current}
+            onClose={() => setRemindersOpen(false)}
+            onChanged={async () => {
+              await refreshLocal();
+              void sync();
+            }}
+          />
+        )}
+      </Modal>
+      <Modal
+        visible={learningOpen}
+        animationType="slide"
+        onRequestClose={() => setLearningOpen(false)}
+      >
+        {learningOpen && store.current && (
+          <LearningScreen
+            records={records}
+            pendingIds={pendingIds}
+            store={store.current}
+            onClose={() => setLearningOpen(false)}
+            onChanged={async () => {
+              await refreshLocal();
+              void sync();
+            }}
+          />
+        )}
+      </Modal>
+      <Modal visible={moneyOpen} animationType="slide" onRequestClose={() => setMoneyOpen(false)}>
+        {moneyOpen && store.current && (
+          <MoneyScreen
+            records={records}
+            pendingIds={pendingIds}
+            store={store.current}
+            onClose={() => setMoneyOpen(false)}
+            onChanged={async () => {
+              await refreshLocal();
+              void sync();
+            }}
+          />
         )}
       </Modal>
       <SettingsScreen
