@@ -17,7 +17,8 @@ export type Mark =
 export type InlineNode =
   | { type: 'text'; text: string; marks?: Mark[] }
   | { type: 'hardBreak' }
-  | { type: 'noteReference'; attrs: { noteId: string }; marks?: Mark[] };
+  | { type: 'noteReference'; attrs: { noteId: string }; marks?: Mark[] }
+  | { type: 'attachmentReference'; attrs: { attachmentId: string }; marks?: Mark[] };
 export type BlockNode =
   | { type: 'paragraph'; content?: InlineNode[] }
   | { type: 'heading'; attrs: { level: 1 | 2 | 3 }; content?: InlineNode[] }
@@ -72,6 +73,11 @@ const inline: z.ZodType<InlineNode> = z.discriminatedUnion('type', [
   z.strictObject({
     type: z.literal('noteReference'),
     attrs: z.strictObject({ noteId: z.uuid({ version: 'v7' }) }),
+    marks: z.array(mark).max(4).optional(),
+  }),
+  z.strictObject({
+    type: z.literal('attachmentReference'),
+    attrs: z.strictObject({ attachmentId: z.uuid({ version: 'v7' }) }),
     marks: z.array(mark).max(4).optional(),
   }),
 ]);
@@ -177,6 +183,7 @@ export function plainTextDocument(text: string): NoteDocument {
 }
 
 export function documentText(node: DocumentNode): string {
+  if (node.type === 'attachmentReference') return '[[File]]';
   if (node.type === 'noteReference') return '[[Note]]';
   if (node.type === 'text') return node.text;
   if (node.type === 'hardBreak') return '\n';
@@ -201,6 +208,7 @@ export function hasFormatting(document: NoteDocument): boolean {
 }
 
 export function documentMarkdown(node: DocumentNode): string {
+  if (node.type === 'attachmentReference') return `[[file:${node.attrs.attachmentId}]]`;
   if (node.type === 'noteReference') return `[[note:${node.attrs.noteId}]]`;
   if (node.type === 'hardBreak') return '  \n';
   if (node.type === 'text') {
@@ -255,6 +263,16 @@ export function noteReferenceIds(node: DocumentNode): string[] {
   const ids = new Set<string>();
   function visit(current: DocumentNode) {
     if (current.type === 'noteReference') ids.add(current.attrs.noteId);
+    else if ('content' in current) for (const child of current.content ?? []) visit(child);
+  }
+  visit(node);
+  return [...ids].sort();
+}
+
+export function attachmentReferenceIds(node: DocumentNode): string[] {
+  const ids = new Set<string>();
+  function visit(current: DocumentNode) {
+    if (current.type === 'attachmentReference') ids.add(current.attrs.attachmentId);
     else if ('content' in current) for (const child of current.content ?? []) visit(child);
   }
   visit(node);

@@ -1945,6 +1945,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
             key={editingNote.id}
             note={editingNote}
             closeRequest={noteCloseRequest}
+            attachments={attachments}
             store={store.current}
             records={records}
             pendingIds={pendingIds}

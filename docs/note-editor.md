@@ -14,7 +14,17 @@ Every valid editor change is queued to account-scoped SQLite draft storage. “D
 
 The implementation does not decide ADR-027. Run the specification's editor spike on a 3–4 GB Android phone and an older supported iPhone: 5,000-word notes editable within 500 ms, keystrokes within 50 ms, Hindi/English Gboard and SwiftKey composition, caret/keyboard scrolling, app-kill recovery offline, TalkBack and VoiceOver. Automated schema, SQLite, API tests and emulator checks do not replace those measurements.
 
-Attachments/images and cross-device draft merging remain unfinished. Saved-version history, editing checkpoints, folders and backlinks are implemented.
+Inline file references are implemented; inline image/thumbnail rendering and cross-device draft merging remain unfinished. Saved-version history, editing checkpoints, folders and backlinks are implemented.
+
+## Inline files
+
+**Insert file** opens a searchable, phone-width picker of registered attachments belonging to the current note. **Add file** saves the draft first, then uses the existing native picker and durable transfer queue; the new upload appears when metadata sync reaches the editor. Processing files can be inserted as placeholders. File labels show current filename, size and processing/download/offline status. Long filenames wrap, controls support keyboard access, and unavailable files retain an explicit label. Opening a ready file saves the draft before invoking the verified cache/download/share flow. A failed draft write keeps the editor open and prevents the native action.
+
+An `attachmentReference` inline atom stores only `{ attachmentId }`, never a filename, URI, storage key or signed grant. Filenames/status resolve from account-scoped records and local cache state, including durable offline removals. Save, history checkpoint, history restore and draft copy validate every distinct ID against the owner's attachment registry (maximum 100). Foreign, unknown and wrong-type IDs are rejected atomically. Owned purged IDs remain valid unavailable placeholders in old drafts/history; saving them cannot recreate metadata or bytes. Task descriptions reject these nodes.
+
+Removing a label from the text leaves the upload intact; **Files** manages deletion. A recovered draft copy keeps references to the original files rather than duplicating their bytes or changing their parent. Downloads remain subject to the original parent note's lifecycle. When that parent or file is deleted, references in other notes become unavailable. Native Library/history previews resolve filenames when their records are available. Plain text uses `[[File]]`; Markdown uses `[[file:UUID]]`, leaving file packaging/resolution to a future full export implementation.
+
+This is an additive change to the development v1 document schema: update API and mobile together. Older clients reject the unfamiliar node rather than flattening it. Browser tests use the real DOM editor with synthetic native callbacks; native picker/share-sheet/WebView-bridge and screen-reader acceptance remain open. Inline image previews and eager thumbnails are separate remaining work.
 
 ## Recovering conflicting drafts
 

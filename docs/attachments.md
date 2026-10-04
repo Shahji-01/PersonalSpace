@@ -1,6 +1,6 @@
 # Attachment uploads and transfer queue
 
-The resumable transfer engine, account-scoped SQLite queue, authenticated upload API, private S3 adapter, processing worker and private downloads are implemented. Mobile notes now expose a **Files** screen with a picker, durable local copies, foreground uploads, progress/retry/removal and verified download/share. Inline attachment nodes in the rich-text editor remain open. Processing requires a configured scanner and restricted database connection; without them, files stay quarantined.
+The resumable transfer engine, account-scoped SQLite queue, authenticated upload API, private S3 adapter, processing worker and private downloads are implemented. Mobile notes expose a **Files** screen with a picker, durable local copies, foreground uploads, progress/retry/removal and verified download/share. The rich-text editor now supports ID-only inline file labels, searchable insertion, draft-safe native picking and opening. Inline image/thumbnail rendering remains open. Processing requires a configured scanner and restricted database connection; without them, files stay quarantined.
 
 ## Server upload flow
 
@@ -77,7 +77,7 @@ Parent or attachment purge atomically erases queue metadata, reserves the cancel
 
 - Deduplication and paid-plan storage quotas.
 - Scanner provisioning/signature freshness monitoring, real malware/format acceptance, HEIC decoder deployment and operator retry tooling for exhausted processing jobs. WebM audio currently fails closed because the signature detector identifies its container as video; track-level audio validation remains open.
-- Attachment-ID editor nodes and inline image/thumbnail display; Files currently shows other-device metadata and download actions separately from note content.
+- Inline image/thumbnail display. Attachment-ID editor nodes and file labels are implemented; see [editor behavior](note-editor.md).
 - Eager recent thumbnails, reclaiming redundant completed-upload originals and native container-path migration on restore/reinstall. Configurable LRU downloads, offline pins, storage controls and startup orphan reclamation are implemented.
 - Retention/account deletion across objects and local files; real-device interruption and app-kill acceptance.
 

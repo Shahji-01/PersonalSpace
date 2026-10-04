@@ -1,5 +1,14 @@
 # Verification
 
+## Inline note files and editor UX — 4 October 2026
+
+- All 145 unit tests passed. New cases cover ID-only schema/Markdown output, unsafe extra attributes, account-record visibility, processing/offline labels and exclusion from task descriptions.
+- All 70 PostgreSQL/API/storage integration tests passed. Three new tests verify ownership/type/registration guards, the 100-file-reference limit, checkpoint/copy rollback, label removal without file deletion, history restore and purged placeholders without byte resurrection.
+- All seven editor browser tests passed at 390px width in headless Chrome. New cases exercise searching/inserting files, draft persistence before native add/open, failed draft and open actions, reload recovery, keyboard opening, processing/deletion labels and long-name overflow. Picker and inline-file screenshots were visually reviewed.
+- Tools/tests and all 14 workspaces passed TypeScript. ESLint passed for changed feature files. API/worker builds and Android/iOS Hermes + DOM exports passed. Formatting and diff checks passed. The full-checkout type check also required a one-line empty-token fallback in the existing YouTube pagination work; unrelated uncommitted edits were preserved.
+
+No native dependency or database migration was added. API and mobile should be updated together for the additive document node. The browser harness uses the real DOM editor with synthetic native callbacks; native picker/share-sheet/SQLite bridge, screen-reader, IME and physical-device acceptance remain open. Inline image previews and eager thumbnails are not implemented. No emulator interaction, restart or installation was performed.
+
 ## Offline file storage — 4 October 2026
 
 - All 133 unit tests passed. Ten added cases cover startup copy/enqueue ordering, orphan cleanup with real filesystem bytes, foreign/forged download paths, account-scoped pins/settings across SQLite reopening, offline sharing without a grant request, least-recently-used eviction, pin/unsynced-original preservation, deletion retries, corrupted/missing cached files, revocation during download, sign-out and share-sheet/clear-cache ordering.

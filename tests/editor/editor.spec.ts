@@ -1,5 +1,90 @@
 import { test, expect, type Page } from '@playwright/test';
 
+test('inserts ID-only files, preserves drafts before opening and keeps unavailable labels', async ({
+  page,
+}, testInfo) => {
+  await page.goto('/');
+  const editor = page.getByRole('textbox', { name: 'Note content' });
+  await editor.fill('Trip documents ');
+  await editor.press('End');
+  await page.getByRole('button', { name: 'Insert file', exact: true }).click();
+  const picker = page.getByRole('region', { name: 'Choose a file' });
+  await expect(picker).toBeVisible();
+  await picker.getByRole('textbox', { name: 'Files attached to this note' }).fill('यात्रा');
+  await picker.getByRole('button', { name: /Journey notes/ }).click();
+  const file = page.locator('.tiptap [data-attachment-reference]');
+  await expect(file).toContainText('Journey notes — यात्रा.pdf');
+  await expect(file).toContainText('Kept offline');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('saved')!));
+  expect(saved.content[0].content).toContainEqual({
+    type: 'attachmentReference',
+    attrs: { attachmentId: '0199a1b0-0000-7000-8000-000000000011' },
+  });
+  expect(JSON.stringify(saved)).not.toContain('Journey');
+  await page.evaluate(() => localStorage.setItem('failDraft', 'true'));
+  await file.click();
+  await expect(page.getByRole('alert')).toContainText('Your changes are still here');
+  expect(await page.evaluate(() => localStorage.getItem('openedFile'))).toBeNull();
+  await page.evaluate(() => localStorage.removeItem('failDraft'));
+  await file.focus();
+  await file.press('Enter');
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem('openedFile')))
+    .toBe('0199a1b0-0000-7000-8000-000000000011');
+  await page.screenshot({ path: testInfo.outputPath('inline-file-mobile.png'), fullPage: true });
+  await page.reload();
+  await expect(file).toContainText('Journey notes — यात्रा.pdf');
+  await page.evaluate(() => localStorage.setItem('failOpenFile', 'true'));
+  await file.click();
+  await expect(page.getByRole('alert')).toContainText('Try again when online');
+  await expect(editor).toContainText('Trip documents');
+  await page.evaluate(() => window.dispatchEvent(new Event('removeFile')));
+  await expect(file).toContainText('Unavailable file');
+  await expect(file).toHaveAttribute('aria-disabled', 'true');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  expect(await page.evaluate(() => localStorage.getItem('saved'))).toContain(
+    '0199a1b0-0000-7000-8000-000000000011',
+  );
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test('file picker handles processing, search misses and phone-width filenames', async ({
+  page,
+}, testInfo) => {
+  await page.goto('/');
+  const editor = page.getByRole('textbox', { name: 'Note content' });
+  await editor.fill('Files ');
+  await editor.press('End');
+  await page.getByRole('button', { name: 'Insert file', exact: true }).click();
+  const picker = page.getByRole('region', { name: 'Choose a file' });
+  const search = picker.getByRole('textbox', { name: 'Files attached to this note' });
+  await search.fill('missing');
+  await expect(picker.getByText('No matching files. Try another name.')).toBeVisible();
+  await search.fill('');
+  await page.evaluate(() => localStorage.setItem('failDraft', 'true'));
+  await picker.getByRole('button', { name: 'Add file', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Your changes are still here');
+  expect(await page.evaluate(() => localStorage.getItem('pickedFile'))).toBeNull();
+  await page.evaluate(() => localStorage.removeItem('failDraft'));
+  await picker.getByRole('button', { name: 'Add file', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('pickedFile'))).toBe('true');
+  await page.screenshot({ path: testInfo.outputPath('file-picker-mobile.png'), fullPage: true });
+  await picker.getByRole('button', { name: /Very-long-document/ }).click();
+  const file = page.locator('.tiptap [data-attachment-reference]');
+  await expect(file).toHaveAttribute('aria-disabled', 'true');
+  await file.click({ force: true });
+  await expect(page.getByRole('alert')).toContainText('not ready');
+  expect(await page.evaluate(() => localStorage.getItem('openedFile'))).toBeNull();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const bounds = await file.boundingBox();
+  expect(bounds!.width).toBeLessThanOrEqual(350);
+  await page.screenshot({
+    path: testInfo.outputPath('processing-file-mobile.png'),
+    fullPage: true,
+  });
+});
+
 test('preserves conflicting content and saves a separate copy without publishing the original', async ({
   page,
 }) => {

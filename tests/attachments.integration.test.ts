@@ -17,6 +17,7 @@ import {
   createAttachmentService,
   createAttachmentProcessor,
   createCaptureService,
+  createNoteHistoryService,
 } from '../packages/domain/src/index';
 import {
   processAttachment,
@@ -31,6 +32,7 @@ import {
   type AttachmentDescriptor,
   type UploadedPart,
 } from '../packages/validation/src/index';
+import { plainTextDocument, type NoteDocument } from '../packages/editor-schema/src/index';
 
 let postgres: StartedPostgreSqlContainer, minio: StartedTestContainer;
 let owner: Pool;
@@ -223,6 +225,182 @@ afterAll(async () => {
   ]);
   await minio?.stop();
   await postgres?.stop();
+});
+
+describe('note attachment references', () => {
+  const document = (...ids: string[]): NoteDocument => ({
+    type: 'doc',
+    content: [
+      {
+        type: 'paragraph',
+        content: ids.map((id) => ({ type: 'attachmentReference', attrs: { attachmentId: id } })),
+      },
+    ],
+  });
+  it('validates owner/type/registration and bounds references atomically without changing attachment metadata', async () => {
+    const user = await fixtureUser(),
+      foreignUser = await fixtureUser();
+    const parent = await note(user),
+      foreign = await note(foreignUser);
+    const file = descriptor(parent.id),
+      foreignFile = descriptor(foreign.id);
+    await service().open(user, file, 'register');
+    await service().open(foreignUser, foreignFile, 'register');
+    for (const id of [foreignFile.id, v7(), parent.id])
+      await expect(
+        capture().execute(
+          user,
+          v7(),
+          {
+            op: 'note.updateContent',
+            id: parent.id,
+            baseVersion: parent.version,
+            contentSchemaVersion: 1,
+            contentJson: document(id),
+          },
+          'reference',
+        ),
+      ).rejects.toMatchObject({ code: 'ATTACHMENT_REFERENCE_NOT_FOUND' });
+    await expect(
+      capture().execute(
+        user,
+        v7(),
+        {
+          op: 'note.updateContent',
+          id: parent.id,
+          baseVersion: parent.version,
+          contentSchemaVersion: 1,
+          contentJson: document(...Array.from({ length: 101 }, () => v7())),
+        },
+        'limit',
+      ),
+    ).rejects.toMatchObject({ code: 'TOO_MANY_ATTACHMENTS' });
+    const result = await capture().execute(
+      user,
+      v7(),
+      {
+        op: 'note.updateContent',
+        id: parent.id,
+        baseVersion: parent.version,
+        contentSchemaVersion: 1,
+        contentJson: document(file.id, file.id),
+      },
+      'reference',
+    );
+    expect(result[0]!.contentJson).toEqual(document(file.id, file.id));
+    expect(result[0]!.text).toBe('[[File]][[File]]');
+    const page = await capture().pull(user, 0);
+    expect(page.changes.find((item) => item.id === file.id)?.attachment?.filename).toBe(
+      file.filename,
+    );
+    expect(JSON.stringify(result[0]!.contentJson)).not.toContain(file.filename);
+    expect(JSON.stringify(result[0]!.contentJson)).not.toContain('storage');
+  });
+  it('preserves file identity through draft copies/history and allows purged placeholders without recreating files', async () => {
+    const user = await fixtureUser(),
+      parent = await note(user),
+      file = descriptor(parent.id);
+    await service().open(user, file, 'register');
+    const [saved] = await capture().execute(
+      user,
+      v7(),
+      {
+        op: 'note.updateContent',
+        id: parent.id,
+        baseVersion: parent.version,
+        contentSchemaVersion: 1,
+        contentJson: document(file.id),
+      },
+      'save',
+    );
+    const history = await createNoteHistoryService(domain.db).list(user, parent.id);
+    const snapshot = history.versions.find((item) => item.version === saved!.version)!;
+    expect(snapshot.contentJson).toEqual(document(file.id));
+    const [copy] = await capture().execute(
+      user,
+      v7(),
+      {
+        op: 'note.copyDraft',
+        id: v7(),
+        sourceId: parent.id,
+        sourceBaseVersion: saved!.version,
+        contentSchemaVersion: 1,
+        contentJson: document(file.id),
+      },
+      'copy',
+    );
+    expect(copy!.contentJson).toEqual(document(file.id));
+    expect(copy!.recoveredFromId).toBe(parent.id);
+    const [without] = await capture().execute(
+      user,
+      v7(),
+      {
+        op: 'note.updateContent',
+        id: parent.id,
+        baseVersion: saved!.version,
+        contentSchemaVersion: 1,
+        contentJson: plainTextDocument('Removed only the label'),
+      },
+      'remove-label',
+    );
+    expect((await capture().pull(user, 0)).changes.some((item) => item.id === file.id)).toBe(true);
+    await service().cancel(user, file.id, 'remove-file');
+    const [restored] = await capture().execute(
+      user,
+      v7(),
+      {
+        op: 'note.restoreVersion',
+        id: parent.id,
+        baseVersion: without!.version,
+        versionId: snapshot.id,
+      },
+      'restore',
+    );
+    expect(restored!.contentJson).toEqual(document(file.id));
+    const page = await capture().pull(user, 0);
+    expect(page.changes.some((item) => item.id === file.id)).toBe(false);
+    expect(page.tombstones.some((item) => item.id === file.id)).toBe(true);
+  });
+  it('rejects invalid attachment IDs in checkpoints and draft copies without persisting either', async () => {
+    const user = await fixtureUser(),
+      parent = await note(user),
+      id = v7();
+    const contentJson = document(v7());
+    await expect(
+      capture().execute(
+        user,
+        v7(),
+        {
+          op: 'note.checkpoint',
+          id: parent.id,
+          baseVersion: parent.version,
+          contentSchemaVersion: 1,
+          contentJson,
+          reason: 'session_end',
+        },
+        'checkpoint',
+      ),
+    ).rejects.toMatchObject({ code: 'ATTACHMENT_REFERENCE_NOT_FOUND' });
+    await expect(
+      capture().execute(
+        user,
+        v7(),
+        {
+          op: 'note.copyDraft',
+          id,
+          sourceId: parent.id,
+          sourceBaseVersion: parent.version,
+          contentSchemaVersion: 1,
+          contentJson,
+        },
+        'copy',
+      ),
+    ).rejects.toMatchObject({ code: 'ATTACHMENT_REFERENCE_NOT_FOUND' });
+    expect((await createNoteHistoryService(domain.db).list(user, parent.id)).versions).toHaveLength(
+      1,
+    );
+    expect((await capture().pull(user, 0)).changes.map((item) => item.id)).toEqual([parent.id]);
+  });
 });
 
 describe('private attachment uploads', () => {

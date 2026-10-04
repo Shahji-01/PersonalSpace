@@ -84,7 +84,7 @@ export async function fetchPlaylistItems(playlistId: string, apiKey: string) {
         position: item.snippet.position,
       });
     }
-    nextPageToken = data.nextPageToken;
+    nextPageToken = data.nextPageToken ?? '';
   } while (nextPageToken && items.length < 50);
 
   return items;

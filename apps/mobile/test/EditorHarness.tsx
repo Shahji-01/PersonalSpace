@@ -7,18 +7,53 @@ const draft = localStorage.getItem('draft');
 function Harness() {
   const [title, setTitle] = useState('Reading notes');
   const [conflicted, setConflicted] = useState(false);
+  const [fileRemoved, setFileRemoved] = useState(false);
   useEffect(() => {
     const rename = () => setTitle('Renamed reading notes');
     const conflict = () => setConflicted(true);
+    const removeFile = () => setFileRemoved(true);
     window.addEventListener('renameReference', rename);
     window.addEventListener('noteConflict', conflict);
+    window.addEventListener('removeFile', removeFile);
     return () => {
       window.removeEventListener('renameReference', rename);
       window.removeEventListener('noteConflict', conflict);
+      window.removeEventListener('removeFile', removeFile);
     };
   }, []);
   return (
     <NoteEditor
+      attachments={
+        fileRemoved
+          ? []
+          : [
+              {
+                id: '0199a1b0-0000-7000-8000-000000000011',
+                filename: 'Journey notes — यात्रा.pdf',
+                detail: '1.20 MB · Kept offline',
+                canInsert: true,
+                canOpen: true,
+              },
+              {
+                id: '0199a1b0-0000-7000-8000-000000000012',
+                filename:
+                  'Very-long-document-name-without-spaces-for-a-phone-width-overflow-check.pdf',
+                detail: '2.50 MB · Processing',
+                canInsert: true,
+                canOpen: false,
+              },
+            ]
+      }
+      onOpenAttachment={async (id) => {
+        if (localStorage.getItem('failOpenFile'))
+          return 'Could not open this file. Try again when online.';
+        localStorage.setItem('openedFile', id);
+        return null;
+      }}
+      onAddAttachment={async () => {
+        localStorage.setItem('pickedFile', 'true');
+        return null;
+      }}
       conflicted={conflicted}
       onSaveCopy={
         conflicted

@@ -20,7 +20,11 @@ export {
   type UploadedPart,
 } from './attachments';
 import { attachmentMetadataSchema } from './attachments';
-import { noteDocumentSchema, noteReferenceIds } from '@personalspace/editor-schema';
+import {
+  noteDocumentSchema,
+  noteReferenceIds,
+  attachmentReferenceIds,
+} from '@personalspace/editor-schema';
 export { folderPlacementIssue } from './folders';
 export { searchQuerySchema, searchTokens, searchableTypes, type SearchQuery } from './search';
 export { transliterate, devanagariToRoman, canonicalRoman } from './transliterate';
@@ -504,7 +508,8 @@ export const commandSchema = z.discriminatedUnion('op', [
     scope: z.enum(['occurrence', 'future']).optional(),
     id: idSchema,
     contentJson: noteDocumentSchema.refine(
-      (content) => noteReferenceIds(content).length === 0,
+      (content) =>
+        noteReferenceIds(content).length === 0 && attachmentReferenceIds(content).length === 0,
       'Note references are supported in notes only.',
     ),
     contentSchemaVersion: z.literal(1),

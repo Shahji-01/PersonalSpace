@@ -9,9 +9,38 @@ import {
   plainTextDocument,
   readDocument,
   noteReferenceIds,
+  attachmentReferenceIds,
 } from './index';
 
 describe('canonical note documents', () => {
+  it('keeps attachment references ID-only through formatting, text and Markdown export', () => {
+    const id = '0199a1b0-0000-7000-8000-000000000001';
+    const ref = {
+      type: 'attachmentReference' as const,
+      attrs: { attachmentId: id },
+      marks: [{ type: 'bold' as const }],
+    };
+    const doc = readDocument({
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [ref, ref] }],
+    });
+    expect(attachmentReferenceIds(doc)).toEqual([id]);
+    expect(noteReferenceIds(doc)).toEqual([]);
+    expect(documentText(doc)).toBe('[[File]][[File]]');
+    expect(documentMarkdown(doc)).toBe(`[[file:${id}]][[file:${id}]]`);
+    expect(hasFormatting(doc)).toBe(true);
+    for (const attrs of [
+      { attachmentId: 'bad' },
+      { attachmentId: id, filename: 'private.txt' },
+      { attachmentId: id, src: 'https://storage.test/signed' },
+    ])
+      expect(
+        noteDocumentSchema.safeParse({
+          type: 'doc',
+          content: [{ type: 'paragraph', content: [{ ...ref, attrs }] }],
+        }).success,
+      ).toBe(false);
+  });
   it('preserves stable reference IDs, deduplicates links and rejects malformed reference attributes', () => {
     const id = '0199a1b0-0000-7000-8000-000000000001';
     const ref = { type: 'noteReference' as const, attrs: { noteId: id } };

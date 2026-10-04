@@ -3,12 +3,14 @@ import { v7 } from 'uuid';
 import { entities, entityLinks, type Transaction } from '@personalspace/db';
 import { noteReferenceIds, type NoteDocument } from '@personalspace/editor-schema';
 import { DomainError } from './errors';
+import { validateAttachmentReferences } from './attachment-references';
 
 export async function validateNoteReferences(
   tx: Transaction,
   userId: string,
   content: NoteDocument,
 ) {
+  await validateAttachmentReferences(tx, userId, content);
   const ids = noteReferenceIds(content);
   if (ids.length > 100)
     throw new DomainError('TOO_MANY_REFERENCES', 'Link to at most 100 different notes.', 422);

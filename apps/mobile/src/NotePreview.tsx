@@ -29,6 +29,22 @@ function inline(nodes: InlineNode[] = [], records: RecordItem[] = []) {
         </Text>
       );
     }
+    if (node.type === 'attachmentReference') {
+      const file = records.find(
+        (record) =>
+          record.id === node.attrs.attachmentId &&
+          record.type === 'attachment' &&
+          !record.deletedAt,
+      );
+      const parent = records.find(
+        (record) => record.id === file?.parentId && record.type === 'note' && !record.deletedAt,
+      );
+      return (
+        <Text key={index} style={[style, { color: colors.primary }]}>
+          [File: {parent && file?.attachment ? file.attachment.filename : 'Unavailable file'}]
+        </Text>
+      );
+    }
     return (
       <Text key={index} style={style}>
         {node.text.slice(0, 600)}

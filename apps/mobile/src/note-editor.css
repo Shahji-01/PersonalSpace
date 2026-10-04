@@ -238,3 +238,66 @@ body,
   max-width: 100%;
   overflow-wrap: anywhere;
 }
+
+.attachment-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid #d8dfd5;
+  flex-shrink: 0;
+}
+.attachment-tools button {
+  flex-shrink: 0;
+}
+.attachment-tools > span,
+.picker-hint,
+.picker-empty {
+  font-size: 12px;
+  color: #526257;
+  line-height: 1.5;
+}
+.attachment-reference {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  gap: 10px;
+  max-width: 100%;
+  min-height: 48px;
+  margin: 4px 2px;
+  padding: 8px 12px;
+  border: 1px solid #cbd8cc;
+  border-radius: 12px;
+  background: #edf3ea;
+  color: #214e3d;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.attachment-reference[aria-disabled='true'] {
+  background: #f0f0eb;
+  color: #526257;
+}
+.file-icon {
+  font-size: 22px;
+  flex-shrink: 0;
+}
+.file-caption {
+  min-width: 0;
+}
+.file-name {
+  display: block;
+  font-size: 14px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.file-detail {
+  display: block;
+  font-size: 11px;
+  font-weight: 400;
+  color: #526257;
+}
+.attachment-reference:focus-visible,
+.attachment-reference.ProseMirror-selectednode {
+  outline: 3px solid #b58032;
+  outline-offset: 2px;
+}

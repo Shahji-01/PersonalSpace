@@ -12,6 +12,7 @@ import {
 } from '@personalspace/editor-schema';
 import './note-editor.css';
 import type { ReferenceNote } from './note-links';
+import type { NoteAttachment } from './note-attachments';
 
 type Props = {
   label?: string;
@@ -29,6 +30,9 @@ type Props = {
   referenceNotes?: ReferenceNote[];
   linkedFrom?: ReferenceNote[];
   onOpenNote?: (id: string) => Promise<string | null>;
+  attachments?: NoteAttachment[];
+  onOpenAttachment?: (id: string) => Promise<string | null>;
+  onAddAttachment?: () => Promise<string | null>;
   dom?: import('expo/dom').DOMProps;
 };
 
@@ -56,6 +60,10 @@ export default function NoteEditor(props: Props) {
   const [referenceQuery, setReferenceQuery] = useState('');
   const referenceSelection = useRef<{ from: number; to: number } | null>(null);
   const navigate = useRef<(id: string) => void>(() => {});
+  const openAttachment = useRef<(id: string) => void>(() => {});
+  const [attachmentOpen, setAttachmentOpen] = useState(false);
+  const [attachmentQuery, setAttachmentQuery] = useState('');
+  const attachmentSelection = useRef<{ from: number; to: number } | null>(null);
   const previousCloseRequest = useRef(props.closeRequest);
   useEffect(() => {
     if (previousCloseRequest.current === props.closeRequest) return;
@@ -120,6 +128,25 @@ export default function NoteEditor(props: Props) {
   }
 
   useEffect(refreshReferenceTitles, [props.referenceNotes]);
+  function refreshAttachmentLabels() {
+    for (const element of Array.from(
+      host.current?.querySelectorAll<HTMLElement>('[data-attachment-reference]') ?? [],
+    )) {
+      const file = callbacks.current.attachments?.find(
+        (item) => item.id === element.dataset.attachmentReference,
+      );
+      const name = element.querySelector('.file-name'),
+        detail = element.querySelector('.file-detail');
+      if (name) name.textContent = file?.filename ?? 'Unavailable file';
+      if (detail) detail.textContent = file?.detail ?? 'Removed or not synced to this device';
+      element.setAttribute(
+        'aria-label',
+        file ? `Open file: ${file.filename}. ${file.detail}` : 'Unavailable file',
+      );
+      element.setAttribute('aria-disabled', String(!file?.canOpen));
+    }
+  }
+  useEffect(refreshAttachmentLabels, [props.attachments]);
 
   useEffect(() => {
     const initial = callbacks.current.initialContent;
@@ -140,6 +167,52 @@ export default function NoteEditor(props: Props) {
         }),
         TaskList,
         TaskItem.configure({ nested: true }),
+        Node.create({
+          name: 'attachmentReference',
+          group: 'inline',
+          inline: true,
+          atom: true,
+          addAttributes: () => ({
+            attachmentId: {
+              default: null,
+              parseHTML: (element) => element.getAttribute('data-attachment-reference'),
+              renderHTML: (attributes) => ({
+                'data-attachment-reference': attributes.attachmentId,
+              }),
+            },
+          }),
+          parseHTML: () => [{ tag: 'span[data-attachment-reference]' }],
+          renderHTML: ({ node }) => {
+            const file = callbacks.current.attachments?.find(
+              (item) => item.id === node.attrs.attachmentId,
+            );
+            return [
+              'span',
+              {
+                'data-attachment-reference': node.attrs.attachmentId,
+                role: 'button',
+                tabindex: '0',
+                class: 'attachment-reference',
+                'aria-disabled': String(!file?.canOpen),
+                'aria-label': file
+                  ? `Open file: ${file.filename}. ${file.detail}`
+                  : 'Unavailable file',
+              },
+              ['span', { class: 'file-icon', 'aria-hidden': 'true' }, '↗'],
+              [
+                'span',
+                { class: 'file-caption' },
+                ['span', { class: 'file-name' }, file?.filename ?? 'Unavailable file'],
+                [
+                  'span',
+                  { class: 'file-detail' },
+                  file?.detail ?? 'Removed or not synced to this device',
+                ],
+              ],
+            ];
+          },
+          renderText: () => '[[File]]',
+        }),
         Node.create({
           name: 'noteReference',
           group: 'inline',
@@ -176,6 +249,14 @@ export default function NoteEditor(props: Props) {
         },
         handleDOMEvents: {
           click: (_view, event) => {
+            const file = (event.target as HTMLElement).closest<HTMLElement>(
+              '[data-attachment-reference]',
+            );
+            if (file?.dataset.attachmentReference) {
+              event.preventDefault();
+              openAttachment.current(file.dataset.attachmentReference);
+              return true;
+            }
             const reference = (event.target as HTMLElement).closest<HTMLElement>(
               '[data-note-reference]',
             );
@@ -189,6 +270,14 @@ export default function NoteEditor(props: Props) {
             return false;
           },
           keydown: (_view, event) => {
+            const file = (event.target as HTMLElement).closest<HTMLElement>(
+              '[data-attachment-reference]',
+            );
+            if (file?.dataset.attachmentReference && (event.key === 'Enter' || event.key === ' ')) {
+              event.preventDefault();
+              openAttachment.current(file.dataset.attachmentReference);
+              return true;
+            }
             const reference = (event.target as HTMLElement).closest<HTMLElement>(
               '[data-note-reference]',
             );
@@ -279,6 +368,63 @@ export default function NoteEditor(props: Props) {
   navigate.current = (id) => {
     void finish(false, id);
   };
+  openAttachment.current = (id) => {
+    if (!instance.current || busy) return;
+    const file = callbacks.current.attachments?.find((item) => item.id === id);
+    if (!file?.canOpen) {
+      setError(
+        file
+          ? 'This file is not ready to open yet.'
+          : 'This file is unavailable. Its label stays in your note.',
+      );
+      return;
+    }
+    const parsed = noteDocumentSchema.safeParse(instance.current.getJSON());
+    if (!parsed.success) {
+      setError('Check your note before opening the file.');
+      return;
+    }
+    setBusy(true);
+    ++revision.current;
+    instance.current.setEditable(false, false);
+    void (async () => {
+      try {
+        await callbacks.current.onDraft(parsed.data);
+        setError('');
+        setStatus('Draft saved on this device.');
+        const failure = await callbacks.current.onOpenAttachment?.(id);
+        if (failure) setError(failure);
+      } catch {
+        setError('Your changes are still here. Could not save; please try again.');
+      } finally {
+        setBusy(false);
+        instance.current?.setEditable(true, false);
+      }
+    })();
+  };
+  async function addAttachment() {
+    if (!instance.current || busy || !callbacks.current.onAddAttachment) return;
+    const parsed = noteDocumentSchema.safeParse(instance.current.getJSON());
+    if (!parsed.success) {
+      setError('Check your note before adding a file.');
+      return;
+    }
+    setBusy(true);
+    ++revision.current;
+    instance.current.setEditable(false, false);
+    try {
+      await callbacks.current.onDraft(parsed.data);
+      setStatus('Draft saved on this device.');
+      setError('');
+      const failure = await callbacks.current.onAddAttachment();
+      if (failure) setError(failure);
+    } catch {
+      setError('Your changes are still here. Could not save; please try again.');
+    } finally {
+      setBusy(false);
+      instance.current?.setEditable(true, false);
+    }
+  }
 
   const tools = editor
     ? [
@@ -405,6 +551,121 @@ export default function NoteEditor(props: Props) {
           </button>
         ))}
       </div>
+      {props.attachments && (
+        <div className="attachment-tools">
+          <button
+            disabled={busy || !editor || editor.isActive('codeBlock') || editor.isActive('code')}
+            aria-expanded={attachmentOpen}
+            aria-controls="attachment-picker"
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => {
+              if (!editor) return;
+              attachmentSelection.current = {
+                from: editor.state.selection.from,
+                to: editor.state.selection.to,
+              };
+              setAttachmentQuery('');
+              setAttachmentOpen(!attachmentOpen);
+              setReferenceOpen(false);
+              setLinkOpen(false);
+            }}
+          >
+            Insert file
+          </button>
+          <span>Files stay linked to their original upload.</span>
+        </div>
+      )}
+      {attachmentOpen && (
+        <section
+          id="attachment-picker"
+          className="reference-picker attachment-picker"
+          aria-label="Choose a file"
+        >
+          <label htmlFor="attachment-search">Files attached to this note</label>
+          <input
+            id="attachment-search"
+            autoFocus
+            value={attachmentQuery}
+            placeholder="Find a file by name"
+            onChange={(event) => setAttachmentQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                setAttachmentOpen(false);
+                editor?.commands.focus();
+              }
+            }}
+          />
+          <div className="reference-results">
+            {(props.attachments ?? [])
+              .filter(
+                (file) =>
+                  file.canInsert &&
+                  file.filename
+                    .toLocaleLowerCase()
+                    .includes(attachmentQuery.trim().toLocaleLowerCase()),
+              )
+              .slice(0, 50)
+              .map((file) => (
+                <button
+                  key={file.id}
+                  disabled={busy}
+                  onClick={() => {
+                    if (!editor || !attachmentSelection.current) return;
+                    const inserted = editor
+                      .chain()
+                      .focus()
+                      .insertContentAt(attachmentSelection.current, {
+                        type: 'attachmentReference',
+                        attrs: { attachmentId: file.id },
+                      })
+                      .run();
+                    if (!inserted) {
+                      setError('Place the cursor in a paragraph to insert a file.');
+                      return;
+                    }
+                    setAttachmentOpen(false);
+                  }}
+                >
+                  {file.filename}
+                  <small>{file.detail}</small>
+                </button>
+              ))}
+          </div>
+          {!(props.attachments ?? []).some(
+            (file) =>
+              file.canInsert &&
+              file.filename
+                .toLocaleLowerCase()
+                .includes(attachmentQuery.trim().toLocaleLowerCase()),
+          ) && (
+            <p className="picker-empty">
+              {attachmentQuery.trim()
+                ? 'No matching files. Try another name.'
+                : props.onAddAttachment
+                  ? 'No files here yet. Add a file below; it will appear when it syncs.'
+                  : 'No files to insert yet. Choose Files on this note in Library to add an upload.'}
+            </p>
+          )}
+          <p className="picker-hint">
+            Removing a file label from your text keeps the uploaded file. Manage uploads in Files.
+          </p>
+          <div className="actions">
+            {props.onAddAttachment && (
+              <button className="primary" disabled={busy} onClick={() => void addAttachment()}>
+                {busy ? 'Working…' : 'Add file'}
+              </button>
+            )}
+            <button
+              onClick={() => {
+                setAttachmentOpen(false);
+                editor?.commands.focus();
+              }}
+            >
+              Done
+            </button>
+          </div>
+        </section>
+      )}
       {linkOpen && (
         <form
           className="link-form"

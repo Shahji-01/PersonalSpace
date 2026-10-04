@@ -7,6 +7,9 @@ import NoteEditor from './NoteEditor';
 import { newId, type LocalStore, type NoteDraft } from './store';
 import { Button, styles } from './components';
 import { linkedFrom, referenceNotes } from './note-links';
+import { noteAttachments } from './note-attachments';
+import type { AttachmentRuntime } from './attachment-runtime';
+import type { AttachmentCacheEntry } from './attachment-cache-store';
 
 export function NoteEditorScreen({
   note,
@@ -18,6 +21,7 @@ export function NoteEditorScreen({
   onOpenNote,
   onCheckpointQueued,
   closeRequest,
+  attachments,
 }: {
   note: RecordItem;
   store: LocalStore;
@@ -28,12 +32,33 @@ export function NoteEditorScreen({
   onOpenNote: (note: RecordItem) => void;
   onCheckpointQueued: () => Promise<void>;
   closeRequest: number;
+  attachments?: AttachmentRuntime | null;
 }) {
   const isTask = note.type === 'task';
   const label = isTask ? 'task description' : 'note';
   const [draft, setDraft] = useState<NoteDraft | null>(null);
   const [recovered, setRecovered] = useState(false);
   const [error, setError] = useState('');
+  const [fileTick, setFileTick] = useState(0);
+  const [cachedFiles, setCachedFiles] = useState<AttachmentCacheEntry[]>([]);
+  const [removedFiles, setRemovedFiles] = useState<string[]>([]);
+  useEffect(() => attachments?.subscribe(() => setFileTick((value) => value + 1)), [attachments]);
+  useEffect(() => {
+    let alive = true;
+    void Promise.all([store.attachmentCache.list(), store.attachmentTransfers.removedIds()])
+      .then(([cache, removed]) => {
+        if (alive) {
+          setCachedFiles(cache);
+          setRemovedFiles(removed);
+        }
+      })
+      .catch(() => {
+        if (alive) setError('Could not refresh file availability.');
+      });
+    return () => {
+      alive = false;
+    };
+  }, [store, fileTick, records]);
   const currentNote = records.find((record) => record.id === note.id) ?? note;
   const conflicted = !!draft && draft.baseVersion !== currentNote.version;
   useEffect(() => {
@@ -75,6 +100,38 @@ export function NoteEditorScreen({
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
           <NoteEditor
+            onAddAttachment={
+              isTask
+                ? undefined
+                : async () => {
+                    if (!attachments) return 'Files are unavailable in this app version.';
+                    try {
+                      await attachments.pick(note.id);
+                      return null;
+                    } catch (reason) {
+                      return reason instanceof Error &&
+                        /^(Choose a file|This file type|Sync or restore)/.test(reason.message)
+                        ? reason.message
+                        : 'Could not add this file. Your draft is safe; please try again.';
+                    }
+                  }
+            }
+            attachments={
+              isTask ? undefined : noteAttachments(records, note.id, cachedFiles, removedFiles)
+            }
+            onOpenAttachment={
+              isTask
+                ? undefined
+                : async (id) => {
+                    if (!attachments) return 'Files are unavailable in this app version.';
+                    try {
+                      await attachments.share(id);
+                      return null;
+                    } catch {
+                      return 'Could not open this file. It may need an internet connection or may no longer be available.';
+                    }
+                  }
+            }
             label={isTask ? 'Task description' : 'Note'}
             initialContent={draft.content}
             recovered={recovered}
