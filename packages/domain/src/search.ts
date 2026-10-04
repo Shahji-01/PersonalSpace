@@ -41,6 +41,8 @@ export async function indexSearchRecords(
         ? record.descriptionJson
           ? documentText(record.descriptionJson)
           : ''
+        : record.type === 'learning_resource'
+        ? record.description || ''
         : record.text;
     const extraParts = [...record.tags];
     if (record.type === 'transaction') {
@@ -49,6 +51,9 @@ export async function indexSearchRecords(
     } else if (record.type === 'person') {
       if (record.nickname) extraParts.push(record.nickname);
       if (record.personNote) extraParts.push(record.personNote);
+    } else if (record.type === 'learning_resource') {
+      if (record.author) extraParts.push(record.author);
+      if (record.url) extraParts.push(record.url);
     }
     const extra = extraParts.join(' ');
     await tx.execute(sql`INSERT INTO search_documents (entity_id,user_id,type,title,body,extra,title_normalized,document,status,archived,project_id,folder_id,created_at,updated_at)

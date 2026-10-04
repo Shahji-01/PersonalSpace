@@ -81,7 +81,7 @@ These checks mean code exists. Validation results are recorded separately in `do
 3. M2: complete onboarding, richer deterministic parsing, widgets/share capture, reminder mobile UI/local notification delivery and device delivery matrix. The reminder data model, API commands and sync are implemented; delivery infrastructure and mobile screens remain.
 4. M3: safe URL fetching, metadata worker jobs, playlists (parent/child expansion), in-app player progress, mobile learning UI/screens and YouTube integration. The learning data model, API commands and sync are implemented; fetching infrastructure and mobile screens remain.
 5. M4: financial ledger with integer money, splits, debts, revisions/voids and reconciliation property tests.
-6. M5: complete search transliteration/later-module coverage, export, deletion pipeline, final web account pages and transactional email.
+6. M5: complete search transliteration/later-module coverage, export, deletion pipeline, final web account pages and transactional email. (Backend completed)
 7. M6: optional text AI, tools/policies, confirmations, citations, memory, quotas and the 300-case evaluation gate.
 8. M7: security/load/accessibility testing, legal review, stores and beta rollout.
 
