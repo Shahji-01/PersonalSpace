@@ -25,6 +25,7 @@ import {
   createCaptureService,
   createNoteHistoryService,
   createSearchService,
+  reconcileBalances,
 } from '../packages/domain/src/index';
 import { searchQuerySchema, type RecordItem } from '../packages/validation/src/index';
 import { eq, sql } from 'drizzle-orm';
@@ -36,6 +37,8 @@ let container: StartedPostgreSqlContainer;
 let owner: Pool;
 let domain: ReturnType<typeof createDatabase>;
 let auth: ReturnType<typeof createDatabase>;
+// Maintenance jobs run cross-user; mirror that with a privileged connection.
+let maintenance: ReturnType<typeof createDatabase>;
 let app: FastifyInstance;
 let tokenA: string;
 let tokenB: string;
@@ -60,6 +63,7 @@ beforeAll(async () => {
   authUrl.password = 'local_auth_only';
   domain = createDatabase(appUrl.href);
   auth = createDatabase(authUrl.href);
+  maintenance = createDatabase(url);
   const config: ServerConfig = {
     NODE_ENV: 'test',
     PORT: 4000,
@@ -106,7 +110,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await app?.close();
-  await Promise.all([domain?.pool.end(), auth?.pool.end(), owner?.end()]);
+  await Promise.all([domain?.pool.end(), auth?.pool.end(), maintenance?.pool.end(), owner?.end()]);
   await container?.stop();
 });
 
@@ -3040,5 +3044,343 @@ describe('authenticated capture → PostgreSQL → sync', () => {
     } finally {
       client.release();
     }
+  });
+  it('enforces money invariants: split sums, void/restore revisions, RLS and balance reconciliation', async () => {
+    const service = createCaptureService(domain.db);
+    const exec = (user: string, command: Parameters<typeof service.execute>[2], hash = 'money') =>
+      service.execute(user, v7(), command, hash);
+
+    // People, accounts and two-level categories.
+    const personId = v7();
+    await exec(userA, { op: 'person.create', id: personId, name: 'Asha', nickname: null });
+    const accountId = v7();
+    const [account] = await exec(userA, {
+      op: 'account.create',
+      id: accountId,
+      name: 'Checking',
+      accountType: 'bank',
+      isLiability: false,
+      currency: 'INR',
+      openingBalanceMinor: 100000,
+      openingDate: '2026-01-01',
+    });
+    expect(account).toMatchObject({ cachedBalanceMinor: 100000, openingBalanceMinor: 100000 });
+    const savingsId = v7();
+    await exec(userA, {
+      op: 'account.create',
+      id: savingsId,
+      name: 'Savings',
+      accountType: 'savings',
+      isLiability: false,
+      currency: 'INR',
+      openingBalanceMinor: 0,
+      openingDate: '2026-01-01',
+    });
+    const parentCat = v7();
+    await exec(userA, {
+      op: 'category.create',
+      id: parentCat,
+      kind: 'expense',
+      name: 'Food',
+      parentId: null,
+      icon: null,
+      color: null,
+    });
+    const childCat = v7();
+    await exec(userA, {
+      op: 'category.create',
+      id: childCat,
+      kind: 'expense',
+      name: 'Groceries',
+      parentId: parentCat,
+      icon: null,
+      color: null,
+    });
+    const diningCat = v7();
+    await exec(userA, {
+      op: 'category.create',
+      id: diningCat,
+      kind: 'expense',
+      name: 'Dining',
+      parentId: parentCat,
+      icon: null,
+      color: null,
+    });
+    // Categories support only two levels.
+    await expect(
+      exec(userA, {
+        op: 'category.create',
+        id: v7(),
+        kind: 'expense',
+        name: 'Too deep',
+        parentId: childCat,
+        icon: null,
+        color: null,
+      }),
+    ).rejects.toMatchObject({ code: 'CATEGORY_TOO_DEEP' });
+
+    // A transaction's splits must sum to its amount.
+    await expect(
+      exec(userA, {
+        op: 'transaction.create',
+        id: v7(),
+        transactionType: 'expense',
+        accountId,
+        toAccountId: null,
+        amountMinor: 10000,
+        currency: 'INR',
+        toAmountMinor: null,
+        adjustmentSign: null,
+        transactionDate: '2026-02-01',
+        description: 'Bad split',
+        merchant: null,
+        paymentMethod: null,
+        personId: null,
+        debtId: null,
+        source: 'app',
+        splits: [
+          { id: v7(), kind: 'category', categoryId: childCat, amountMinor: 6000 },
+          { id: v7(), kind: 'category', categoryId: diningCat, amountMinor: 3000 },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: 'SPLITS_MISMATCH' });
+    // An unknown account is rejected.
+    await expect(
+      exec(userA, {
+        op: 'transaction.create',
+        id: v7(),
+        transactionType: 'expense',
+        accountId: v7(),
+        toAccountId: null,
+        amountMinor: 5000,
+        currency: 'INR',
+        toAmountMinor: null,
+        adjustmentSign: null,
+        transactionDate: '2026-02-01',
+        description: 'No account',
+        merchant: null,
+        paymentMethod: null,
+        personId: null,
+        debtId: null,
+        source: 'app',
+        splits: [],
+      }),
+    ).rejects.toMatchObject({ code: 'ACCOUNT_NOT_FOUND' });
+
+    // Posted transactions that drive the balance:
+    //   income +50000, expense -20000 (balanced splits), transfer -30000 to Savings,
+    //   adjustment -10000. Expected Checking = 90000, Savings = 30000.
+    await exec(userA, {
+      op: 'transaction.create',
+      id: v7(),
+      transactionType: 'income',
+      accountId,
+      toAccountId: null,
+      amountMinor: 50000,
+      currency: 'INR',
+      toAmountMinor: null,
+      adjustmentSign: null,
+      transactionDate: '2026-02-02',
+      description: 'Salary',
+      merchant: null,
+      paymentMethod: null,
+      personId: null,
+      debtId: null,
+      source: 'app',
+      splits: [],
+    });
+    const expenseId = v7();
+    const [expense] = await exec(userA, {
+      op: 'transaction.create',
+      id: expenseId,
+      transactionType: 'expense',
+      accountId,
+      toAccountId: null,
+      amountMinor: 20000,
+      currency: 'INR',
+      toAmountMinor: null,
+      adjustmentSign: null,
+      transactionDate: '2026-02-03',
+      description: 'Shopping',
+      merchant: 'Market',
+      paymentMethod: 'upi',
+      personId: null,
+      debtId: null,
+      source: 'app',
+      splits: [
+        { id: v7(), kind: 'category', categoryId: childCat, amountMinor: 12000 },
+        { id: v7(), kind: 'category', categoryId: diningCat, amountMinor: 8000 },
+      ],
+    });
+    expect(expense!.splits).toHaveLength(2);
+    await exec(userA, {
+      op: 'transaction.create',
+      id: v7(),
+      transactionType: 'transfer',
+      accountId,
+      toAccountId: savingsId,
+      amountMinor: 30000,
+      currency: 'INR',
+      toAmountMinor: 30000,
+      adjustmentSign: null,
+      transactionDate: '2026-02-04',
+      description: 'To savings',
+      merchant: null,
+      paymentMethod: null,
+      personId: null,
+      debtId: null,
+      source: 'app',
+      splits: [],
+    });
+    await exec(userA, {
+      op: 'transaction.create',
+      id: v7(),
+      transactionType: 'adjustment',
+      accountId,
+      toAccountId: null,
+      amountMinor: 10000,
+      currency: 'INR',
+      toAmountMinor: null,
+      adjustmentSign: -1,
+      transactionDate: '2026-02-05',
+      description: 'Correction',
+      merchant: null,
+      paymentMethod: null,
+      personId: null,
+      debtId: null,
+      source: 'app',
+      splits: [],
+    });
+
+    // Edit requires the current version, re-validates splits and records a revision.
+    await expect(
+      exec(userA, {
+        op: 'transaction.edit',
+        id: expenseId,
+        amountMinor: 25000,
+        splits: [{ id: v7(), kind: 'category', categoryId: childCat, amountMinor: 20000 }],
+        reason: 'fix',
+        baseVersion: expense!.version,
+      }),
+    ).rejects.toMatchObject({ code: 'SPLITS_MISMATCH' });
+    const [edited] = await exec(userA, {
+      op: 'transaction.edit',
+      id: expenseId,
+      amountMinor: 25000,
+      splits: [{ id: v7(), kind: 'category', categoryId: childCat, amountMinor: 25000 }],
+      reason: 'fix',
+      baseVersion: expense!.version,
+    });
+    expect(edited!.amountMinor).toBe(25000);
+    expect(edited!.splits).toHaveLength(1);
+    // A stale edit is rejected.
+    await expect(
+      exec(userA, {
+        op: 'transaction.edit',
+        id: expenseId,
+        description: 'stale',
+        reason: null,
+        baseVersion: expense!.version,
+      }),
+    ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+
+    // Void / restore lifecycle with guards.
+    const [voided] = await exec(userA, {
+      op: 'transaction.void',
+      id: expenseId,
+      reason: 'duplicate',
+      baseVersion: edited!.version,
+    });
+    expect(voided!.transactionStatus).toBe('void');
+    await expect(
+      exec(userA, {
+        op: 'transaction.edit',
+        id: expenseId,
+        description: 'no edits when void',
+        reason: null,
+        baseVersion: voided!.version,
+      }),
+    ).rejects.toMatchObject({ code: 'TRANSACTION_VOID' });
+    await expect(
+      exec(userA, {
+        op: 'transaction.void',
+        id: expenseId,
+        reason: null,
+        baseVersion: voided!.version,
+      }),
+    ).rejects.toMatchObject({ code: 'ALREADY_VOID' });
+    const [restored] = await exec(userA, {
+      op: 'transaction.restore',
+      id: expenseId,
+      baseVersion: voided!.version,
+    });
+    expect(restored!.transactionStatus).toBe('posted');
+    await expect(
+      exec(userA, { op: 'transaction.restore', id: expenseId, baseVersion: restored!.version }),
+    ).rejects.toMatchObject({ code: 'NOT_VOID' });
+    // The restored expense was edited to 25000, so Checking loses 5000 more.
+    const revisions = await owner.query(
+      'SELECT reason FROM transaction_revisions WHERE transaction_id=$1 ORDER BY created_at',
+      [expenseId],
+    );
+    expect(revisions.rows.map((r) => r.reason)).toEqual([
+      'created',
+      'fix',
+      'duplicate',
+      'restored',
+    ]);
+
+    // Debts require a known person; status transitions are owner-scoped.
+    const debtId = v7();
+    const [debt] = await exec(userA, {
+      op: 'debt.create',
+      id: debtId,
+      personId,
+      direction: 'owed_to_me',
+      currency: 'INR',
+      title: 'Lunch',
+      dueOn: null,
+    });
+    await expect(
+      exec(userA, {
+        op: 'debt.create',
+        id: v7(),
+        personId: v7(),
+        direction: 'i_owe',
+        currency: 'INR',
+        title: null,
+        dueOn: null,
+      }),
+    ).rejects.toMatchObject({ code: 'PERSON_NOT_FOUND' });
+    const [writtenOff] = await exec(userA, {
+      op: 'debt.writeOff',
+      id: debtId,
+      baseVersion: debt!.version,
+    });
+    expect(writtenOff!.manualStatus).toBe('written_off');
+
+    // Cross-account isolation: userB cannot touch userA's transaction.
+    await expect(
+      exec(userB, {
+        op: 'transaction.void',
+        id: expenseId,
+        reason: null,
+        baseVersion: restored!.version,
+      }),
+    ).rejects.toMatchObject({ code: 'TRANSACTION_NOT_FOUND' });
+
+    // Balance reconciliation is the ledger invariant. Expense is 25000 now.
+    const first = await reconcileBalances(maintenance.db);
+    const driftFor = (id: string) => first.drifts.find((d) => d.accountId === id);
+    expect(driftFor(accountId)).toMatchObject({ computed: 100000 + 50000 - 25000 - 30000 - 10000 });
+    expect(driftFor(savingsId)).toMatchObject({ computed: 30000 });
+    // Cached balances are corrected, so a second pass finds no drift.
+    const second = await reconcileBalances(maintenance.db);
+    expect(second.drifts).toEqual([]);
+    const checking = await owner.query(
+      'SELECT cached_balance_minor FROM finance_accounts WHERE id=$1',
+      [accountId],
+    );
+    expect(Number(checking.rows[0].cached_balance_minor)).toBe(85000);
   });
 });
