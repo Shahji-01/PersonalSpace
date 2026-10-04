@@ -187,12 +187,12 @@ const exportWorker = new Worker(
       })
       .parse(job.data);
     const { eq } = await import('drizzle-orm');
-    await db
+    await maintenanceDb
       .update(exportJobs)
       .set({ status: 'processing', startedAt: new Date() })
       .where(eq(exportJobs.id, data.jobId));
     try {
-      const exportData = await generateExportData(db, data.userId, data.scope);
+      const exportData = await generateExportData(maintenanceDb, data.userId, data.scope);
       let result: string;
       let sizeBytes: number;
       if (data.format === 'json') {
@@ -218,7 +218,7 @@ const exportWorker = new Worker(
               : 'text/markdown';
         await storage.write(storageKey, Buffer.from(result, 'utf8'), mime);
       }
-      await db
+      await maintenanceDb
         .update(exportJobs)
         .set({
           status: 'ready',
@@ -229,7 +229,7 @@ const exportWorker = new Worker(
         })
         .where(eq(exportJobs.id, data.jobId));
     } catch (e) {
-      await db
+      await maintenanceDb
         .update(exportJobs)
         .set({ status: 'failed', error: String(e), completedAt: new Date() })
         .where(eq(exportJobs.id, data.jobId));

@@ -32,6 +32,8 @@ import {
   expireExports,
   deliverDueReminders,
   processPendingEmails,
+  generateExportData,
+  exportToJson,
 } from '../packages/domain/src/index';
 import { searchQuerySchema, type RecordItem } from '../packages/validation/src/index';
 import { eq, sql } from 'drizzle-orm';
@@ -3643,5 +3645,72 @@ describe('authenticated capture → PostgreSQL → sync', () => {
     // The column grant does not expose credentials: selecting password-bearing
     // auth_account is denied for the background role.
     await expect(maintenance.db.execute(sql`SELECT password FROM auth_account`)).rejects.toThrow();
+  });
+  it('generates a cross-domain, owner-scoped export under the background role', async () => {
+    const service = createCaptureService(domain.db);
+    const noteId = v7();
+    const taskId = v7();
+    const acctId = v7();
+    await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'capture',
+        payload: { id: noteId, type: 'note', text: 'Export me note', plannedDate: null },
+      },
+      'exp',
+    );
+    await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'capture',
+        payload: { id: taskId, type: 'task', text: 'Export me task', plannedDate: null },
+      },
+      'exp',
+    );
+    await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'account.create',
+        id: acctId,
+        name: 'Export Acct',
+        accountType: 'cash',
+        isLiability: false,
+        currency: 'INR',
+        openingBalanceMinor: 0,
+        openingDate: '2026-01-01',
+      },
+      'exp',
+    );
+    const foreignNote = v7();
+    await service.execute(
+      userB,
+      v7(),
+      {
+        op: 'capture',
+        payload: { id: foreignNote, type: 'note', text: 'Private note B', plannedDate: null },
+      },
+      'exp',
+    );
+
+    const ids = (rows: unknown[] | undefined) =>
+      (rows as Array<{ id: string }> | undefined)?.map((r) => r.id) ?? [];
+    // Reading across every domain table succeeds under the background role.
+    const data = await generateExportData(maintenance.db, userA, 'everything');
+    expect(ids(data.notes)).toContain(noteId);
+    expect(ids(data.tasks)).toContain(taskId);
+    expect(ids(data.accounts)).toContain(acctId);
+    // Owner isolation: another account's data is never included.
+    expect(ids(data.notes)).not.toContain(foreignNote);
+    const json = exportToJson(data);
+    expect(json).toContain('Export me note');
+    expect(json).not.toContain('Private note B');
+
+    // A scoped export only includes that domain.
+    const moneyOnly = await generateExportData(maintenance.db, userA, 'money');
+    expect(moneyOnly.notes).toBeUndefined();
+    expect(ids(moneyOnly.accounts)).toContain(acctId);
   });
 });
