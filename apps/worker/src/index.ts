@@ -17,6 +17,7 @@ import {
   exportToCsv,
   executePendingDeletions,
   processPendingMetadata,
+  deliverDueReminders,
 } from '@personalspace/domain';
 import { createClamScanner, readProcessorConfig } from './attachment-scanner';
 import {
@@ -281,6 +282,31 @@ metadataWorker.on('failed', (job) =>
 metadataWorker.on('error', () =>
   console.error(JSON.stringify({ event: 'metadata_worker_unavailable' })),
 );
+
+// ============================================================
+// Notifications worker — deliver push reminders (§50)
+// ============================================================
+const notificationsQueue = new Queue('notifications', { connection: redis });
+const notificationsWorker = new Worker(
+  'notifications',
+  async () => {
+    try {
+      const delivered = await deliverDueReminders(db);
+      if (delivered > 0) {
+        console.log(JSON.stringify({ event: 'reminders_delivered', count: delivered }));
+      }
+    } catch (e) {
+      console.log(JSON.stringify({ event: 'reminders_delivery_failed', error: String(e) }));
+    }
+  },
+  { connection: redis, concurrency: 1 },
+);
+notificationsWorker.on('failed', (job) =>
+  console.error(JSON.stringify({ event: 'notifications_worker_failed', jobId: job?.id })),
+);
+notificationsWorker.on('error', () =>
+  console.error(JSON.stringify({ event: 'notifications_worker_unavailable' })),
+);
 redis.on('error', () => console.error(JSON.stringify({ event: 'redis_unavailable' })));
 let stopping = false;
 async function relay() {
@@ -400,7 +426,22 @@ try {
       },
     );
   }
+  // Schedule notifications push every minute.
+  const notificationJobs = await notificationsQueue.getRepeatableJobs();
+  if (!notificationJobs.length) {
+    await notificationsQueue.add(
+      'deliver-reminders',
+      {},
+      {
+        repeat: { pattern: '* * * * *' }, // Every minute
+        removeOnComplete: { age: 7 * 86400 },
+        removeOnFail: false,
+      },
+    );
+  }
 } finally {
+  await notificationsWorker.close();
+  await notificationsQueue.close();
   await metadataWorker.close();
   await metadataQueue.close();
   await deletionWorker.close();

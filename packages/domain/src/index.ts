@@ -71,3 +71,4 @@ export {
   extractMetadata,
   processPendingMetadata,
 } from './metadata';
+export { deliverDueReminders } from './notifications';

@@ -55,6 +55,7 @@ Implemented:
 - [x] Account Deletion: full GDPR-compliant asynchronous pipeline (pending execution limits).
 - [x] Maintenance Worker: nightly background cleanup for 30-day Trash, 180-day tombstones, 7-day idempotency keys, export expiry, and balance drift reconciliation.
 - [x] Learning Metadata: safe URL fetcher with SSRF protection, size limits, and regex-based OpenGraph/Twitter meta tag extraction in a background worker.
+- [x] Reminders Delivery: background worker to push due reminders to registered device tokens idempotently.
 
 These checks mean code exists. Validation results are recorded separately in `docs/verification.md`; Phase 0 is **not** complete.
 
