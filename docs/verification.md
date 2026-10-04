@@ -1,5 +1,13 @@
 # Verification
 
+## Offline file storage — 4 October 2026
+
+- All 133 unit tests passed. Ten added cases cover startup copy/enqueue ordering, orphan cleanup with real filesystem bytes, foreign/forged download paths, account-scoped pins/settings across SQLite reopening, offline sharing without a grant request, least-recently-used eviction, pin/unsynced-original preservation, deletion retries, corrupted/missing cached files, revocation during download, sign-out and share-sheet/clear-cache ordering.
+- Mobile TypeScript and ESLint passed. Android/iOS Hermes and DOM exports passed. Formatting and diff checks passed.
+- No server/API/schema contract or native dependency changed; the prior 58 integration tests and native APK build were not rerun for this mobile-only stage. The new SQLite cache tables are additive; formal versioned mobile migrations remain open.
+
+File tests exercise actual local bytes with mocked Expo bindings; cache/runtime tests use actual SQLite with mocked network/native adapters. Native offline sharing, platform backup/container-path behavior, UI accessibility and physical-device app-kill acceptance remain unverified. No installation, restart or emulator interaction was performed. See [storage behavior and remaining work](attachments.md).
+
 ## Mobile note files — 4 October 2026
 
 - 123 unit tests passed. New coverage exercises durable account-scoped removal, foreground/background upload interruption, Wi-Fi policy, late picker results after sign-out, source preservation, file-path isolation, bounded PUT slices, verified downloads and cache pruning.
