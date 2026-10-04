@@ -72,3 +72,9 @@ export {
   processPendingMetadata,
 } from './metadata';
 export { deliverDueReminders } from './notifications';
+export {
+  parseYouTubeId,
+  fetchYouTubeMetadata,
+  fetchPlaylistItems,
+  expandPlaylist,
+} from './youtube';

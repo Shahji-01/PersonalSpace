@@ -8,6 +8,7 @@
 
 import { eq, and, lte, isNull } from 'drizzle-orm';
 import { learningResources, type Database } from '@personalspace/db';
+import { parseYouTubeId, fetchYouTubeMetadata, expandPlaylist } from './youtube';
 
 interface ExtractedMetadata {
   title?: string;
@@ -147,7 +148,30 @@ export async function processPendingMetadata(db: Database): Promise<number> {
     }
 
     try {
-      const meta = await extractMetadata(resource.url);
+      let meta: ExtractedMetadata;
+      const { type, id } = parseYouTubeId(resource.url);
+      const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
+
+      if (type && id && YOUTUBE_API_KEY) {
+        // Fetch via YouTube Data API
+        const ytData = await fetchYouTubeMetadata(id, type, YOUTUBE_API_KEY);
+        meta = ytData;
+        
+        // Expand playlist into child items
+        if (type === 'playlist') {
+          // Fetch full resource object for expansion
+          const fullResource = await db
+            .select()
+            .from(learningResources)
+            .where(eq(learningResources.id, resource.id));
+          if (fullResource[0]) {
+            await expandPlaylist(db, fullResource[0], YOUTUBE_API_KEY);
+          }
+        }
+      } else {
+        // Fallback to open graph regex extraction
+        meta = await extractMetadata(resource.url);
+      }
       
       const patch: any = {
         metadataStatus: 'ok',
