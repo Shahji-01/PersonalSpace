@@ -28,9 +28,21 @@ import {
   relayAttachmentProcessing,
 } from './attachment-processing';
 
-const env = z.object({ WORKER_DATABASE_URL: z.url(), REDIS_URL: z.url() }).safeParse(process.env);
-if (!env.success) throw new Error('WORKER_DATABASE_URL and REDIS_URL are required.');
+const env = z
+  .object({
+    WORKER_DATABASE_URL: z.url(),
+    MAINTENANCE_DATABASE_URL: z.url(),
+    REDIS_URL: z.url(),
+  })
+  .safeParse(process.env);
+if (!env.success)
+  throw new Error('WORKER_DATABASE_URL, MAINTENANCE_DATABASE_URL and REDIS_URL are required.');
 const { db, pool } = createDatabase(env.data.WORKER_DATABASE_URL);
+// Cross-user nightly maintenance uses a dedicated least-privilege role so the
+// sync relay (WORKER_DATABASE_URL) still sees only outbox metadata.
+const { db: maintenanceDb, pool: maintenancePool } = createDatabase(
+  env.data.MAINTENANCE_DATABASE_URL,
+);
 const redis = new Redis(env.data.REDIS_URL, { maxRetriesPerRequest: null });
 const queue = new Queue('sync-signals', { connection: redis });
 const storageConfig = readStorageConfig(process.env);
@@ -116,25 +128,25 @@ const maintenanceWorker = new Worker(
     const log = (event: string, detail?: object) =>
       console.log(JSON.stringify({ event, ...detail }));
     try {
-      const trashCount = await cleanupTrash(db);
+      const trashCount = await cleanupTrash(maintenanceDb);
       log('trash_cleanup', { purged: trashCount });
     } catch (e) {
       log('trash_cleanup_failed', { error: String(e) });
     }
     try {
-      const tombstoneCount = await cleanupTombstones(db);
+      const tombstoneCount = await cleanupTombstones(maintenanceDb);
       log('tombstone_cleanup', { removed: tombstoneCount });
     } catch (e) {
       log('tombstone_cleanup_failed', { error: String(e) });
     }
     try {
-      const keyCount = await cleanupIdempotencyKeys(db);
+      const keyCount = await cleanupIdempotencyKeys(maintenanceDb);
       log('idempotency_cleanup', { removed: keyCount });
     } catch (e) {
       log('idempotency_cleanup_failed', { error: String(e) });
     }
     try {
-      const { drifts } = await reconcileBalances(db);
+      const { drifts } = await reconcileBalances(maintenanceDb);
       if (drifts.length) {
         log('balance_drift_detected', { drifts });
       } else {
@@ -144,7 +156,7 @@ const maintenanceWorker = new Worker(
       log('balance_reconciliation_failed', { error: String(e) });
     }
     try {
-      const expiredCount = await expireExports(db);
+      const expiredCount = await expireExports(maintenanceDb);
       log('export_expiry', { expired: expiredCount });
     } catch (e) {
       log('export_expiry_failed', { error: String(e) });
@@ -198,7 +210,12 @@ const exportWorker = new Worker(
       // In production, upload to S3. For now, store size.
       const storageKey = `exports/${data.userId}/${data.jobId}.${data.format}`;
       if (storage) {
-        const mime = data.format === 'json' ? 'application/json' : data.format === 'csv' ? 'text/csv' : 'text/markdown';
+        const mime =
+          data.format === 'json'
+            ? 'application/json'
+            : data.format === 'csv'
+              ? 'text/csv'
+              : 'text/markdown';
         await storage.write(storageKey, Buffer.from(result, 'utf8'), mime);
       }
       await db
@@ -224,9 +241,7 @@ const exportWorker = new Worker(
 exportWorker.on('failed', (job) =>
   console.error(JSON.stringify({ event: 'export_failed', jobId: job?.id })),
 );
-exportWorker.on('error', () =>
-  console.error(JSON.stringify({ event: 'export_unavailable' })),
-);
+exportWorker.on('error', () => console.error(JSON.stringify({ event: 'export_unavailable' })));
 
 // ============================================================
 // Deletion worker — execute pending account deletions (§64.4)
@@ -256,9 +271,7 @@ const deletionWorker = new Worker(
 deletionWorker.on('failed', (job) =>
   console.error(JSON.stringify({ event: 'deletion_failed', jobId: job?.id })),
 );
-deletionWorker.on('error', () =>
-  console.error(JSON.stringify({ event: 'deletion_unavailable' })),
-);
+deletionWorker.on('error', () => console.error(JSON.stringify({ event: 'deletion_unavailable' })));
 
 // ============================================================
 // Metadata worker — fetch URL metadata for learning resources (§41)
@@ -332,9 +345,7 @@ const emailWorker = new Worker(
 emailWorker.on('failed', (job) =>
   console.error(JSON.stringify({ event: 'email_worker_failed', jobId: job?.id })),
 );
-emailWorker.on('error', () =>
-  console.error(JSON.stringify({ event: 'email_worker_unavailable' })),
-);
+emailWorker.on('error', () => console.error(JSON.stringify({ event: 'email_worker_unavailable' })));
 redis.on('error', () => console.error(JSON.stringify({ event: 'redis_unavailable' })));
 let stopping = false;
 async function relay() {
@@ -503,4 +514,5 @@ try {
   await queue.close();
   await redis.quit();
   await pool.end();
+  await maintenancePool.end();
 }

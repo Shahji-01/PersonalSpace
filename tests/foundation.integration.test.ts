@@ -26,6 +26,10 @@ import {
   createNoteHistoryService,
   createSearchService,
   reconcileBalances,
+  cleanupTrash,
+  cleanupTombstones,
+  cleanupIdempotencyKeys,
+  expireExports,
 } from '../packages/domain/src/index';
 import { searchQuerySchema, type RecordItem } from '../packages/validation/src/index';
 import { eq, sql } from 'drizzle-orm';
@@ -63,7 +67,10 @@ beforeAll(async () => {
   authUrl.password = 'local_auth_only';
   domain = createDatabase(appUrl.href);
   auth = createDatabase(authUrl.href);
-  maintenance = createDatabase(url);
+  const maintUrl = new URL(url);
+  maintUrl.username = 'personalspace_maintenance';
+  maintUrl.password = 'local_maintenance_only';
+  maintenance = createDatabase(maintUrl.href);
   const config: ServerConfig = {
     NODE_ENV: 'test',
     PORT: 4000,
@@ -3139,8 +3146,8 @@ describe('authenticated capture → PostgreSQL → sync', () => {
         debtId: null,
         source: 'app',
         splits: [
-          { id: v7(), kind: 'category', categoryId: childCat, amountMinor: 6000 },
-          { id: v7(), kind: 'category', categoryId: diningCat, amountMinor: 3000 },
+          { id: v7(), kind: 'category', categoryId: childCat, amountMinor: 6000, personId: null, debtId: null, note: null },
+          { id: v7(), kind: 'category', categoryId: diningCat, amountMinor: 3000, personId: null, debtId: null, note: null },
         ],
       }),
     ).rejects.toMatchObject({ code: 'SPLITS_MISMATCH' });
@@ -3208,8 +3215,8 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       debtId: null,
       source: 'app',
       splits: [
-        { id: v7(), kind: 'category', categoryId: childCat, amountMinor: 12000 },
-        { id: v7(), kind: 'category', categoryId: diningCat, amountMinor: 8000 },
+        { id: v7(), kind: 'category', categoryId: childCat, amountMinor: 12000, personId: null, debtId: null, note: null },
+        { id: v7(), kind: 'category', categoryId: diningCat, amountMinor: 8000, personId: null, debtId: null, note: null },
       ],
     });
     expect(expense!.splits).toHaveLength(2);
@@ -3258,7 +3265,7 @@ describe('authenticated capture → PostgreSQL → sync', () => {
         op: 'transaction.edit',
         id: expenseId,
         amountMinor: 25000,
-        splits: [{ id: v7(), kind: 'category', categoryId: childCat, amountMinor: 20000 }],
+        splits: [{ id: v7(), kind: 'category', categoryId: childCat, amountMinor: 20000, personId: null, debtId: null, note: null }],
         reason: 'fix',
         baseVersion: expense!.version,
       }),
@@ -3267,7 +3274,7 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       op: 'transaction.edit',
       id: expenseId,
       amountMinor: 25000,
-      splits: [{ id: v7(), kind: 'category', categoryId: childCat, amountMinor: 25000 }],
+      splits: [{ id: v7(), kind: 'category', categoryId: childCat, amountMinor: 25000, personId: null, debtId: null, note: null }],
       reason: 'fix',
       baseVersion: expense!.version,
     });
@@ -3382,5 +3389,112 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       [accountId],
     );
     expect(Number(checking.rows[0].cached_balance_minor)).toBe(85000);
+  });
+  it('runs nightly maintenance under the dedicated least-privilege role', async () => {
+    const service = createCaptureService(domain.db);
+    // A note that was purged long ago is hard-deleted by the Trash cleanup.
+    const noteId = v7();
+    const [note] = await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'capture',
+        payload: { id: noteId, type: 'note', text: 'Old trash', plannedDate: null },
+      },
+      'maint',
+    );
+    const [deleted] = await service.execute(
+      userA,
+      v7(),
+      { op: 'note.delete', id: noteId, baseVersion: note!.version },
+      'maint',
+    );
+    await service.execute(
+      userA,
+      v7(),
+      { op: 'note.purge', id: noteId, baseVersion: deleted!.version },
+      'maint',
+    );
+    // Backdate the purge so it falls outside the 30-day Trash window.
+    await owner.query("UPDATE entities SET purged_at = now() - interval '31 days' WHERE id = $1", [
+      noteId,
+    ]);
+    const purged = await cleanupTrash(maintenance.db);
+    expect(purged).toBeGreaterThanOrEqual(1);
+    expect((await owner.query('SELECT 1 FROM entities WHERE id=$1', [noteId])).rowCount).toBe(0);
+    expect((await owner.query('SELECT 1 FROM notes WHERE id=$1', [noteId])).rowCount).toBe(0);
+
+    // Tombstone cleanup removes entities purged beyond the 180-day window.
+    const toppleId = v7();
+    const [t] = await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'capture',
+        payload: { id: toppleId, type: 'task', text: 'Old tombstone', plannedDate: null },
+      },
+      'maint',
+    );
+    const [td] = await service.execute(
+      userA,
+      v7(),
+      { op: 'task.delete', id: toppleId, baseVersion: t!.version },
+      'maint',
+    );
+    await service.execute(
+      userA,
+      v7(),
+      { op: 'task.purge', id: toppleId, baseVersion: td!.version },
+      'maint',
+    );
+    await owner.query("UPDATE entities SET purged_at = now() - interval '181 days' WHERE id = $1", [
+      toppleId,
+    ]);
+    expect(await cleanupTombstones(maintenance.db)).toBeGreaterThanOrEqual(1);
+    expect((await owner.query('SELECT 1 FROM entities WHERE id=$1', [toppleId])).rowCount).toBe(0);
+
+    // Idempotency keys older than seven days are removed.
+    const staleKey = v7();
+    await service.execute(
+      userA,
+      staleKey,
+      { op: 'capture', payload: { id: v7(), type: 'inbox', text: 'keeps key', plannedDate: null } },
+      'maint',
+    );
+    await owner.query(
+      "UPDATE idempotency_keys SET created_at = now() - interval '8 days' WHERE key = $1",
+      [staleKey],
+    );
+    expect(await cleanupIdempotencyKeys(maintenance.db)).toBeGreaterThanOrEqual(1);
+    expect(
+      (await owner.query('SELECT 1 FROM idempotency_keys WHERE key=$1', [staleKey])).rowCount,
+    ).toBe(0);
+
+    // Ready exports older than 24 hours are expired.
+    const exportId = v7();
+    await owner.query(
+      `INSERT INTO export_jobs (id, user_id, format, scope, status, completed_at, created_at)
+       VALUES ($1, $2, 'json', 'everything', 'ready', now() - interval '25 hours', now() - interval '25 hours')`,
+      [exportId, userA],
+    );
+    expect(await expireExports(maintenance.db)).toBeGreaterThanOrEqual(1);
+    expect(
+      (await owner.query('SELECT status FROM export_jobs WHERE id=$1', [exportId])).rows[0].status,
+    ).toBe('expired');
+
+    // The sync relay role remains restricted to outbox metadata.
+    const relay = new Pool({
+      connectionString: (() => {
+        const u = new URL(container.getConnectionUri());
+        u.username = 'personalspace_worker';
+        u.password = 'local_worker_only';
+        return u.href;
+      })(),
+    });
+    try {
+      await expect(relay.query('SELECT * FROM finance_accounts')).rejects.toThrow();
+    } finally {
+      await relay.end();
+    }
   });
 });

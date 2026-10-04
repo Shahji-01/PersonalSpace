@@ -8,7 +8,7 @@
  * 5. Export expiry: mark ready exports older than 24 hours as expired.
  */
 
-import { and, eq, lt, lte, isNotNull, isNull, sql, ne } from 'drizzle-orm';
+import { and, eq, inArray, lte, isNotNull, sql } from 'drizzle-orm';
 import {
   entities,
   notes,
@@ -24,7 +24,6 @@ import {
   idempotencyKeys,
   exportJobs,
   type Database,
-  type Transaction,
 } from '@personalspace/db';
 
 /** Hard-delete items that have been in Trash (deletedAt set) for > 30 days. */
@@ -42,13 +41,21 @@ export async function cleanupTrash(db: Database): Promise<number> {
   const ids = trashedEntities.map((e) => e.id);
   // Delete from all domain tables (order doesn't matter since they reference entities).
   for (const table of [
-    notes, tasks, reminders, learningResources, learningCollections,
-    financeTransactions, debts, financeCategories, financeAccounts, people,
+    notes,
+    tasks,
+    reminders,
+    learningResources,
+    learningCollections,
+    financeTransactions,
+    debts,
+    financeCategories,
+    financeAccounts,
+    people,
   ] as const) {
-    await db.delete(table).where(sql`${table.id} = ANY(${ids})`);
+    await db.delete(table).where(inArray(table.id, ids));
   }
   // Finally purge the entity row.
-  await db.delete(entities).where(sql`${entities.id} = ANY(${ids})`);
+  await db.delete(entities).where(inArray(entities.id, ids));
   return ids.length;
 }
 
@@ -73,7 +80,9 @@ export async function cleanupIdempotencyKeys(db: Database): Promise<number> {
 }
 
 /** Recompute account cached balances from transactions and alert on drift (§45.3). */
-export async function reconcileBalances(db: Database): Promise<{ drifts: Array<{ accountId: string; cached: number; computed: number }> }> {
+export async function reconcileBalances(
+  db: Database,
+): Promise<{ drifts: Array<{ accountId: string; cached: number; computed: number }> }> {
   // Use a raw query for the aggregation to avoid type complexity.
   const rows = await db.execute<{
     account_id: string;

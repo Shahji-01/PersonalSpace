@@ -32,6 +32,8 @@ pnpm dev:mobile
 
 The setup script generates an ignored `.env` with a random auth secret and preserves existing configuration. The passwords in Compose and `.env.example` are **local-only**. Keep the migration owner connection out of API/worker configuration in deployment.
 
+Database roles are least-privileged: `personalspace_app` (API, per-user RLS), `personalspace_auth` (auth tables), `personalspace_worker` (sync relay — outbox metadata only) and `personalspace_maintenance` (cross-user nightly cleanup/reconciliation). The maintenance role is provisioned in `infra/postgres/init.sql`; set `MAINTENANCE_DATABASE_URL` for the worker. An existing local database created before this role was added needs it created once (re-run `init.sql` or `CREATE ROLE personalspace_maintenance …`) before `pnpm db:migrate`.
+
 The mobile app uses an Expo **development build**. From `apps/mobile`, run `pnpm android` on a machine with the Android toolchain; use `pnpm ios` on macOS, or EAS development builds. `pnpm dev:mobile` then starts Metro for the installed development client. Native widgets/share extensions are not implemented yet.
 
 For a physical phone, set `EXPO_PUBLIC_API_URL` in `apps/mobile/.env` to your computer's LAN address, set `HOST=0.0.0.0` and the same `API_URL` in root `.env`, then restart Metro and the API. Android emulators normally reach the host through `10.0.2.2`. Use HTTPS for a remote API; cleartext development connections depend on native platform configuration.
