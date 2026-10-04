@@ -2,6 +2,7 @@ import { ApiError, createAttachmentTransport, type createClient } from '@persona
 import { createAttachmentTransferEngine, type AttachmentDrainResult } from '@personalspace/sync';
 import type { LocalStore } from './store';
 import type { AttachmentFiles } from './attachment-files';
+import { createAttachmentCache } from './attachment-cache';
 
 export function createAttachmentRuntime(options: {
   store: LocalStore;
@@ -34,6 +35,45 @@ export function createAttachmentRuntime(options: {
     (await store.list()).some(
       (row) => row.id === parentId && row.type === 'note' && !row.deletedAt && row.version > 0,
     );
+  const permitted = async (id: string) => {
+    if ((await transfers.removedIds()).includes(id)) return false;
+    const remote = (await store.list()).find(
+      (item) => item.id === id && item.type === 'attachment',
+    );
+    const local = await transfers.get(id);
+    if (remote?.deletedAt || remote?.attachment?.status === 'rejected') return false;
+    // A successful completion response can precede the ready metadata row.
+    if (remote?.attachment?.status !== 'ready' && local?.state !== 'ready') return false;
+    const parentId =
+      remote?.parentId ?? (local?.state === 'ready' ? local.descriptor.parentId : null);
+    return !!parentId && (await live(parentId));
+  };
+  const cache = createAttachmentCache({
+    store: store.attachmentCache,
+    files,
+    signal: lifetime.signal,
+    permitted,
+    connected: () => network.connected,
+    grant: (id) => client.downloadAttachment(id),
+    onChange: emit,
+  });
+  let recovery: Promise<void> | null = null;
+  const recoverOriginals = () => {
+    if (!recovery)
+      recovery = (async () => {
+        const jobs = await transfers.list(),
+          removals = await transfers.pendingFileRemovals();
+        lifetime.signal.throwIfAborted();
+        await files.reclaimOriginals([
+          ...jobs.map((job) => job.localUri),
+          ...removals.map((item) => item.localUri),
+        ]);
+      })().catch((error) => {
+        recovery = null;
+        throw error;
+      });
+    return recovery;
+  };
   const makeEngine = () =>
     createAttachmentTransferEngine({
       store: {
@@ -92,34 +132,9 @@ export function createAttachmentRuntime(options: {
       do {
         again = false;
         try {
-          const records = await store.list(),
-            removed = new Set(await transfers.removedIds());
-          const parents = new Set(
-            records.filter((row) => row.type === 'note' && !row.deletedAt).map((row) => row.id),
-          );
-          const localReady = (await transfers.list())
-            .filter(
-              (job) =>
-                job.state === 'ready' &&
-                parents.has(job.descriptor.parentId) &&
-                !removed.has(job.descriptor.id),
-            )
-            .map((job) => job.descriptor.id);
-          await files
-            .pruneDownloads(
-              records
-                .filter(
-                  (row) =>
-                    row.type === 'attachment' &&
-                    !row.deletedAt &&
-                    row.parentId &&
-                    parents.has(row.parentId) &&
-                    !removed.has(row.id),
-                )
-                .map((row) => row.id)
-                .concat(localReady),
-            )
-            .catch(() => schedule(Date.now() + 30000));
+          await recoverOriginals().catch(() => schedule(Date.now() + 30000));
+          // Cache operations may await a share sheet. Never make uploads/row sync wait for it.
+          void cache.maintain().catch(() => schedule(Date.now() + 30000));
           for (const item of await transfers.pendingFileRemovals()) {
             try {
               await files.remove(item.localUri);
@@ -189,6 +204,8 @@ export function createAttachmentRuntime(options: {
       emit();
     },
     pick: async (parentId: string) => {
+      await recoverOriginals();
+      lifetime.signal.throwIfAborted();
       if (!(await live(parentId)))
         throw new Error('Sync or restore this note before adding a file.');
       const job = await files.pick(parentId, lifetime.signal);
@@ -216,31 +233,12 @@ export function createAttachmentRuntime(options: {
       emit();
       void request();
     },
-    share: async (id: string) => {
-      const controller = new AbortController(),
-        abort = () => controller.abort();
-      lifetime.signal.throwIfAborted();
-      lifetime.signal.addEventListener('abort', abort, { once: true });
-      const timeout = setTimeout(abort, 60000);
-      try {
-        const permitted = async () => {
-          if ((await transfers.removedIds()).includes(id)) return false;
-          const remote = (await store.list()).find(
-            (item) => item.id === id && item.type === 'attachment' && !item.deletedAt,
-          );
-          const local = await transfers.get(id);
-          const parentId = remote?.parentId ?? local?.descriptor.parentId;
-          return !!parentId && (await live(parentId));
-        };
-        if (!(await permitted())) throw new Error('This file is no longer available.');
-        const grant = await client.downloadAttachment(id);
-        controller.signal.throwIfAborted();
-        await files.share(id, grant, controller.signal, permitted);
-      } finally {
-        clearTimeout(timeout);
-        lifetime.signal.removeEventListener('abort', abort);
-      }
-    },
+    share: cache.share,
+    keepOffline: cache.pin,
+    unpin: cache.unpin,
+    storageUsage: cache.usage,
+    clearCache: cache.clear,
+    setCacheLimitMb: cache.setLimitMb,
     dispose: () => {
       lifetime.abort();
       active = false;

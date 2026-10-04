@@ -15,6 +15,7 @@ import type { SyncStore } from '@personalspace/sync';
 import { readDocument, type NoteDocument } from '@personalspace/editor-schema';
 import { searchIndexSql, searchLocal } from './search-index';
 import { attachmentTablesSql, createAttachmentStore } from './attachment-store';
+import { attachmentCacheTablesSql, createAttachmentCacheStore } from './attachment-cache-store';
 
 export type NoteDraft = { content: NoteDocument; baseVersion: number };
 
@@ -40,7 +41,8 @@ export async function openStore(
     CREATE TABLE IF NOT EXISTS tombstones (user_id TEXT NOT NULL, id TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY(user_id,id));
     CREATE TABLE IF NOT EXISTS note_history (user_id TEXT NOT NULL, note_id TEXT NOT NULL, id TEXT NOT NULL, version INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(user_id,id));
     CREATE INDEX IF NOT EXISTS note_history_by_note ON note_history(user_id,note_id,version DESC);
-    ${attachmentTablesSql}`);
+    ${attachmentTablesSql}
+    ${attachmentCacheTablesSql}`);
   await transaction(async () => {
     await db.execAsync(searchIndexSql);
     if (!(await db.getFirstAsync('SELECT version FROM search_index_meta WHERE version = 1'))) {
@@ -247,6 +249,7 @@ export async function openStore(
   return {
     ...store,
     attachmentTransfers: attachmentStore.transfers,
+    attachmentCache: createAttachmentCacheStore(db, userId, transaction),
     search: (query: SearchQuery) => searchLocal(db, userId, query),
     cacheSearch: async (response: SearchResponse): Promise<SearchResponse> => {
       const groups: SearchResponse['groups'] = [];

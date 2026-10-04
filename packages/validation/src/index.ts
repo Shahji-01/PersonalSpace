@@ -955,3 +955,128 @@ export type Command = z.infer<typeof commandSchema>;
 export type RecordItem = z.infer<typeof recordSchema>;
 export type Mutation = z.infer<typeof syncPushSchema>['mutations'][number];
 export type MutationResult = z.infer<typeof mutationResultSchema>;
+
+// ============================================================
+// User Preferences (§21)
+// ============================================================
+const wallTimeRegex = /^\d{2}:\d{2}$/;
+export const preferencesUpdateSchema = z.strictObject({
+  // Regional
+  timezone: z.string().min(1).max(60).optional(),
+  locale: z.string().min(2).max(10).optional(),
+  weekStartDay: z.number().int().min(0).max(6).optional(),
+  baseCurrency: z.string().length(3).toUpperCase().optional(),
+  // Time / day-parts
+  morningStart: z.string().regex(wallTimeRegex).optional(),
+  afternoonStart: z.string().regex(wallTimeRegex).optional(),
+  eveningStart: z.string().regex(wallTimeRegex).optional(),
+  nightStart: z.string().regex(wallTimeRegex).optional(),
+  // Money defaults
+  defaultAccountId: idSchema.nullable().optional(),
+  defaultPaymentMethod: z.string().max(30).nullable().optional(),
+  // Capture
+  captureTarget: z.enum(['inbox', 'note', 'task']).optional(),
+  // Notifications
+  quietHoursStart: z.string().regex(wallTimeRegex).optional(),
+  quietHoursEnd: z.string().regex(wallTimeRegex).optional(),
+  notificationReminder: z.boolean().optional(),
+  notificationTaskDue: z.boolean().optional(),
+  notificationDebtDue: z.boolean().optional(),
+  notificationExport: z.boolean().optional(),
+  // AI
+  aiEnabled: z.boolean().optional(),
+  aiMemoryEnabled: z.boolean().optional(),
+  aiConversationRetentionDays: z.number().int().min(7).max(365).optional(),
+  // Security
+  appLockEnabled: z.boolean().optional(),
+  appLockTimeoutMinutes: z.number().int().min(1).max(60).optional(),
+  hideInSwitcher: z.boolean().optional(),
+  // Privacy
+  analyticsOptOut: z.boolean().optional(),
+  // Appearance
+  theme: z.enum(['system', 'light', 'dark']).optional(),
+  textSize: z.enum(['system', 'small', 'medium', 'large']).optional(),
+});
+export type PreferencesUpdate = z.infer<typeof preferencesUpdateSchema>;
+
+export const preferencesResponseSchema = z.strictObject({
+  timezone: z.string(),
+  locale: z.string(),
+  weekStartDay: z.number().int(),
+  baseCurrency: z.string(),
+  morningStart: z.string(),
+  afternoonStart: z.string(),
+  eveningStart: z.string(),
+  nightStart: z.string(),
+  defaultAccountId: z.string().nullable(),
+  defaultPaymentMethod: z.string().nullable(),
+  captureTarget: z.string(),
+  quietHoursStart: z.string(),
+  quietHoursEnd: z.string(),
+  notificationReminder: z.boolean(),
+  notificationTaskDue: z.boolean(),
+  notificationDebtDue: z.boolean(),
+  notificationExport: z.boolean(),
+  aiEnabled: z.boolean(),
+  aiMemoryEnabled: z.boolean(),
+  aiConversationRetentionDays: z.number().int(),
+  appLockEnabled: z.boolean(),
+  appLockTimeoutMinutes: z.number().int(),
+  hideInSwitcher: z.boolean(),
+  analyticsOptOut: z.boolean(),
+  theme: z.string(),
+  textSize: z.string(),
+});
+export type PreferencesResponse = z.infer<typeof preferencesResponseSchema>;
+
+// ============================================================
+// Device Tokens (§50)
+// ============================================================
+export const registerDeviceSchema = z.strictObject({
+  platform: z.enum(['android', 'ios', 'web']),
+  token: z.string().min(1).max(4096),
+  deviceName: z.string().max(100).optional(),
+  appVersion: z.string().max(20).optional(),
+});
+export type RegisterDevice = z.infer<typeof registerDeviceSchema>;
+
+export const updateDeviceWatermarkSchema = z.strictObject({
+  remindersScheduledThrough: z.iso.datetime(),
+});
+
+// ============================================================
+// Export Requests (§20.1)
+// ============================================================
+export const exportRequestSchema = z.strictObject({
+  format: z.enum(['json', 'csv', 'markdown']),
+  scope: z.enum(['everything', 'notes', 'tasks', 'learning', 'money']).default('everything'),
+});
+export type ExportRequest = z.infer<typeof exportRequestSchema>;
+
+export const exportJobResponseSchema = z.strictObject({
+  id: idSchema,
+  format: z.string(),
+  scope: z.string(),
+  status: z.enum(['queued', 'processing', 'ready', 'expired', 'failed']),
+  sizeBytes: z.number().nullable(),
+  downloadUrl: z.string().nullable().optional(),
+  createdAt: z.iso.datetime(),
+  completedAt: z.iso.datetime().nullable(),
+});
+export type ExportJobResponse = z.infer<typeof exportJobResponseSchema>;
+
+// ============================================================
+// Account Deletion (§64.3)
+// ============================================================
+export const deletionRequestSchema = z.strictObject({
+  confirmText: z.literal('DELETE'),
+  reason: z.string().max(500).optional(),
+});
+export type DeletionRequest = z.infer<typeof deletionRequestSchema>;
+
+export const deletionStatusResponseSchema = z.strictObject({
+  status: z.enum(['pending', 'processing', 'completed', 'cancelled', 'none']),
+  graceEndsAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime().nullable(),
+});
+export type DeletionStatusResponse = z.infer<typeof deletionStatusResponseSchema>;

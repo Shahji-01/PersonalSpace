@@ -46,3 +46,18 @@ export {
   createDebt,
   setDebtStatus,
 } from './money';
+export { getPreferences, updatePreferences } from './preferences';
+export {
+  cleanupTrash,
+  cleanupTombstones,
+  cleanupIdempotencyKeys,
+  reconcileBalances,
+  expireExports,
+} from './maintenance';
+export {
+  generateExportData,
+  exportToJson,
+  exportToCsv,
+  type ExportScope,
+  type ExportFormat,
+} from './export';

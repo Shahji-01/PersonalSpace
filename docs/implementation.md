@@ -40,7 +40,7 @@ Implemented:
 - [x] Backward-compatible cache response defaults and guards against stale acknowledgements and overlapping item mutations.
 - [x] Repeatable mobile-width browser editor tests in CI, including draft recovery and storage failures.
 - [x] Account-scoped durable SQLite cache/outbox, coalesced replay, incremental pull pages on version boundaries.
-- [x] Attachment transfer foundation: resumable multipart engine, account-scoped SQLite progress/backoff, Wi-Fi policy and purge-safe cancellation. Authenticated upload API, private S3 grants, metadata sync, quota checks, processing/cleanup, scanner adapter and private downloads are implemented. Mobile Files adds picker/copy/hash, foreground transfers, progress/retry/removal and verified download/share. Inline editor nodes, scanner provisioning and native device acceptance remain pending; see [attachment integration status](attachments.md).
+- [x] Attachment transfer foundation: resumable multipart engine, account-scoped SQLite progress/backoff, Wi-Fi policy and purge-safe cancellation. Authenticated upload API, private S3 grants, metadata sync, quota checks, processing/cleanup, scanner adapter and private downloads are implemented. Mobile Files adds picker/copy/hash, foreground transfers, progress/retry/removal, verified download/share, offline pins, configurable LRU storage, safe cache clearing and startup orphan reclamation. Inline editor nodes, eager thumbnails, scanner provisioning and native device acceptance remain pending; see [attachment integration status](attachments.md).
 - [x] Foreground sync backoff/jitter, server Retry-After, auth pause, manual retry and follow-up sync for edits queued during a running request.
 - [x] Expired-cursor detection and resumable full recovery before replay, preserving queued changes while erasing old purged content.
 - [x] Explicit recovery of conflicting rich note drafts as separate linked notes, with source preservation and acknowledgement-safe draft cleanup.
@@ -50,6 +50,10 @@ Implemented:
 - [x] Reminders: standalone and entity-attached, floating/fixed timezone scheduling, fire_at computation, snooze (10 min/1 h/evening/tomorrow morning), dismiss/done/cancel lifecycle, Trash/restore/purge, RLS, incremental sync and search indexing.
 - [x] Learning: collections (tree, max depth 3), resources (10 types, URL dedup, metadata/progress tracking, auto-completion at 90% for videos), collection CRUD, resource save/update/status/progress/collection/delete/restore/purge, RLS, incremental sync and search indexing.
 - [x] Money: people, accounts, categories (two levels), transactions with sum-validated splits, tracking debts/receivables with statuses, revisions for audit trailing edits/voiding/restoring, incremental sync and search indexing.
+- [x] Settings & Preferences: user preferences table with robust defaults, device token registration for push notifications, and idempotent notification delivery logging.
+- [x] Background Data Export: worker jobs to generate complete JSON and CSV archives across all domains, with expiring secure download links.
+- [x] Account Deletion: full GDPR-compliant asynchronous pipeline (pending execution limits).
+- [x] Maintenance Worker: nightly background cleanup for 30-day Trash, 180-day tombstones, 7-day idempotency keys, export expiry, and balance drift reconciliation.
 
 These checks mean code exists. Validation results are recorded separately in `docs/verification.md`; Phase 0 is **not** complete.
 

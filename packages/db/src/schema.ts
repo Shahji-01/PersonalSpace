@@ -461,3 +461,128 @@ export const attachments = pgTable(
   },
   (table) => [index().on(table.userId, table.parentId), index().on(table.userId, table.version)],
 );
+
+// ============================================================
+// User Preferences (§21)
+// ============================================================
+export const userPreferences = pgTable('user_preferences', {
+  userId: uuid('user_id').primaryKey(),
+  // Regional
+  timezone: text('timezone').notNull().default('Asia/Kolkata'),
+  locale: text('locale').notNull().default('en-IN'),
+  weekStartDay: smallint('week_start_day').notNull().default(1),
+  baseCurrency: text('base_currency').notNull().default('INR'),
+  // Time / day-parts
+  morningStart: time('morning_start').notNull().default('06:00'),
+  afternoonStart: time('afternoon_start').notNull().default('12:00'),
+  eveningStart: time('evening_start').notNull().default('17:00'),
+  nightStart: time('night_start').notNull().default('21:00'),
+  // Money defaults
+  defaultAccountId: uuid('default_account_id'),
+  defaultPaymentMethod: text('default_payment_method'),
+  // Capture
+  captureTarget: text('capture_target').notNull().default('inbox'),
+  // Notifications
+  quietHoursStart: time('quiet_hours_start').notNull().default('22:30'),
+  quietHoursEnd: time('quiet_hours_end').notNull().default('07:00'),
+  notificationReminder: boolean('notification_reminder').notNull().default(true),
+  notificationTaskDue: boolean('notification_task_due').notNull().default(true),
+  notificationDebtDue: boolean('notification_debt_due').notNull().default(true),
+  notificationExport: boolean('notification_export').notNull().default(true),
+  // AI
+  aiEnabled: boolean('ai_enabled').notNull().default(true),
+  aiMemoryEnabled: boolean('ai_memory_enabled').notNull().default(true),
+  aiConversationRetentionDays: integer('ai_conversation_retention_days').notNull().default(90),
+  // Security
+  appLockEnabled: boolean('app_lock_enabled').notNull().default(false),
+  appLockTimeoutMinutes: integer('app_lock_timeout_minutes').notNull().default(5),
+  hideInSwitcher: boolean('hide_in_switcher').notNull().default(false),
+  // Privacy
+  analyticsOptOut: boolean('analytics_opt_out').notNull().default(false),
+  // Appearance
+  theme: text('theme').notNull().default('system'),
+  textSize: text('text_size').notNull().default('system'),
+  // Timestamps
+  createdAt: instant('created_at').notNull().defaultNow(),
+  updatedAt: instant('updated_at').notNull().defaultNow(),
+});
+
+// ============================================================
+// Device Tokens (§50)
+// ============================================================
+export const deviceTokens = pgTable(
+  'device_tokens',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id').notNull(),
+    platform: text('platform').notNull(),
+    token: text('token').notNull(),
+    deviceName: text('device_name'),
+    appVersion: text('app_version'),
+    remindersScheduledThrough: instant('reminders_scheduled_through'),
+    lastSeenAt: instant('last_seen_at').notNull().defaultNow(),
+    createdAt: instant('created_at').notNull().defaultNow(),
+  },
+  (t) => [unique().on(t.userId, t.token), index().on(t.userId)],
+);
+
+// ============================================================
+// Notification Log (§22, §50.3)
+// ============================================================
+export const notificationLog = pgTable(
+  'notification_log',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id').notNull(),
+    type: text('type').notNull(),
+    dedupeKey: text('dedupe_key').notNull(),
+    title: text('title').notNull(),
+    body: text('body'),
+    entityId: uuid('entity_id'),
+    channel: text('channel').notNull(),
+    status: text('status').notNull().default('pending'),
+    sentAt: instant('sent_at'),
+    error: text('error'),
+    createdAt: instant('created_at').notNull().defaultNow(),
+  },
+  (t) => [unique().on(t.userId, t.dedupeKey), index().on(t.userId, t.createdAt)],
+);
+
+// ============================================================
+// Export Jobs (§20.1, §64.2)
+// ============================================================
+export const exportJobs = pgTable(
+  'export_jobs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id').notNull(),
+    format: text('format').notNull(),
+    scope: text('scope').notNull().default('everything'),
+    status: text('status').notNull().default('queued'),
+    storageKey: text('storage_key'),
+    sizeBytes: bigint('size_bytes', { mode: 'number' }),
+    downloadUrlExpiresAt: instant('download_url_expires_at'),
+    startedAt: instant('started_at'),
+    completedAt: instant('completed_at'),
+    error: text('error'),
+    createdAt: instant('created_at').notNull().defaultNow(),
+  },
+  (t) => [index().on(t.userId, t.createdAt)],
+);
+
+// ============================================================
+// Account Deletion Requests (§64.3)
+// ============================================================
+export const deletionRequests = pgTable('deletion_requests', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().unique(),
+  status: text('status').notNull().default('pending'),
+  reason: text('reason'),
+  graceEndsAt: instant('grace_ends_at').notNull(),
+  step: text('step'),
+  stepsLog: jsonb('steps_log').notNull().default([]),
+  startedAt: instant('started_at'),
+  completedAt: instant('completed_at'),
+  cancelledAt: instant('cancelled_at'),
+  createdAt: instant('created_at').notNull().defaultNow(),
+});

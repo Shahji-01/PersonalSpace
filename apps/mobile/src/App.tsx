@@ -32,6 +32,7 @@ import { Button, Card, Field, styles } from './components';
 import { colors } from '@personalspace/ui';
 import { NoteEditorScreen } from './NoteEditorScreen';
 import { NoteFilesScreen } from './NoteFilesScreen';
+import { StorageScreen } from './StorageScreen';
 import { createNativeAttachmentFiles } from './attachment-files';
 import { createAttachmentRuntime, type AttachmentRuntime } from './attachment-runtime';
 import { TaskDetailsScreen } from './TaskDetailsScreen';
@@ -81,6 +82,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
   const [attachments, setAttachments] = useState<AttachmentRuntime | null>(null);
   const [attachmentError, setAttachmentError] = useState('');
   const [filesNote, setFilesNote] = useState<RecordItem | null>(null);
+  const [storageOpen, setStorageOpen] = useState(false);
   const mounted = useRef(true);
   const [records, setRecords] = useState<RecordItem[]>([]);
   const [pendingIds, setPendingIds] = useState<string[]>([]);
@@ -952,6 +954,12 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
               )
             }
           />
+          <Button
+            secondary
+            label="File storage"
+            disabled={!attachments}
+            onPress={() => setStorageOpen(true)}
+          />
         </View>
         <Text style={styles.subtitle}>
           {new Intl.DateTimeFormat('en-IN', {
@@ -1795,6 +1803,15 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
             unavailable={attachmentError}
             onClose={() => setFilesNote(null)}
           />
+        )}
+      </Modal>
+      <Modal
+        visible={storageOpen}
+        animationType="slide"
+        onRequestClose={() => setStorageOpen(false)}
+      >
+        {attachments && (
+          <StorageScreen runtime={attachments} onClose={() => setStorageOpen(false)} />
         )}
       </Modal>
       <Modal

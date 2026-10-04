@@ -14,6 +14,8 @@ import { openStore } from './store';
 import { ApiError, createClient } from '@personalspace/api-client';
 import { createAttachmentRuntime } from './attachment-runtime';
 import type { AttachmentFiles } from './attachment-files';
+import { createAttachmentCache } from './attachment-cache';
+import type { AttachmentCacheEntry } from './attachment-cache-store';
 
 let database: DatabaseSync;
 vi.mock('expo-crypto', () => ({ getRandomBytes: (count: number) => randomBytes(count) }));
@@ -85,8 +87,20 @@ async function runtimeFixture() {
     inspect: vi.fn(async () => ({ size: job.descriptor.size, sha256: job.descriptor.sha256 })),
     put: vi.fn(async () => ({ status: 200, etag: 'etag' })),
     remove: vi.fn(async () => {}),
-    share: vi.fn(async () => {}),
-    pruneDownloads: vi.fn(async () => {}),
+    download: vi.fn(async (id, grant) => ({
+      id,
+      uri: `file:///downloads/${id}.txt`,
+      size: grant.size,
+      mime: grant.mime,
+      sha256: grant.sha256!,
+    })),
+    shareDownloaded: vi.fn(async () => {}),
+    verifyDownload: vi.fn(async () => true),
+    hasDownload: vi.fn(async () => true),
+    removeDownload: vi.fn(async () => {}),
+    reconcileDownloads: vi.fn(async () => {}),
+    reclaimOriginals: vi.fn(async () => {}),
+    originalBytes: vi.fn(async () => job.descriptor.size),
     watchNetwork: (listener) => {
       network = listener;
       return () => {};
@@ -107,6 +121,13 @@ async function runtimeFixture() {
     })),
     completeAttachment: vi.fn(async () => ({ status: 'ready' as const })),
     removeAttachment: vi.fn(async () => ({ cancelled: true as const })),
+    downloadAttachment: vi.fn(async () => ({
+      url: 'https://storage.example.test/file',
+      expiresAt: new Date().toISOString(),
+      mime: 'text/plain',
+      size: 10,
+      sha256: 'a'.repeat(64),
+    })),
   };
   const onRemoteChange = vi.fn();
   const runtime = createAttachmentRuntime({ store, client, files, onRemoteChange });
@@ -123,6 +144,32 @@ async function runtimeFixture() {
 }
 
 describe('foreground attachment runtime', () => {
+  it('finishes startup orphan cleanup before a picker can create a new durable copy', async () => {
+    const f = await runtimeFixture();
+    await f.store.attachmentTransfers.enqueue(f.job);
+    let finish: () => void = () => {};
+    vi.mocked(f.files.reclaimOriginals).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const request = f.runtime.request(),
+      pick = f.runtime.pick(f.parent.id);
+    try {
+      await vi.waitFor(() =>
+        expect(f.files.reclaimOriginals).toHaveBeenCalledWith([f.job.localUri]),
+      );
+      expect(f.files.pick).not.toHaveBeenCalled();
+      finish();
+      await pick;
+      await request;
+      expect(f.files.pick).toHaveBeenCalledTimes(1);
+      expect(f.files.reclaimOriginals).toHaveBeenCalledTimes(1);
+    } finally {
+      f.runtime.dispose();
+    }
+  });
   it('keeps a large picked file offline until Wi-Fi or a session override, independently of row sync', async () => {
     const f = await runtimeFixture();
     try {
@@ -141,11 +188,25 @@ describe('foreground attachment runtime', () => {
         f.parent.version,
       );
       // A completed download remains usable while metadata row sync catches up.
+      await f.store.merge(
+        [
+          recordSchema.parse({
+            ...f.parent,
+            id: f.job.descriptor.id,
+            type: 'attachment',
+            parentId: f.parent.id,
+            version: f.parent.version + 1,
+            attachment: { ...f.job.descriptor, status: 'processing' },
+          }),
+        ],
+        f.parent.version + 1,
+      );
+      await f.runtime.keepOffline(f.job.descriptor.id);
       await f.runtime.request();
-      expect(f.files.pruneDownloads).toHaveBeenLastCalledWith([f.job.descriptor.id]);
+      expect(await f.store.attachmentCache.list()).toHaveLength(1);
       await f.runtime.remove(f.job.descriptor.id);
       await f.runtime.request();
-      expect(f.files.pruneDownloads).toHaveBeenLastCalledWith([]);
+      await vi.waitFor(async () => expect(await f.store.attachmentCache.list()).toEqual([]));
     } finally {
       f.runtime.dispose();
     }
@@ -220,6 +281,165 @@ describe('foreground attachment runtime', () => {
     await expect(pick).rejects.toThrow();
     expect(await f.store.attachmentTransfers.list()).toEqual([]);
     expect(f.files.remove).toHaveBeenCalledWith(f.job.localUri);
+  });
+});
+
+async function cacheFixture() {
+  const f = await runtimeFixture();
+  f.runtime.dispose();
+  const controller = new AbortController();
+  let connected = true,
+    permitted = true;
+  const cache = createAttachmentCache({
+    store: f.store.attachmentCache,
+    files: f.files,
+    signal: controller.signal,
+    connected: () => connected,
+    permitted: async () => permitted,
+    grant: f.client.downloadAttachment,
+    onChange: () => {},
+  });
+  return {
+    ...f,
+    cache,
+    controller,
+    offline: () => {
+      connected = false;
+    },
+    revoke: () => {
+      permitted = false;
+    },
+  };
+}
+function cachedFile(accessedAt: number, pinned = false): AttachmentCacheEntry {
+  const id = v7();
+  return {
+    id,
+    uri: `file:///downloads/${id}.txt`,
+    mime: 'text/plain',
+    size: 25 * 1024 * 1024,
+    sha256: 'a'.repeat(64),
+    accessedAt,
+    pinned,
+  };
+}
+describe('durable offline download cache', () => {
+  it('persists pins and per-account settings across reopening and shares verified files offline', async () => {
+    const f = await cacheFixture(),
+      id = v7();
+    await f.cache.pin(id);
+    await f.cache.setLimitMb(100);
+    const reopened = (await openStore('a')).attachmentCache;
+    expect(await reopened.limitMb()).toBe(100);
+    expect(await reopened.list()).toMatchObject([{ id, pinned: true }]);
+    const other = (await openStore('b')).attachmentCache;
+    expect(await other.list()).toEqual([]);
+    expect(await other.limitMb()).toBe(500);
+    await other.remove(id);
+    f.offline();
+    await f.cache.share(id);
+    expect(f.files.verifyDownload).toHaveBeenCalledTimes(1);
+    expect(f.files.shareDownloaded).toHaveBeenCalledTimes(1);
+    expect(f.client.downloadAttachment).toHaveBeenCalledTimes(1);
+    await expect(f.cache.pin(v7())).rejects.toThrow('Available when online');
+    await expect(f.cache.setLimitMb(1)).rejects.toThrow('Invalid cache limit');
+    expect(await reopened.limitMb()).toBe(100);
+  });
+  it('evicts least-recently-used unpinned downloads and clear-cache preserves pins and upload originals', async () => {
+    const f = await cacheFixture();
+    const entries = Array.from({ length: 6 }, (_, i) => cachedFile(i, i === 0));
+    for (const entry of entries) await f.store.attachmentCache.put(entry);
+    await f.cache.share(entries[1]!.id); // Refresh an otherwise old entry.
+    await f.cache.setLimitMb(100);
+    expect((await f.store.attachmentCache.list()).map((item) => item.id).sort()).toEqual(
+      [entries[0]!, entries[1]!, entries[4]!, entries[5]!].map((item) => item.id).sort(),
+    );
+    expect((await f.cache.usage()).downloadedBytes).toBe(100 * 1024 * 1024);
+    await f.cache.clear();
+    expect(await f.store.attachmentCache.list()).toEqual([entries[0]]);
+    expect(f.files.remove).not.toHaveBeenCalled();
+    expect((await f.cache.usage()).originalBytes).toBe(f.job.descriptor.size);
+    await f.cache.unpin(entries[0]!.id);
+    await f.cache.clear();
+    expect(await f.store.attachmentCache.list()).toEqual([]);
+  });
+  it('retains pins above the cache limit but removes them when their attachment is revoked', async () => {
+    const f = await cacheFixture();
+    for (let i = 0; i < 5; i++) await f.store.attachmentCache.put(cachedFile(i, true));
+    await f.cache.setLimitMb(100);
+    expect((await f.cache.usage()).pinnedBytes).toBe(125 * 1024 * 1024);
+    await f.cache.clear();
+    expect(await f.store.attachmentCache.list()).toHaveLength(5);
+    f.revoke();
+    await f.cache.maintain();
+    expect(await f.store.attachmentCache.list()).toEqual([]);
+    expect(f.files.reconcileDownloads).toHaveBeenLastCalledWith([]);
+  });
+  it('retains deletion metadata on disk failure and retries; invalid offline bytes are never shared', async () => {
+    const f = await cacheFixture(),
+      entry = cachedFile(1);
+    await f.store.attachmentCache.put(entry);
+    vi.mocked(f.files.removeDownload).mockRejectedValueOnce(new Error('file locked'));
+    await expect(f.cache.clear()).rejects.toThrow('file locked');
+    expect(await f.store.attachmentCache.list()).toEqual([entry]);
+    await f.cache.clear();
+    expect(await f.store.attachmentCache.list()).toEqual([]);
+    await f.store.attachmentCache.put({ ...entry, pinned: true });
+    vi.mocked(f.files.verifyDownload).mockResolvedValue(false);
+    f.offline();
+    await expect(f.cache.share(entry.id)).rejects.toThrow('Available when online');
+    expect(f.files.shareDownloaded).not.toHaveBeenCalled();
+    expect(await f.store.attachmentCache.list()).toEqual([]);
+  });
+  it('orders cache clearing after an active share sheet and does not publish a download revoked in flight', async () => {
+    const f = await cacheFixture(),
+      id = v7();
+    let finish: () => void = () => {};
+    vi.mocked(f.files.shareDownloaded).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const sharing = f.cache.share(id);
+    await vi.waitFor(() => expect(f.files.shareDownloaded).toHaveBeenCalledTimes(1));
+    const clearing = f.cache.clear();
+    expect(f.files.removeDownload).not.toHaveBeenCalled();
+    finish();
+    await sharing;
+    await clearing;
+    expect(await f.store.attachmentCache.list()).toEqual([]);
+    vi.mocked(f.files.download).mockImplementationOnce(async (id, grant) => {
+      f.revoke();
+      return {
+        id,
+        uri: `file:///downloads/${id}.txt`,
+        mime: grant.mime,
+        size: grant.size,
+        sha256: grant.sha256!,
+      };
+    });
+    await expect(f.cache.pin(v7())).rejects.toThrow('no longer available');
+    expect(await f.store.attachmentCache.list()).toEqual([]);
+  });
+  it('aborts downloads at sign-out and refuses later operations', async () => {
+    const f = await cacheFixture();
+    vi.mocked(f.files.download).mockImplementationOnce(async () => {
+      f.controller.abort();
+      return cachedFile(1);
+    });
+    await expect(f.cache.pin(v7())).rejects.toThrow();
+    expect(await f.store.attachmentCache.list()).toEqual([]);
+    await expect(f.cache.clear()).rejects.toThrow();
+  });
+  it('repairs a manifest left behind by interrupted file deletion before reporting it as cached', async () => {
+    const f = await cacheFixture(),
+      entry = cachedFile(1, true);
+    await f.store.attachmentCache.put(entry);
+    vi.mocked(f.files.hasDownload).mockResolvedValue(false);
+    await f.cache.maintain();
+    expect(await f.store.attachmentCache.list()).toEqual([]);
+    expect(f.files.reconcileDownloads).toHaveBeenLastCalledWith([]);
   });
 });
 

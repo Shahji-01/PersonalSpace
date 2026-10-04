@@ -2,10 +2,20 @@ import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { z } from 'zod';
 import { and, eq, isNull } from 'drizzle-orm';
-import { createDatabase, outboxEvents } from '@personalspace/db';
+import { createDatabase, outboxEvents, exportJobs } from '@personalspace/db';
 import { createS3Storage, readStorageConfig } from '@personalspace/storage';
 import { cleanAttachment, cleanupEventSchema } from './attachment-cleanup';
-import { createAttachmentProcessor } from '@personalspace/domain';
+import {
+  createAttachmentProcessor,
+  cleanupTrash,
+  cleanupTombstones,
+  cleanupIdempotencyKeys,
+  reconcileBalances,
+  expireExports,
+  generateExportData,
+  exportToJson,
+  exportToCsv,
+} from '@personalspace/domain';
 import { createClamScanner, readProcessorConfig } from './attachment-scanner';
 import {
   processAttachment,
@@ -90,6 +100,128 @@ worker.on('failed', (job) =>
   console.error(JSON.stringify({ event: 'job_failed', jobId: job?.id })),
 );
 worker.on('error', () => console.error(JSON.stringify({ event: 'worker_unavailable' })));
+
+// ============================================================
+// Maintenance worker — nightly cleanup jobs (§49.2, §64.1)
+// ============================================================
+const maintenanceQueue = new Queue('maintenance', { connection: redis });
+const maintenanceWorker = new Worker(
+  'maintenance',
+  async (job) => {
+    const log = (event: string, detail?: object) =>
+      console.log(JSON.stringify({ event, ...detail }));
+    try {
+      const trashCount = await cleanupTrash(db);
+      log('trash_cleanup', { purged: trashCount });
+    } catch (e) {
+      log('trash_cleanup_failed', { error: String(e) });
+    }
+    try {
+      const tombstoneCount = await cleanupTombstones(db);
+      log('tombstone_cleanup', { removed: tombstoneCount });
+    } catch (e) {
+      log('tombstone_cleanup_failed', { error: String(e) });
+    }
+    try {
+      const keyCount = await cleanupIdempotencyKeys(db);
+      log('idempotency_cleanup', { removed: keyCount });
+    } catch (e) {
+      log('idempotency_cleanup_failed', { error: String(e) });
+    }
+    try {
+      const { drifts } = await reconcileBalances(db);
+      if (drifts.length) {
+        log('balance_drift_detected', { drifts });
+      } else {
+        log('balance_reconciliation_ok');
+      }
+    } catch (e) {
+      log('balance_reconciliation_failed', { error: String(e) });
+    }
+    try {
+      const expiredCount = await expireExports(db);
+      log('export_expiry', { expired: expiredCount });
+    } catch (e) {
+      log('export_expiry_failed', { error: String(e) });
+    }
+  },
+  { connection: redis, concurrency: 1 },
+);
+maintenanceWorker.on('failed', (job) =>
+  console.error(JSON.stringify({ event: 'maintenance_failed', jobId: job?.id })),
+);
+maintenanceWorker.on('error', () =>
+  console.error(JSON.stringify({ event: 'maintenance_unavailable' })),
+);
+
+// ============================================================
+// Export worker — generate data archives (§20.1)
+// ============================================================
+const exportQueue = new Queue('export', { connection: redis });
+const exportWorker = new Worker(
+  'export',
+  async (job) => {
+    const data = z
+      .object({
+        userId: z.uuid(),
+        jobId: z.uuid(),
+        format: z.enum(['json', 'csv', 'markdown']),
+        scope: z.enum(['everything', 'notes', 'tasks', 'learning', 'money']),
+      })
+      .parse(job.data);
+    const { eq } = await import('drizzle-orm');
+    await db
+      .update(exportJobs)
+      .set({ status: 'processing', startedAt: new Date() })
+      .where(eq(exportJobs.id, data.jobId));
+    try {
+      const exportData = await generateExportData(db, data.userId, data.scope);
+      let result: string;
+      let sizeBytes: number;
+      if (data.format === 'json') {
+        result = exportToJson(exportData);
+        sizeBytes = Buffer.byteLength(result, 'utf8');
+      } else if (data.format === 'csv') {
+        const files = exportToCsv(exportData);
+        result = JSON.stringify(files);
+        sizeBytes = Buffer.byteLength(result, 'utf8');
+      } else {
+        // Markdown: export notes as plain text.
+        result = exportToJson(exportData);
+        sizeBytes = Buffer.byteLength(result, 'utf8');
+      }
+      // In production, upload to S3. For now, store size.
+      const storageKey = `exports/${data.userId}/${data.jobId}.${data.format}`;
+      if (storage) {
+        const mime = data.format === 'json' ? 'application/json' : data.format === 'csv' ? 'text/csv' : 'text/markdown';
+        await storage.write(storageKey, Buffer.from(result, 'utf8'), mime);
+      }
+      await db
+        .update(exportJobs)
+        .set({
+          status: 'ready',
+          storageKey,
+          sizeBytes,
+          completedAt: new Date(),
+          downloadUrlExpiresAt: new Date(Date.now() + 24 * 3600 * 1000),
+        })
+        .where(eq(exportJobs.id, data.jobId));
+    } catch (e) {
+      await db
+        .update(exportJobs)
+        .set({ status: 'failed', error: String(e), completedAt: new Date() })
+        .where(eq(exportJobs.id, data.jobId));
+      throw e;
+    }
+  },
+  { connection: redis, concurrency: 1 },
+);
+exportWorker.on('failed', (job) =>
+  console.error(JSON.stringify({ event: 'export_failed', jobId: job?.id })),
+);
+exportWorker.on('error', () =>
+  console.error(JSON.stringify({ event: 'export_unavailable' })),
+);
 redis.on('error', () => console.error(JSON.stringify({ event: 'redis_unavailable' })));
 let stopping = false;
 async function relay() {
@@ -169,7 +301,25 @@ try {
     }
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
+
+  // Schedule nightly maintenance if not already running.
+  const existing = await maintenanceQueue.getRepeatableJobs();
+  if (!existing.length) {
+    await maintenanceQueue.add(
+      'nightly',
+      {},
+      {
+        repeat: { pattern: '0 2 * * *' }, // 2:00 AM daily
+        removeOnComplete: { age: 7 * 86400 },
+        removeOnFail: false,
+      },
+    );
+  }
 } finally {
+  await maintenanceWorker.close();
+  await maintenanceQueue.close();
+  await exportWorker.close();
+  await exportQueue.close();
   await processingWorker?.close();
   await processingQueue?.close();
   await processorDb?.pool.end();

@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import type { AttachmentTransfer, RecordItem } from '@personalspace/validation';
 import type { LocalStore } from './store';
 import type { AttachmentRuntime } from './attachment-runtime';
+import type { AttachmentCacheEntry } from './attachment-cache-store';
 import { Button, Card, styles } from './components';
 
 function transferLabel(
@@ -52,6 +53,7 @@ export function NoteFilesScreen({
 }) {
   const [jobs, setJobs] = useState<AttachmentTransfer[]>([]),
     [removed, setRemoved] = useState<string[]>([]);
+  const [cached, setCached] = useState<AttachmentCacheEntry[]>([]);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [tick, setTick] = useState(0);
@@ -60,11 +62,16 @@ export function NoteFilesScreen({
   useEffect(() => runtime?.subscribe(() => setTick((value) => value + 1)), [runtime]);
   useEffect(() => {
     let alive = true;
-    void Promise.all([store.attachmentTransfers.list(), store.attachmentTransfers.removedIds()])
-      .then(([items, ids]) => {
+    void Promise.all([
+      store.attachmentTransfers.list(),
+      store.attachmentTransfers.removedIds(),
+      store.attachmentCache.list(),
+    ])
+      .then(([items, ids, entries]) => {
         if (alive) {
           setJobs(items.filter((job) => job.descriptor.parentId === note.id));
           setRemoved(ids);
+          setCached(entries);
         }
       })
       .catch(() => {
@@ -90,7 +97,7 @@ export function NoteFilesScreen({
     } catch (reason) {
       setError(
         reason instanceof Error &&
-          /^(Choose a file|This file type|Sync or restore|This note is no longer|Saving or sharing)/.test(
+          /^(Choose a file|This file type|Sync or restore|This note is no longer|Saving or sharing|Available when online)/.test(
             reason.message,
           )
           ? reason.message
@@ -152,8 +159,15 @@ export function NoteFilesScreen({
           const descriptor = remote ?? job?.descriptor;
           if (!descriptor) return null;
           const ready = remote?.status === 'ready' || job?.state === 'ready';
+          const local = cached.find((entry) => entry.id === id);
           const label = ready
-            ? 'Ready'
+            ? local?.pinned
+              ? 'Kept offline'
+              : local
+                ? 'Downloaded'
+                : !network?.connected
+                  ? 'Available when online'
+                  : 'Ready'
             : remote?.status === 'rejected'
               ? 'File not accepted'
               : job
@@ -169,12 +183,24 @@ export function NoteFilesScreen({
               </Text>
               <View style={styles.row}>
                 {ready && (
-                  <Button
-                    secondary
-                    label="Save or share"
-                    disabled={busy || !runtime || !available}
-                    onPress={() => void action(() => runtime!.share(id))}
-                  />
+                  <>
+                    <Button
+                      secondary
+                      label="Save or share"
+                      disabled={busy || !runtime || !available}
+                      onPress={() => void action(() => runtime!.share(id))}
+                    />
+                    <Button
+                      secondary
+                      label={local?.pinned ? 'Allow cache removal' : 'Keep offline'}
+                      disabled={busy || !runtime || !available}
+                      onPress={() =>
+                        void action(() =>
+                          local?.pinned ? runtime!.unpin(id) : runtime!.keepOffline(id),
+                        )
+                      }
+                    />
+                  </>
                 )}
                 {job?.error === 'retry' && (
                   <Button

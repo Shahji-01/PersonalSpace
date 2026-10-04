@@ -6,6 +6,7 @@ import {
 } from '@personalspace/validation';
 import { AttachmentTransferError, newAttachmentTransfer } from '@personalspace/sync';
 import type { createAttachmentTransport } from '@personalspace/api-client';
+import { downloadedAttachmentSchema, type DownloadedAttachment } from './attachment-cache-store';
 
 export type NativePut = Parameters<typeof createAttachmentTransport>[1];
 export interface AttachmentFiles {
@@ -13,13 +14,23 @@ export interface AttachmentFiles {
   inspect(uri: string, signal: AbortSignal): Promise<{ size: number; sha256: string }>;
   put: NativePut;
   remove(uri: string): Promise<void>;
-  share(
+  download(
     id: string,
     grant: { url: string; size: number; sha256: string | null; mime: string },
     signal: AbortSignal,
     permitted: () => Promise<boolean>,
+  ): Promise<DownloadedAttachment>;
+  verifyDownload(file: DownloadedAttachment, signal: AbortSignal): Promise<boolean>;
+  hasDownload(file: DownloadedAttachment): Promise<boolean>;
+  shareDownloaded(
+    file: DownloadedAttachment,
+    signal: AbortSignal,
+    permitted: () => Promise<boolean>,
   ): Promise<void>;
-  pruneDownloads(ids: string[]): Promise<void>;
+  removeDownload(file: DownloadedAttachment): Promise<void>;
+  reconcileDownloads(uris: string[]): Promise<void>;
+  reclaimOriginals(uris: string[]): Promise<void>;
+  originalBytes(): Promise<number>;
   watchNetwork(listener: (network: { connected: boolean; wifi: boolean }) => void): () => void;
 }
 
@@ -40,8 +51,10 @@ export async function createNativeAttachmentFiles(
   ]);
   const root = new fs.Directory(fs.Paths.document, 'attachments', userId);
   root.create({ intermediates: true, idempotent: true });
-  const cache = new fs.Directory(fs.Paths.cache, 'attachment-downloads', userId);
+  // Documents storage keeps pinned downloads out of the OS-evictable cache.
+  const cache = new fs.Directory(fs.Paths.document, 'attachment-cache', userId);
   cache.create({ intermediates: true, idempotent: true });
+  const legacyCache = new fs.Directory(fs.Paths.cache, 'attachment-downloads', userId);
   const ownFile = (uri: string) => {
     const file = new fs.File(uri);
     if (!file.uri.startsWith(`${root.uri.replace(/\/$/, '')}/`))
@@ -50,6 +63,24 @@ export async function createNativeAttachmentFiles(
     if (!z.uuidv7().safeParse(name).success) throw new AttachmentTransferError('local_file');
     return file;
   };
+  const ownDownload = (raw: DownloadedAttachment) => {
+    const entry = downloadedAttachmentSchema.parse(raw);
+    const file = new fs.File(entry.uri);
+    const expected = new fs.File(cache, `${entry.id}.${extension(entry.mime)}`);
+    if (file.uri !== expected.uri) throw new Error('Invalid cached file path');
+    return file;
+  };
+  const extension = (mime: string) =>
+    ({
+      'image/webp': 'webp',
+      'application/pdf': 'pdf',
+      'text/plain': 'txt',
+      'text/markdown': 'md',
+      'text/csv': 'csv',
+      'audio/mp4': 'm4a',
+      'audio/mpeg': 'mp3',
+      'audio/ogg': 'ogg',
+    })[mime] ?? 'bin';
   const hash = async (bytes: Uint8Array<ArrayBuffer>) =>
     Array.from(
       new Uint8Array(await crypto.digest(crypto.CryptoDigestAlgorithm.SHA256, bytes)),
@@ -167,17 +198,58 @@ export async function createNativeAttachmentFiles(
       const file = ownFile(uri);
       if (file.exists) file.delete();
     },
-    pruneDownloads: async (ids) => {
-      const keep = new Set(ids);
-      for (const item of cache.list())
-        if (item instanceof fs.File && !keep.has(item.name.split('.')[0]!)) item.delete();
+    reclaimOriginals: async (uris) => {
+      // Startup only, before this runtime permits any picker to create a copy.
+      const keep = new Set(uris.map((uri) => ownFile(uri).uri));
+      for (const item of root.list())
+        if (
+          item instanceof fs.File &&
+          z.uuidv7().safeParse(item.name).success &&
+          !keep.has(item.uri)
+        )
+          ownFile(item.uri).delete();
     },
-    share: async (id, grant, signal, permitted) => {
+    originalBytes: async () =>
+      root.list().reduce((sum, item) => sum + (item instanceof fs.File ? item.size : 0), 0),
+    reconcileDownloads: async (uris) => {
+      const keep = new Set(uris);
+      for (const item of cache.list())
+        if (item instanceof fs.File && !keep.has(item.uri)) item.delete();
+      // Earlier app versions cached only disposable verified downloads here.
+      if (legacyCache.exists)
+        for (const item of legacyCache.list()) if (item instanceof fs.File) item.delete();
+    },
+    verifyDownload: async (entry, signal) => {
+      signal.throwIfAborted();
+      const file = ownDownload(entry);
+      if (!file.exists || file.size !== entry.size) return false;
+      const bytes = await file.bytes();
+      signal.throwIfAborted();
+      return bytes.length === entry.size && (await hash(bytes)) === entry.sha256;
+    },
+    hasDownload: async (entry) => {
+      const file = ownDownload(entry);
+      return file.exists && file.size === entry.size;
+    },
+    removeDownload: async (entry) => {
+      const file = ownDownload(entry);
+      if (file.exists) file.delete();
+    },
+    shareDownloaded: async (entry, signal, permitted) => {
+      const file = ownDownload(entry);
+      if (!(await sharing.isAvailableAsync()))
+        throw new Error('Saving or sharing files is unavailable on this device.');
+      if (!(await permitted())) throw new Error('This file is no longer available.');
+      signal.throwIfAborted();
+      await sharing.shareAsync(file.uri, {
+        mimeType: entry.mime,
+        dialogTitle: 'Save or share file',
+      });
+    },
+    download: async (id, grant, signal, permitted) => {
       z.uuidv7().parse(id);
       if (!grant.sha256 || grant.size < 1 || grant.size > attachmentLimits.maxBytes)
         throw new Error('Invalid download metadata.');
-      if (!(await sharing.isAvailableAsync()))
-        throw new Error('Saving or sharing files is unavailable on this device.');
       signal.throwIfAborted();
       const response = await http.fetch(grant.url, {
         signal,
@@ -209,26 +281,11 @@ export async function createNativeAttachmentFiles(
       if (length !== grant.size || (await hash(bytes)) !== grant.sha256)
         throw new Error('Download verification failed. Try again.');
       signal.throwIfAborted();
-      // Keep at most one verified download per account; unsynced originals live elsewhere.
       if (!(await permitted())) throw new Error('This file is no longer available.');
       signal.throwIfAborted();
-      for (const item of cache.list()) if (item instanceof fs.File) item.delete();
-      const extensions: Record<string, string> = {
-        'image/webp': 'webp',
-        'application/pdf': 'pdf',
-        'text/plain': 'txt',
-        'text/markdown': 'md',
-        'text/csv': 'csv',
-        'audio/mp4': 'm4a',
-        'audio/mpeg': 'mp3',
-        'audio/ogg': 'ogg',
-      };
-      const file = new fs.File(cache, `${id}.${extensions[grant.mime] ?? 'bin'}`);
+      const file = new fs.File(cache, `${id}.${extension(grant.mime)}`);
       file.write(bytes);
-      await sharing.shareAsync(file.uri, {
-        mimeType: grant.mime,
-        dialogTitle: 'Save or share file',
-      });
+      return { id, uri: file.uri, mime: grant.mime, size: grant.size, sha256: grant.sha256 };
     },
     watchNetwork: (listener) => {
       let active = true,

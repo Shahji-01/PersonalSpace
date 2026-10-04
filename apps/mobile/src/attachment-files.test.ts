@@ -70,6 +70,9 @@ class NativeDirectory {
   create() {
     mkdirSync(fileURLToPath(this.uri), { recursive: true });
   }
+  get exists() {
+    return existsSync(fileURLToPath(this.uri));
+  }
   list() {
     return readdirSync(fileURLToPath(this.uri)).map((name) => new NativeFile(this, name));
   }
@@ -185,23 +188,71 @@ describe('native attachment adapter with actual filesystem bytes', () => {
       mime: 'text/plain',
     };
     fetchMock.mockImplementation(async () => new Response(bytes));
-    await files.share(id, grant, signal(), async () => true);
+    const entry = await files.download(id, grant, signal(), async () => true);
+    expect(await files.verifyDownload(entry, signal())).toBe(true);
+    await files.shareDownloaded(entry, signal(), async () => true);
     const sharedUri = share.mock.calls[0]![0] as string;
     expect(readFileSync(fileURLToPath(sharedUri))).toEqual(bytes);
-    await files.pruneDownloads([id]);
+    expect(sharedUri).toContain('/documents/attachment-cache/');
+    await files.reconcileDownloads([entry.uri]);
     expect(existsSync(fileURLToPath(sharedUri))).toBe(true);
-    await files.pruneDownloads([]);
+    writeFileSync(fileURLToPath(entry.uri), Buffer.alloc(bytes.length, 1));
+    expect(await files.verifyDownload(entry, signal())).toBe(false);
+    await files.reconcileDownloads([]);
     expect(existsSync(fileURLToPath(sharedUri))).toBe(false);
     await expect(
-      files.share(id, { ...grant, sha256: '0'.repeat(64) }, signal(), async () => true),
+      files.download(id, { ...grant, sha256: '0'.repeat(64) }, signal(), async () => true),
     ).rejects.toThrow('verification');
     await expect(
-      files.share(id, { ...grant, size: 1 }, signal(), async () => true),
+      files.download(id, { ...grant, size: 1 }, signal(), async () => true),
     ).rejects.toThrow('expected size');
-    await expect(files.share(id, grant, signal(), async () => false)).rejects.toThrow(
+    await expect(files.download(id, grant, signal(), async () => false)).rejects.toThrow(
       'no longer available',
     );
     expect(share).toHaveBeenCalledTimes(1);
+  });
+  it('reclaims only abandoned originals for this account, preserving queued files and picker sources', async () => {
+    const user = v7(),
+      a = await createNativeAttachmentFiles(user, v7),
+      b = await createNativeAttachmentFiles(v7(), v7);
+    const source = select(Buffer.from('protected bytes'));
+    const queued = (await a.pick(v7(), signal()))!,
+      orphan = (await a.pick(v7(), signal()))!,
+      foreign = (await b.pick(v7(), signal()))!;
+    expect(await a.originalBytes()).toBe(queued.descriptor.size * 2);
+    await expect(a.reclaimOriginals([foreign.localUri])).rejects.toThrow();
+    expect(existsSync(fileURLToPath(orphan.localUri))).toBe(true);
+    await a.reclaimOriginals([queued.localUri]);
+    expect(existsSync(fileURLToPath(orphan.localUri))).toBe(false);
+    expect(existsSync(fileURLToPath(queued.localUri))).toBe(true);
+    expect(existsSync(fileURLToPath(foreign.localUri))).toBe(true);
+    expect(existsSync(source)).toBe(true);
+    expect(await a.originalBytes()).toBe(queued.descriptor.size);
+  });
+  it('refuses foreign and forged cached paths and cleans abandoned downloads without touching originals', async () => {
+    const a = await createNativeAttachmentFiles(v7(), v7),
+      b = await createNativeAttachmentFiles(v7(), v7);
+    select(Buffer.from('upload'));
+    const original = (await a.pick(v7(), signal()))!;
+    const bytes = Buffer.from('download');
+    fetchMock.mockImplementation(async () => new Response(bytes));
+    const entry = await a.download(
+      v7(),
+      {
+        url: 'https://storage.example.test/file',
+        size: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        mime: 'text/plain',
+      },
+      signal(),
+      async () => true,
+    );
+    await expect(b.removeDownload(entry)).rejects.toThrow('path');
+    await expect(b.verifyDownload(entry, signal())).rejects.toThrow('path');
+    await expect(a.removeDownload({ ...entry, uri: original.localUri })).rejects.toThrow('path');
+    await a.reconcileDownloads([]);
+    expect(existsSync(fileURLToPath(entry.uri))).toBe(false);
+    expect(existsSync(fileURLToPath(original.localUri))).toBe(true);
   });
   it('handles cancelled selection and rejects unsupported, empty and oversized files before copying', async () => {
     const files = await createNativeAttachmentFiles(v7(), v7);
