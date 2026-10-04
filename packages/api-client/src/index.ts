@@ -14,6 +14,15 @@ import {
   pullResponseSchema,
   pushResponseSchema,
   type Mutation,
+  preferencesResponseSchema,
+  preferencesUpdateSchema,
+  type PreferencesUpdate,
+  exportRequestSchema,
+  type ExportRequest,
+  exportJobResponseSchema,
+  deletionRequestSchema,
+  type DeletionRequest,
+  deletionStatusResponseSchema,
 } from '@personalspace/validation';
 
 export class ApiError extends Error {
@@ -126,6 +135,22 @@ export function createClient(baseUrl: string, token: () => string | null) {
       request('/api/v1/sync/push', pushResponseSchema, { mutations }),
     me: () => request('/api/v1/me', z.object({ data: z.object({ id: z.string() }) })),
     signOut: () => request('/api/auth/sign-out', z.unknown(), {}),
+    // Settings (§21)
+    getSettings: () => request('/api/v1/settings', preferencesResponseSchema),
+    updateSettings: (update: PreferencesUpdate) =>
+      request('/api/v1/settings', preferencesResponseSchema, update),
+    // Exports (§20.1)
+    listExports: () =>
+      request('/api/v1/exports', z.object({ data: z.array(exportJobResponseSchema) })),
+    startExport: (req: ExportRequest) =>
+      request('/api/v1/exports', exportJobResponseSchema, req),
+    // Deletion (§64.3)
+    getDeletionStatus: () =>
+      request('/api/v1/me/deletion-status', deletionStatusResponseSchema),
+    requestDeletion: (req: DeletionRequest) =>
+      request('/api/v1/me/deletion', deletionStatusResponseSchema, req),
+    cancelDeletion: () =>
+      request('/api/v1/me/deletion', deletionStatusResponseSchema, { action: 'cancel' }),
   };
 }
 

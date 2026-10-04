@@ -43,6 +43,7 @@ import { FolderScreen, folderPath } from './FolderScreen';
 import { ProjectScreen } from './ProjectScreen';
 import { ProjectNotesScreen } from './ProjectNotesScreen';
 import { taskIsClosed, taskIsOverdue, taskMatches, taskViews, type TaskView } from './task-views';
+import { SettingsScreen } from './SettingsScreen';
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -98,6 +99,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
   const [taskDetails, setTaskDetails] = useState<RecordItem | null>(null);
   const [openingDaily, setOpeningDaily] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyNote, setHistoryNote] = useState<RecordItem | null>(null);
   const [folderScreen, setFolderScreen] = useState(false);
   const [filingNote, setFilingNote] = useState<RecordItem | null>(null);
@@ -960,6 +962,11 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
             disabled={!attachments}
             onPress={() => setStorageOpen(true)}
           />
+          <Button
+            secondary
+            label="Settings"
+            onPress={() => setSettingsOpen(true)}
+          />
         </View>
         <Text style={styles.subtitle}>
           {new Intl.DateTimeFormat('en-IN', {
@@ -1814,6 +1821,12 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
           <StorageScreen runtime={attachments} onClose={() => setStorageOpen(false)} />
         )}
       </Modal>
+      <SettingsScreen
+        visible={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        client={client}
+        onSignOut={signOut}
+      />
       <Modal
         visible={editingNote !== null}
         animationType="slide"
