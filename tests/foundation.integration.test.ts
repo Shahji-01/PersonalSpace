@@ -35,6 +35,7 @@ import {
   generateExportData,
   exportToJson,
   processPendingMetadata,
+  executePendingDeletions,
 } from '../packages/domain/src/index';
 import { searchQuerySchema, type RecordItem } from '../packages/validation/src/index';
 import { eq, sql } from 'drizzle-orm';
@@ -3760,5 +3761,100 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       thumbnail_url: 'https://example.com/thumb.png',
       metadata_status: 'ok',
     });
+  });
+  it('executes an expired account-deletion under the background role, owner-scoped', async () => {
+    // A throwaway account so the wipe does not disturb userA/userB fixtures.
+    const signup = await app.inject({
+      method: 'POST',
+      url: '/api/auth/sign-up/email',
+      headers: { origin: 'personalspace://', 'sec-fetch-mode': 'cors' },
+      payload: {
+        name: 'Doomed User',
+        email: 'doomed@example.test',
+        password: 'a-test-password-123',
+        ageConfirmed: true,
+        termsAccepted: true,
+      },
+    });
+    expect(signup.statusCode, signup.body).toBe(200);
+    const userC = signup.json<{ user: { id: string } }>().user.id;
+    const service = createCaptureService(domain.db);
+    const noteId = v7();
+    await service.execute(
+      userC,
+      v7(),
+      {
+        op: 'capture',
+        payload: { id: noteId, type: 'note', text: 'Doomed note', plannedDate: null },
+      },
+      'del',
+    );
+    await service.execute(
+      userC,
+      v7(),
+      {
+        op: 'capture',
+        payload: { id: v7(), type: 'task', text: 'Doomed task', plannedDate: null },
+      },
+      'del',
+    );
+    await service.execute(
+      userC,
+      v7(),
+      {
+        op: 'account.create',
+        id: v7(),
+        name: 'Doomed Acct',
+        accountType: 'cash',
+        isLiability: false,
+        currency: 'INR',
+        openingBalanceMinor: 0,
+        openingDate: '2026-01-01',
+      },
+      'del',
+    );
+    const countFor = async (table: string) =>
+      Number(
+        (await owner.query(`SELECT count(*)::int c FROM ${table} WHERE user_id=$1`, [userC]))
+          .rows[0].c,
+      );
+    expect(await countFor('entities')).toBeGreaterThan(0);
+    expect(await countFor('search_documents')).toBeGreaterThan(0);
+
+    // A deletion request whose grace period has already lapsed.
+    await owner.query(
+      "INSERT INTO deletion_requests (user_id, status, grace_ends_at) VALUES ($1, 'pending', now() - interval '1 day')",
+      [userC],
+    );
+
+    const deleted = await executePendingDeletions(maintenance.db);
+    expect(deleted).toContain(userC);
+
+    // Every domain/infra table for the user is emptied.
+    for (const table of [
+      'entities',
+      'notes',
+      'tasks',
+      'finance_accounts',
+      'search_documents',
+      'audit_logs',
+      'outbox_events',
+    ])
+      expect(await countFor(table)).toBe(0);
+
+    // The ledger row is kept and marked completed; the auth row remains.
+    expect(
+      (await owner.query('SELECT status FROM deletion_requests WHERE user_id=$1', [userC])).rows[0]
+        .status,
+    ).toBe('completed');
+    expect((await owner.query('SELECT 1 FROM auth_user WHERE id=$1', [userC])).rowCount).toBe(1);
+
+    // Owner isolation: userA's data is untouched.
+    expect(
+      Number(
+        (await owner.query('SELECT count(*)::int c FROM entities WHERE user_id=$1', [userA]))
+          .rows[0].c,
+      ),
+    ).toBeGreaterThan(0);
   });
 });

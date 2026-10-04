@@ -261,7 +261,7 @@ const deletionWorker = new Worker(
       await redis.del(`sync-version:${userId}`);
       console.log(JSON.stringify({ event: 'deletion_cache_cleanup', userId }));
     };
-    const deleted = await executePendingDeletions(db, onStorageCleanup, onCacheCleanup);
+    const deleted = await executePendingDeletions(maintenanceDb, onStorageCleanup, onCacheCleanup);
     if (deleted.length) {
       console.log(JSON.stringify({ event: 'deletion_completed', count: deleted.length }));
     }
