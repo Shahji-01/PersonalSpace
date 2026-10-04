@@ -18,6 +18,8 @@ import {
   executePendingDeletions,
   processPendingMetadata,
   deliverDueReminders,
+  processPendingEmails,
+  ConsoleEmailProvider,
 } from '@personalspace/domain';
 import { createClamScanner, readProcessorConfig } from './attachment-scanner';
 import {
@@ -307,6 +309,32 @@ notificationsWorker.on('failed', (job) =>
 notificationsWorker.on('error', () =>
   console.error(JSON.stringify({ event: 'notifications_worker_unavailable' })),
 );
+
+// ============================================================
+// Email worker — process and send transactional emails (§70)
+// ============================================================
+const emailQueue = new Queue('email', { connection: redis });
+const emailProvider = new ConsoleEmailProvider();
+const emailWorker = new Worker(
+  'email',
+  async () => {
+    try {
+      const sent = await processPendingEmails(db, emailProvider);
+      if (sent > 0) {
+        console.log(JSON.stringify({ event: 'emails_sent', count: sent }));
+      }
+    } catch (e) {
+      console.log(JSON.stringify({ event: 'email_processing_failed', error: String(e) }));
+    }
+  },
+  { connection: redis, concurrency: 1 },
+);
+emailWorker.on('failed', (job) =>
+  console.error(JSON.stringify({ event: 'email_worker_failed', jobId: job?.id })),
+);
+emailWorker.on('error', () =>
+  console.error(JSON.stringify({ event: 'email_worker_unavailable' })),
+);
 redis.on('error', () => console.error(JSON.stringify({ event: 'redis_unavailable' })));
 let stopping = false;
 async function relay() {
@@ -439,7 +467,22 @@ try {
       },
     );
   }
+  // Schedule email processing every minute.
+  const emailJobs = await emailQueue.getRepeatableJobs();
+  if (!emailJobs.length) {
+    await emailQueue.add(
+      'process-emails',
+      {},
+      {
+        repeat: { pattern: '* * * * *' }, // Every minute
+        removeOnComplete: { age: 7 * 86400 },
+        removeOnFail: false,
+      },
+    );
+  }
 } finally {
+  await emailWorker.close();
+  await emailQueue.close();
   await notificationsWorker.close();
   await notificationsQueue.close();
   await metadataWorker.close();

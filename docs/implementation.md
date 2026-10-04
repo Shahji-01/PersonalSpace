@@ -57,6 +57,7 @@ Implemented:
 - [x] Learning Metadata: safe URL fetcher with SSRF protection, size limits, and regex-based OpenGraph/Twitter meta tag extraction in a background worker.
 - [x] Reminders Delivery: background worker to push due reminders to registered device tokens idempotently.
 - [x] YouTube Integration: parse YouTube video/playlist URLs, fetch Data API v3 metadata, and expand playlists into child resources.
+- [x] Transactional Email Worker: background worker for delivering transactional emails logged in the notificationLog.
 
 These checks mean code exists. Validation results are recorded separately in `docs/verification.md`; Phase 0 is **not** complete.
 
