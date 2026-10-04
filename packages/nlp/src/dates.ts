@@ -25,7 +25,7 @@ export function parseTaskDates(text: string, today: string): TaskDates {
   const planned = new Set<string>();
   const due = new Set<string>();
   const pattern =
-    /(?<![\p{L}\p{M}\p{N}])(?:\d{4}-\d{2}-\d{2}|day after tomorrow|tomorrow|today|aaj|आज|in \d{1,3} days?|(?:next )?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|wed|thu|fri|sat))(?![\p{L}\p{M}\p{N}])/gu;
+    /(?<![\p{L}\p{M}\p{N}])(?:\d{4}-\d{2}-\d{2}|day after tomorrow|tomorrow|today|aaj|आज|in a week|next week|agle hafte|अगले हफ्ते|this weekend|weekend|end of (?:the )?month|month ?end|in \d{1,3} days?|(?:next )?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|wed|thu|fri|sat))(?![\p{L}\p{M}\p{N}])/gu;
   for (const match of input.matchAll(pattern)) {
     const token = match[0];
     let date: string;
@@ -38,7 +38,18 @@ export function parseTaskDates(text: string, today: string): TaskDates {
     } else if (['today', 'aaj', 'आज'].includes(token)) date = today;
     else if (token === 'tomorrow') date = offset(today, 1);
     else if (token === 'day after tomorrow') date = offset(today, 2);
-    else if (token.startsWith('in ')) date = offset(today, Number(token.match(/\d+/)![0]));
+    else if (['in a week', 'next week', 'agle hafte', 'अगले हफ्ते'].includes(token))
+      date = offset(today, 7);
+    else if (token === 'this weekend' || token === 'weekend') {
+      // The coming Saturday; if today is Saturday, keep today.
+      const current = new Date(`${today}T12:00:00Z`).getUTCDay();
+      date = offset(today, (6 - current + 7) % 7);
+    } else if (['end of month', 'end of the month', 'month end', 'monthend'].includes(token)) {
+      const d = new Date(`${today}T12:00:00Z`);
+      date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0))
+        .toISOString()
+        .slice(0, 10);
+    } else if (token.startsWith('in ')) date = offset(today, Number(token.match(/\d+/)![0]));
     else {
       const day = token.replace('next ', '');
       const weekday = Math.max(weekdays.indexOf(day), shortDays.indexOf(day));

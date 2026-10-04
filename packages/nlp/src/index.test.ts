@@ -37,6 +37,27 @@ describe('capture suggestions', () => {
     expect(parseTaskDates('Read next Monday', '2026-10-05').plannedDate).toBe('2026-10-12');
     expect(parseTaskDates('Read Monday', '2026-10-05').plannedDate).toBe('2026-10-05');
   });
+  it('parses relative week, weekend, month-end and Hinglish phrases', () => {
+    // "next week"/"in a week"/Hinglish "agle hafte" are seven days out.
+    for (const text of [
+      'Read next week',
+      'Read in a week',
+      'Report agle hafte bhejna',
+      'अगले हफ्ते पढ़ना',
+    ])
+      expect(parseTaskDates(text, '2026-10-05').plannedDate).toBe('2026-10-12');
+    // "this weekend" resolves to the coming Saturday (today if already Saturday).
+    expect(parseTaskDates('Call this weekend', '2026-10-05').plannedDate).toBe('2026-10-10');
+    expect(parseTaskDates('Call weekend', '2026-10-10').plannedDate).toBe('2026-10-10');
+    // "end of month" resolves to the last calendar day, across month lengths.
+    expect(parseTaskDates('Pay rent end of month', '2026-10-05').plannedDate).toBe('2026-10-31');
+    expect(parseTaskDates('Pay rent by end of the month', '2026-02-10').dueDate).toBe('2026-02-28');
+    expect(parseTaskDates('File taxes month end', '2026-11-05').plannedDate).toBe('2026-11-30');
+    // Deadline cues still route these phrases to the due date.
+    expect(parseTaskDates('Finish report by next week', '2026-10-05').dueDate).toBe('2026-10-12');
+    // These phrases are not recurrence, so they do not force review.
+    expect(parseTaskDates('Read next week', '2026-10-05').needsDateReview).toBe(false);
+  });
   it('leaves ambiguous, invalid and repeating dates for review and avoids questions', () => {
     for (const text of [
       'Call kal',
