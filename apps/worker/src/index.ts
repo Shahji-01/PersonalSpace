@@ -281,7 +281,7 @@ const metadataWorker = new Worker(
   'metadata',
   async () => {
     try {
-      const processed = await processPendingMetadata(db);
+      const processed = await processPendingMetadata(maintenanceDb);
       if (processed > 0) {
         console.log(JSON.stringify({ event: 'metadata_processed', count: processed }));
       }

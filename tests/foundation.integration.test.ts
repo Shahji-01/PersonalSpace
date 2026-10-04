@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { readFile, readdir } from 'node:fs/promises';
 import { v7 } from 'uuid';
@@ -34,6 +34,7 @@ import {
   processPendingEmails,
   generateExportData,
   exportToJson,
+  processPendingMetadata,
 } from '../packages/domain/src/index';
 import { searchQuerySchema, type RecordItem } from '../packages/validation/src/index';
 import { eq, sql } from 'drizzle-orm';
@@ -3712,5 +3713,52 @@ describe('authenticated capture → PostgreSQL → sync', () => {
     const moneyOnly = await generateExportData(maintenance.db, userA, 'money');
     expect(moneyOnly.notes).toBeUndefined();
     expect(ids(moneyOnly.accounts)).toContain(acctId);
+  });
+  it('fetches learning-resource metadata under the background role', async () => {
+    const service = createCaptureService(domain.db);
+    const resourceId = v7();
+    const url = 'https://example.com/great-article';
+    // Saving with title === url lets the fetched title replace the placeholder.
+    await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'resource.save',
+        id: resourceId,
+        url,
+        title: url,
+        resourceType: 'article',
+        source: 'manual',
+        collectionId: null,
+        externalId: null,
+      },
+      'meta',
+    );
+    const html =
+      '<html><head>' +
+      '<meta property="og:title" content="Great Article"/>' +
+      '<meta property="og:description" content="A deep dive."/>' +
+      '<meta property="og:image" content="https://example.com/thumb.png"/>' +
+      '</head></html>';
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        new Response(html, { status: 200, headers: { 'content-type': 'text/html' } }),
+      );
+    try {
+      expect(await processPendingMetadata(maintenance.db)).toBeGreaterThanOrEqual(1);
+    } finally {
+      fetchMock.mockRestore();
+    }
+    const row = await owner.query(
+      'SELECT title, description, thumbnail_url, metadata_status FROM learning_resources WHERE id=$1',
+      [resourceId],
+    );
+    expect(row.rows[0]).toMatchObject({
+      title: 'Great Article',
+      description: 'A deep dive.',
+      thumbnail_url: 'https://example.com/thumb.png',
+      metadata_status: 'ok',
+    });
   });
 });
