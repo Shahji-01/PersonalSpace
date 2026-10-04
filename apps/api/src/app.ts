@@ -6,14 +6,23 @@ import swagger from '@fastify/swagger';
 import { fromNodeHeaders } from 'better-auth/node';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
+import { Queue } from 'bullmq';
+import { Redis } from 'ioredis';
 import type { ServerConfig } from '@personalspace/config';
+import { eq as drizzleEq } from 'drizzle-orm';
 import type { Database } from '@personalspace/db';
+import { exportJobs, deviceTokens } from '@personalspace/db';
 import type { AttachmentStorage } from '@personalspace/storage';
 import {
   createCaptureService,
   createAttachmentService,
   createNoteHistoryService,
   createSearchService,
+  getPreferences,
+  updatePreferences,
+  requestDeletion,
+  cancelDeletion,
+  getDeletionStatus,
   DomainError,
 } from '@personalspace/domain';
 import {
@@ -29,6 +38,11 @@ import {
   pushResponseSchema,
   signupSchema,
   syncPushSchema,
+  preferencesUpdateSchema,
+  registerDeviceSchema,
+  updateDeviceWatermarkSchema,
+  exportRequestSchema,
+  deletionRequestSchema,
   type MutationResult,
 } from '@personalspace/validation';
 import { createAuth } from './auth';
@@ -410,6 +424,167 @@ export async function createApp(deps: {
           await capture.pull(request.userId, cursor, mode === 'full'),
         );
       });
+
+      // ============================================================
+      // Preferences (§21)
+      // ============================================================
+      api.get('/preferences', { schema: { security: [{ bearerAuth: [] }] } }, async (request) => {
+        return { data: await getPreferences(deps.db, request.userId) };
+      });
+      api.patch('/preferences', { schema: { security: [{ bearerAuth: [] }] } }, async (request) => {
+        const input = preferencesUpdateSchema.parse(request.body);
+        return { data: await updatePreferences(deps.db, request.userId, input) };
+      });
+
+      // ============================================================
+      // Device Tokens (§50)
+      // ============================================================
+      api.post('/devices', { schema: { security: [{ bearerAuth: [] }] } }, async (request) => {
+        const input = registerDeviceSchema.parse(request.body);
+        const [device] = await deps.db
+          .insert(deviceTokens)
+          .values({
+            userId: request.userId,
+            platform: input.platform,
+            token: input.token,
+            deviceName: input.deviceName ?? null,
+            appVersion: input.appVersion ?? null,
+          })
+          .onConflictDoUpdate({
+            target: [deviceTokens.userId, deviceTokens.token],
+            set: {
+              platform: input.platform,
+              deviceName: input.deviceName ?? null,
+              appVersion: input.appVersion ?? null,
+              lastSeenAt: new Date(),
+            },
+          })
+          .returning();
+        return { data: { id: device!.id } };
+      });
+      api.patch(
+        '/devices/:id/watermark',
+        { schema: { security: [{ bearerAuth: [] }] } },
+        async (request) => {
+          const { id } = z.object({ id: idSchema }).parse(request.params);
+          const { remindersScheduledThrough } = updateDeviceWatermarkSchema.parse(request.body);
+          await deps.db
+            .update(deviceTokens)
+            .set({ remindersScheduledThrough: new Date(remindersScheduledThrough) })
+            .where(drizzleEq(deviceTokens.id, id));
+          return { status: 'ok' };
+        },
+      );
+      api.delete(
+        '/devices/:id',
+        { schema: { security: [{ bearerAuth: [] }] } },
+        async (request) => {
+          const { id } = z.object({ id: idSchema }).parse(request.params);
+          await deps.db.delete(deviceTokens).where(drizzleEq(deviceTokens.id, id));
+          return { status: 'ok' };
+        },
+      );
+
+      // ============================================================
+      // Export (§20.1)
+      // ============================================================
+      api.post('/exports', { schema: { security: [{ bearerAuth: [] }] } }, async (request) => {
+        const input = exportRequestSchema.parse(request.body);
+        const [job] = await deps.db
+          .insert(exportJobs)
+          .values({
+            userId: request.userId,
+            format: input.format,
+            scope: input.scope,
+          })
+          .returning();
+        // Enqueue background export job via BullMQ if Redis is available.
+        try {
+          const redisUrl = process.env.REDIS_URL;
+          if (redisUrl) {
+            const redis = new Redis(redisUrl, { maxRetriesPerRequest: null });
+            const exportQueue = new Queue('export', { connection: redis });
+            await exportQueue.add(
+              'generate',
+              {
+                userId: request.userId,
+                jobId: job!.id,
+                format: input.format,
+                scope: input.scope,
+              },
+              {
+                jobId: job!.id,
+                attempts: 3,
+                backoff: { type: 'exponential', delay: 5000 },
+                removeOnComplete: { age: 7 * 86400 },
+                removeOnFail: false,
+              },
+            );
+            await exportQueue.close();
+            await redis.quit();
+          }
+        } catch {
+          // Export stays queued; worker will pick it up on relay.
+        }
+        return {
+          data: {
+            id: job!.id,
+            format: job!.format,
+            scope: job!.scope,
+            status: job!.status,
+            sizeBytes: null,
+            createdAt: job!.createdAt.toISOString(),
+            completedAt: null,
+          },
+        };
+      });
+      api.get('/exports', { schema: { security: [{ bearerAuth: [] }] } }, async (request) => {
+        const jobs = await deps.db
+          .select()
+          .from(exportJobs)
+          .where(drizzleEq(exportJobs.userId, request.userId))
+          .orderBy(exportJobs.createdAt);
+        return {
+          data: jobs.map((j) => ({
+            id: j.id,
+            format: j.format,
+            scope: j.scope,
+            status: j.status,
+            sizeBytes: j.sizeBytes,
+            createdAt: j.createdAt.toISOString(),
+            completedAt: j.completedAt?.toISOString() ?? null,
+          })),
+        };
+      });
+
+      // ============================================================
+      // Account Deletion (§64.3)
+      // ============================================================
+      api.post(
+        '/account/delete',
+        {
+          schema: { security: [{ bearerAuth: [] }] },
+          config: { rateLimit: { max: 3, timeWindow: '1 hour' } },
+        },
+        async (request) => {
+          deletionRequestSchema.parse(request.body);
+          return { data: await requestDeletion(deps.db, request.userId) };
+        },
+      );
+      api.delete(
+        '/account/delete',
+        { schema: { security: [{ bearerAuth: [] }] } },
+        async (request) => {
+          return { data: await cancelDeletion(deps.db, request.userId) };
+        },
+      );
+      api.get(
+        '/account/delete',
+        { schema: { security: [{ bearerAuth: [] }] } },
+        async (request) => {
+          return { data: await getDeletionStatus(deps.db, request.userId) };
+        },
+      );
     },
     { prefix: '/api/v1' },
   );

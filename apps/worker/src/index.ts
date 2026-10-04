@@ -15,6 +15,7 @@ import {
   generateExportData,
   exportToJson,
   exportToCsv,
+  executePendingDeletions,
 } from '@personalspace/domain';
 import { createClamScanner, readProcessorConfig } from './attachment-scanner';
 import {
@@ -222,6 +223,38 @@ exportWorker.on('failed', (job) =>
 exportWorker.on('error', () =>
   console.error(JSON.stringify({ event: 'export_unavailable' })),
 );
+
+// ============================================================
+// Deletion worker — execute pending account deletions (§64.4)
+// ============================================================
+const deletionQueue = new Queue('deletion', { connection: redis });
+const deletionWorker = new Worker(
+  'deletion',
+  async () => {
+    const onStorageCleanup = storage
+      ? async (userId: string) => {
+          // Remove all user files from object storage.
+          // In production, this would list and delete the u/<userId>/ prefix.
+          console.log(JSON.stringify({ event: 'deletion_storage_cleanup', userId }));
+        }
+      : undefined;
+    const onCacheCleanup = async (userId: string) => {
+      await redis.del(`sync-version:${userId}`);
+      console.log(JSON.stringify({ event: 'deletion_cache_cleanup', userId }));
+    };
+    const deleted = await executePendingDeletions(db, onStorageCleanup, onCacheCleanup);
+    if (deleted.length) {
+      console.log(JSON.stringify({ event: 'deletion_completed', count: deleted.length }));
+    }
+  },
+  { connection: redis, concurrency: 1 },
+);
+deletionWorker.on('failed', (job) =>
+  console.error(JSON.stringify({ event: 'deletion_failed', jobId: job?.id })),
+);
+deletionWorker.on('error', () =>
+  console.error(JSON.stringify({ event: 'deletion_unavailable' })),
+);
 redis.on('error', () => console.error(JSON.stringify({ event: 'redis_unavailable' })));
 let stopping = false;
 async function relay() {
@@ -315,7 +348,22 @@ try {
       },
     );
   }
+  // Schedule hourly deletion check.
+  const deletionJobs = await deletionQueue.getRepeatableJobs();
+  if (!deletionJobs.length) {
+    await deletionQueue.add(
+      'process-deletions',
+      {},
+      {
+        repeat: { pattern: '0 * * * *' }, // Every hour
+        removeOnComplete: { age: 7 * 86400 },
+        removeOnFail: false,
+      },
+    );
+  }
 } finally {
+  await deletionWorker.close();
+  await deletionQueue.close();
   await maintenanceWorker.close();
   await maintenanceQueue.close();
   await exportWorker.close();

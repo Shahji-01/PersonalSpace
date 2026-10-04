@@ -61,3 +61,9 @@ export {
   type ExportScope,
   type ExportFormat,
 } from './export';
+export {
+  requestDeletion,
+  cancelDeletion,
+  getDeletionStatus,
+  executePendingDeletions,
+} from './deletion';

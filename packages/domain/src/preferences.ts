@@ -1,26 +1,26 @@
 import { eq } from 'drizzle-orm';
-import { userPreferences, type Transaction } from '@personalspace/db';
+import { userPreferences, type Database } from '@personalspace/db';
 import type { PreferencesUpdate } from '@personalspace/validation';
 
 /**
  * Get user preferences, creating defaults if none exist.
  * Uses INSERT ... ON CONFLICT to handle concurrent first reads.
  */
-export async function getPreferences(tx: Transaction, userId: string) {
-  const existing = await tx
+export async function getPreferences(db: Database, userId: string) {
+  const existing = await db
     .select()
     .from(userPreferences)
     .where(eq(userPreferences.userId, userId));
   if (existing.length) return serialize(existing[0]!);
   // Create defaults on first access.
-  const inserted = await tx
+  const inserted = await db
     .insert(userPreferences)
     .values({ userId })
     .onConflictDoNothing()
     .returning();
   if (inserted.length) return serialize(inserted[0]!);
   // Another transaction created it concurrently — re-read.
-  const retry = await tx
+  const retry = await db
     .select()
     .from(userPreferences)
     .where(eq(userPreferences.userId, userId));
@@ -32,12 +32,12 @@ export async function getPreferences(tx: Transaction, userId: string) {
  * then applies the patch atomically.
  */
 export async function updatePreferences(
-  tx: Transaction,
+  db: Database,
   userId: string,
   input: PreferencesUpdate,
 ) {
   // Ensure the row exists before patching.
-  await tx
+  await db
     .insert(userPreferences)
     .values({ userId })
     .onConflictDoNothing();
@@ -47,7 +47,7 @@ export async function updatePreferences(
     if (value !== undefined) patch[key] = value;
   }
 
-  const updated = await tx
+  const updated = await db
     .update(userPreferences)
     .set(patch)
     .where(eq(userPreferences.userId, userId))
