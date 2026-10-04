@@ -31,6 +31,9 @@ import { newId, openStore, type LocalStore } from './store';
 import { Button, Card, Field, styles } from './components';
 import { colors } from '@personalspace/ui';
 import { NoteEditorScreen } from './NoteEditorScreen';
+import { NoteFilesScreen } from './NoteFilesScreen';
+import { createNativeAttachmentFiles } from './attachment-files';
+import { createAttachmentRuntime, type AttachmentRuntime } from './attachment-runtime';
 import { TaskDetailsScreen } from './TaskDetailsScreen';
 import { SearchScreen } from './SearchScreen';
 import { NotePreview } from './NotePreview';
@@ -74,6 +77,10 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
   const store = useRef<LocalStore | null>(null);
   const engine = useRef<ReturnType<typeof createSyncEngine> | null>(null);
   const scheduler = useRef<ReturnType<typeof createSyncScheduler> | null>(null);
+  const fileRuntime = useRef<AttachmentRuntime | null>(null);
+  const [attachments, setAttachments] = useState<AttachmentRuntime | null>(null);
+  const [attachmentError, setAttachmentError] = useState('');
+  const [filesNote, setFilesNote] = useState<RecordItem | null>(null);
   const mounted = useRef(true);
   const [records, setRecords] = useState<RecordItem[]>([]);
   const [pendingIds, setPendingIds] = useState<string[]>([]);
@@ -121,6 +128,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
     ]);
     if (!mounted.current) return;
     setRecords(items);
+    void fileRuntime.current?.request();
     setProblems(errors);
     setPendingCount(pending.length);
     setPendingIds(
@@ -156,6 +164,26 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
           return;
         }
         store.current = local;
+        void createNativeAttachmentFiles(session.user.id, newId)
+          .then(async (files) => {
+            if (!mounted.current) return;
+            await local.attachmentTransfers.resumeAfterAuthentication();
+            if (!mounted.current) return;
+            const runtime = createAttachmentRuntime({
+              store: local,
+              client,
+              files,
+              onRemoteChange: () => {
+                void sync();
+              },
+            });
+            fileRuntime.current = runtime;
+            setAttachments(runtime);
+            runtime.setActive(AppState.currentState === 'active');
+          })
+          .catch(() => {
+            if (mounted.current) setAttachmentError('Files are unavailable in this app version.');
+          });
         engine.current = createSyncEngine(local, client);
         const localEngine = engine.current;
         scheduler.current = createSyncScheduler({
@@ -191,11 +219,13 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
       .catch(() => setStatus('Could not open local storage. Restart the app to try again.'));
     const listener = AppState.addEventListener('change', (state) => {
       scheduler.current?.setActive(state === 'active');
+      fileRuntime.current?.setActive(state === 'active');
     });
     return () => {
       mounted.current = false;
       listener.remove();
       scheduler.current?.dispose();
+      fileRuntime.current?.dispose();
       /* Keep DB handle alive for in-flight writes; account queries are scoped. */
     };
   }, [client, session.user.id]);
@@ -878,6 +908,7 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
     }
   }
   async function signOut() {
+    fileRuntime.current?.dispose();
     if (engine.current) {
       try {
         await engine.current.sync();
@@ -1242,6 +1273,12 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                     onPress={() => {
                       setEditingNote(record);
                     }}
+                  />
+                  <Button
+                    secondary
+                    label="Files"
+                    disabled={record.version === 0}
+                    onPress={() => setFilesNote(record)}
                   />
                   <Button
                     secondary
@@ -1741,6 +1778,22 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
                 setTab('library');
               }
             }}
+          />
+        )}
+      </Modal>
+      <Modal
+        visible={filesNote !== null}
+        animationType="slide"
+        onRequestClose={() => setFilesNote(null)}
+      >
+        {filesNote && store.current && (
+          <NoteFilesScreen
+            note={filesNote}
+            records={records}
+            store={store.current}
+            runtime={attachments}
+            unavailable={attachmentError}
+            onClose={() => setFilesNote(null)}
           />
         )}
       </Modal>

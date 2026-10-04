@@ -453,7 +453,7 @@ export function createAttachmentService(
         throw new DomainError('UPLOAD_INCOMPLETE', 'The uploaded file is not available yet.', 409);
       return finish(userId, row, finished.size, requestId);
     },
-    cancel: async (userId: string, id: string, requestId: string) =>
+    cancel: async (userId: string, id: string, requestId: string, removeReady = false) =>
       withUser(db, userId, async (tx) => {
         await lock(tx, userId);
         const [marker] = await tx
@@ -463,14 +463,30 @@ export function createAttachmentService(
             and(eq(entities.id, id), eq(entities.userId, userId), eq(entities.type, 'attachment')),
           );
         if (marker?.purgedAt) return { cancelled: true };
-        const row = await owned(tx, userId, id);
-        if (row.status === 'ready')
+        const [row] = await tx
+          .select()
+          .from(attachments)
+          .where(and(eq(attachments.userId, userId), eq(attachments.id, id)));
+        if (row?.status === 'ready' && !removeReady)
           throw new DomainError(
             'ATTACHMENT_READY',
             'Remove this attachment from its note instead.',
             409,
           );
         const version = await versionFor(tx, userId);
+        if (!row) {
+          // Removal may precede registration. A delayed open must not recreate it.
+          const now = new Date();
+          const inserted = await tx
+            .insert(entities)
+            .values({ id, userId, type: 'attachment', version, deletedAt: now, purgedAt: now })
+            .onConflictDoNothing()
+            .returning();
+          if (!inserted.length)
+            throw new DomainError('ATTACHMENT_NOT_FOUND', 'This attachment is unavailable.', 404);
+          await changed(tx, userId, id, version, 'attachment.cancel', requestId);
+          return { cancelled: true };
+        }
         await queueAttachmentCleanup(tx, row);
         await tx
           .delete(attachments)

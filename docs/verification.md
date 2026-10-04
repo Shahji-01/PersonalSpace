@@ -1,5 +1,14 @@
 # Verification
 
+## Mobile note files — 4 October 2026
+
+- 123 unit tests passed. New coverage exercises durable account-scoped removal, foreground/background upload interruption, Wi-Fi policy, late picker results after sign-out, source preservation, file-path isolation, bounded PUT slices, verified downloads and cache pruning.
+- 58 integration tests passed against isolated PostgreSQL, MinIO and Redis. New cases verify cancellation before registration cannot resurrect an upload, and ready-file removal enforces ownership, leaves the parent version unchanged, revokes new download grants and queues object cleanup.
+- TypeScript for tools/tests and all 14 workspaces, ESLint, formatting and diff checks passed. API/worker builds, Android/iOS Hermes + DOM exports and Expo dependency compatibility passed.
+- Android debug APK compiled successfully for arm64-v8a and x86_64 with the new picker, filesystem, network and sharing modules. The initial build needed the installed Android SDK path supplied through `ANDROID_HOME`; the subsequent offline build passed. No APK was installed and no emulator interaction was performed.
+
+Native file tests use actual local file bytes with mocked Expo bindings; runtime persistence tests execute actual SQLite queries. These checks and APK compilation do not replace device picker/share-sheet, OS permission, app-kill or accessibility acceptance. The installed development app requires a new native binary to use the added modules; older binaries retain text functionality. Live scanner configuration, inline editor attachments, general offline cache/pinning and orphan-file reclamation remain open. See [attachment setup and limits](attachments.md).
+
 ## Attachment processing and private downloads — 3 October 2026
 
 - 113 unit tests passed, including real Sharp image orientation/re-encoding/EXIF removal, thumbnail bounds, MIME mismatches, M4A/Opus aliases, UTF-8 validation, signed-download headers, and TCP scanner framing/error/timeout checks.

@@ -554,6 +554,53 @@ const download = (id: string, token = tokenA, variant = 'file') =>
   });
 
 describe('attachment processing and download', () => {
+  it('reserves offline removal IDs before registration so a delayed upload cannot resurrect them', async () => {
+    const input = descriptor((await note()).id);
+    for (let i = 0; i < 2; i++) {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/attachments/${input.id}/remove`,
+        headers: headers(),
+        payload: {},
+      });
+      expect(response.statusCode, response.body).toBe(200);
+    }
+    await expect(service().open(userA, input, 'delayed-open')).rejects.toMatchObject({
+      code: 'ID_UNAVAILABLE',
+    });
+    expect((await capture().pull(userA, 0)).tombstones.map((item) => item.id)).toContain(input.id);
+  });
+
+  it('removes a ready file independently of its note and blocks new download grants', async () => {
+    const { parent, input } = await uploaded();
+    await processAttachment(processor(), storage, clean, userA, input.id);
+    const ready = await row(input.id);
+    const foreign = await app.inject({
+      method: 'POST',
+      url: `/api/v1/attachments/${input.id}/remove`,
+      headers: headers(tokenB),
+      payload: {},
+    });
+    expect(foreign.statusCode).toBe(404);
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/v1/attachments/${input.id}/remove`,
+      headers: headers(),
+      payload: {},
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect((await download(input.id)).statusCode).toBe(404);
+    expect(
+      (await capture().pull(userA, 0)).changes.find((item) => item.id === parent.id)!.version,
+    ).toBe(parent.version);
+    const events = await owner.query(
+      "SELECT payload FROM outbox_events WHERE type='attachments.cleanup' AND payload->>'key'=$1",
+      [ready.processedKey],
+    );
+    expect(events.rowCount).toBe(1);
+    await cleanAttachment(storage, userA, { ...events.rows[0]!.payload, notBefore: 0 });
+    expect(await storage.head(ready.processedKey!)).toBeNull();
+  });
   it('scopes the processor to attachment metadata and hides pending downloads', async () => {
     const { input } = await uploaded();
     expect(await processor().claim(userB, input.id)).toBeNull();

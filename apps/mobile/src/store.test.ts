@@ -11,6 +11,9 @@ import {
   type RecordItem,
 } from '@personalspace/validation';
 import { openStore } from './store';
+import { ApiError, createClient } from '@personalspace/api-client';
+import { createAttachmentRuntime } from './attachment-runtime';
+import type { AttachmentFiles } from './attachment-files';
 
 let database: DatabaseSync;
 vi.mock('expo-crypto', () => ({ getRandomBytes: (count: number) => randomBytes(count) }));
@@ -71,7 +74,170 @@ function attachment(parentId = v7()) {
   );
 }
 
+async function runtimeFixture() {
+  const store = await openStore('a'),
+    parent = note(),
+    job = attachment(parent.id);
+  await store.merge([parent], parent.version);
+  let network: (value: { connected: boolean; wifi: boolean }) => void = () => {};
+  const files: AttachmentFiles = {
+    pick: vi.fn(async () => job),
+    inspect: vi.fn(async () => ({ size: job.descriptor.size, sha256: job.descriptor.sha256 })),
+    put: vi.fn(async () => ({ status: 200, etag: 'etag' })),
+    remove: vi.fn(async () => {}),
+    share: vi.fn(async () => {}),
+    pruneDownloads: vi.fn(async () => {}),
+    watchNetwork: (listener) => {
+      network = listener;
+      return () => {};
+    },
+  };
+  const client = {
+    ...createClient('https://api.example.test', () => 'token'),
+    openAttachment: vi.fn(async () => ({
+      status: 'uploading' as const,
+      session: { id: 'session', partSize: 5 * 1024 * 1024 },
+      parts: [],
+    })),
+    attachmentPart: vi.fn(async () => ({
+      url: 'https://storage.example.test',
+      method: 'PUT' as const,
+      headers: { 'content-length': '1' },
+      expiresAt: new Date().toISOString(),
+    })),
+    completeAttachment: vi.fn(async () => ({ status: 'ready' as const })),
+    removeAttachment: vi.fn(async () => ({ cancelled: true as const })),
+  };
+  const onRemoteChange = vi.fn();
+  const runtime = createAttachmentRuntime({ store, client, files, onRemoteChange });
+  return {
+    store,
+    parent,
+    job,
+    files,
+    client,
+    runtime,
+    onRemoteChange,
+    network: (connected: boolean, wifi = false) => network({ connected, wifi }),
+  };
+}
+
+describe('foreground attachment runtime', () => {
+  it('keeps a large picked file offline until Wi-Fi or a session override, independently of row sync', async () => {
+    const f = await runtimeFixture();
+    try {
+      f.runtime.setActive(true);
+      f.network(true, false);
+      await f.runtime.pick(f.parent.id);
+      await f.runtime.request();
+      expect(f.client.openAttachment).not.toHaveBeenCalled();
+      expect((await f.store.attachmentTransfers.list())[0]!.state).toBe('queued');
+      f.runtime.setCellular(true);
+      await f.runtime.request();
+      expect(f.files.put).toHaveBeenCalledTimes(3);
+      expect((await f.store.attachmentTransfers.get(f.job.descriptor.id))!.state).toBe('ready');
+      expect(f.onRemoteChange).toHaveBeenCalled();
+      expect((await f.store.list()).find((item) => item.id === f.parent.id)!.version).toBe(
+        f.parent.version,
+      );
+      // A completed download remains usable while metadata row sync catches up.
+      await f.runtime.request();
+      expect(f.files.pruneDownloads).toHaveBeenLastCalledWith([f.job.descriptor.id]);
+      await f.runtime.remove(f.job.descriptor.id);
+      await f.runtime.request();
+      expect(f.files.pruneDownloads).toHaveBeenLastCalledWith([]);
+    } finally {
+      f.runtime.dispose();
+    }
+  });
+  it('aborts a foreground PUT on backgrounding and ignores its late response', async () => {
+    const f = await runtimeFixture();
+    let finish: (result: { status: number; etag: string }) => void = () => {};
+    let uploadSignal: AbortSignal | undefined;
+    vi.mocked(f.files.put).mockImplementationOnce((input) => {
+      uploadSignal = input.signal;
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    });
+    try {
+      f.network(true, true);
+      f.runtime.setActive(true);
+      await f.runtime.pick(f.parent.id);
+      await vi.waitFor(() => expect(f.files.put).toHaveBeenCalledTimes(1));
+      f.runtime.setActive(false);
+      expect(uploadSignal!.aborted).toBe(true);
+      finish({ status: 200, etag: 'late' });
+      await f.runtime.request();
+      expect((await f.store.attachmentTransfers.get(f.job.descriptor.id))!.parts).toEqual([]);
+      f.runtime.setActive(true);
+      await f.runtime.request();
+      expect((await f.store.attachmentTransfers.get(f.job.descriptor.id))!.state).toBe('ready');
+    } finally {
+      f.runtime.dispose();
+    }
+  });
+  it('keeps server removals on failure and acknowledges local cleanup only after deletion succeeds', async () => {
+    const f = await runtimeFixture();
+    try {
+      f.runtime.setActive(true);
+      await f.runtime.pick(f.parent.id);
+      await f.runtime.request();
+      vi.mocked(f.files.remove).mockRejectedValueOnce(new Error('file locked'));
+      await f.runtime.remove(f.job.descriptor.id);
+      await f.runtime.request();
+      expect(await f.store.attachmentTransfers.pendingRemoteRemovals()).toHaveLength(1);
+      expect(f.client.openAttachment).not.toHaveBeenCalled();
+      f.client.removeAttachment.mockRejectedValueOnce(
+        new ApiError(503, 'UNAVAILABLE', 'unavailable'),
+      );
+      f.network(true, true);
+      await f.runtime.request();
+      // A repeat request may already have retried the transient failure; force one
+      // more drain and verify only successful acknowledgements retire the request.
+      await f.runtime.request();
+      expect(f.client.removeAttachment).toHaveBeenCalledWith(f.job.descriptor.id);
+      expect(await f.store.attachmentTransfers.pendingRemoteRemovals()).toEqual([]);
+      expect(await f.store.attachmentTransfers.pendingFileRemovals()).toEqual([]);
+      expect(f.client.openAttachment).not.toHaveBeenCalled();
+    } finally {
+      f.runtime.dispose();
+    }
+  });
+  it('does not enqueue a picker result returned after sign-out', async () => {
+    const f = await runtimeFixture();
+    let finish: (job: typeof f.job) => void = () => {};
+    vi.mocked(f.files.pick).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pick = f.runtime.pick(f.parent.id);
+    await vi.waitFor(() => expect(f.files.pick).toHaveBeenCalled());
+    f.runtime.dispose();
+    finish(f.job);
+    await expect(pick).rejects.toThrow();
+    expect(await f.store.attachmentTransfers.list()).toEqual([]);
+    expect(f.files.remove).toHaveBeenCalledWith(f.job.localUri);
+  });
+});
+
 describe('account-scoped attachment persistence', () => {
+  it('persists offline removals across reopening without leaking between accounts', async () => {
+    const store = await openStore('a'),
+      original = attachment();
+    await store.attachmentTransfers.enqueue(original);
+    await store.attachmentTransfers.requestRemoval(original.descriptor.id);
+    const reopened = (await openStore('a')).attachmentTransfers;
+    expect(await reopened.pendingRemoteRemovals()).toEqual([{ id: original.descriptor.id }]);
+    expect(await reopened.removedIds()).toContain(original.descriptor.id);
+    expect(await reopened.get(original.descriptor.id)).toBeNull();
+    expect(await (await openStore('b')).attachmentTransfers.pendingRemoteRemovals()).toEqual([]);
+    await reopened.acknowledgeRemoteRemoval(original.descriptor.id);
+    expect(await reopened.pendingRemoteRemovals()).toEqual([]);
+    await expect(reopened.enqueue(original)).rejects.toThrow('permanently deleted');
+  });
   it('retains multipart progress and retry deadlines across reopening and duplicate enqueue', async () => {
     const store = await openStore('a');
     const original = attachment();

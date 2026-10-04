@@ -1,6 +1,6 @@
 # Offline sync scheduling
 
-Attachment transfers now have a separate engine, account-scoped durable queue and API transport. Native picker/file operations and runtime scheduling remain open; their behavior and integration requirements are recorded in [attachments.md](attachments.md).
+Attachment transfers have a separate engine, account-scoped durable queue, native file adapter and foreground/connectivity runtime. Notes expose Files for picker/upload/removal and verified downloads. Inline editor attachments, OS background execution and device acceptance remain open; see [attachments.md](attachments.md).
 
 The account-scoped SQLite outbox remains the durable source of pending mutations. Sync first pulls current state/deletion markers, then pushes ordered batches, applies explicit acknowledgements and pulls again after writes. A failed request preserves the mutation and its original idempotency key. Rejected domain mutations remain visible for review; transport retries do not silently turn them into new writes.
 

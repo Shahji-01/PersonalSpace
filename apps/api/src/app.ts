@@ -207,6 +207,14 @@ export async function createApp(deps: {
       });
       api.get('/me', async (request) => ({ data: { id: request.userId } }));
       api.post(
+        '/attachments/:id/remove',
+        { schema: { security: [{ bearerAuth: [] }] } },
+        async (request) => {
+          const { id } = z.object({ id: idSchema }).parse(request.params);
+          return files().cancel(request.userId, id, request.id, true);
+        },
+      );
+      api.post(
         '/attachments/:id/download',
         { schema: { security: [{ bearerAuth: [] }] } },
         async (request, reply) => {

@@ -1,6 +1,6 @@
 # Attachment uploads and transfer queue
 
-The resumable transfer engine, account-scoped SQLite queue, authenticated upload API, private S3 adapter, processing worker and private downloads are implemented. It does **not** enable attaching files in the editor yet. Processing requires a configured scanner and restricted database connection; without them, files stay quarantined. Durable native file copies and picker/editor integration remain to be implemented.
+The resumable transfer engine, account-scoped SQLite queue, authenticated upload API, private S3 adapter, processing worker and private downloads are implemented. Mobile notes now expose a **Files** screen with a picker, durable local copies, foreground uploads, progress/retry/removal and verified download/share. Inline attachment nodes in the rich-text editor remain open. Processing requires a configured scanner and restricted database connection; without them, files stay quarantined.
 
 ## Server upload flow
 
@@ -10,6 +10,7 @@ Migration 0027 adds owner-scoped attachment metadata with forced RLS and parent 
 - `POST /api/v1/attachments/:id/parts` accepts `{ sessionId, number }` and returns a five-minute PUT grant with required headers. Keys are random `u/<userId>/<uuid>` values. Single PUTs bind the declared SHA-256; multipart grants bind the exact part size and upload session.
 - `POST /api/v1/attachments/:id/complete` accepts `{ sessionId, parts }`, checks actual object-store parts/size, and publishes a processing event exactly once. Retries reconcile completed objects. The worker verifies the full-file hash for both single and multipart uploads before release.
 - `POST /api/v1/attachments/:id/cancel` idempotently purges an unfinished attachment, publishes its tombstone and queues object cleanup.
+- `POST /api/v1/attachments/:id/remove` also removes ready files. Both operations reserve a missing upload ID before acknowledging removal, preventing delayed registration from recreating an offline-cancelled file. Removal never changes the parent note's content version.
 
 Registration serializes quota and rate checks with other writes for that account: 1 GiB reserved across pending/processing/ready and trashed files, and 60 new attachments per hour. Quota uses the larger of original/processed size plus thumbnail size, and the processor checks it again before releasing output. Cancellation does not erase rate history. Existing-ID retries do not consume another reservation. These are the development free-tier limits; paid-plan entitlement support remains open. Object-store network calls run outside the row-sync transaction lock.
 
@@ -42,6 +43,14 @@ Released objects use separate private keys that were never exposed in upload gra
 
 ## Queue behavior
 
+The note's **Files** button opens its attachment list. Adding a file uses the system document picker, checks its actual size/type declaration, copies it to `Paths.document/attachments/<account>/<attachmentId>` and computes SHA-256 before committing the queue row. A picker cancellation does nothing; a late result after sign-out is discarded and its new copy removed. The source file is never deleted. Local file reads/PUTs/deletions accept only UUID-named files beneath the signed-in account's attachment directory. The server still checks the actual uploaded bytes.
+
+One runtime per account listens for connectivity and app foreground changes. Backgrounding/sign-out aborts uploads; returning to the foreground reconciles remote progress. Trashed or unsynced parent notes are excluded. Large files wait for Wi-Fi unless the user enables cellular for this session. Progress reflects acknowledged parts, with explicit queued/processing/auth/failure states. Failed disk cleanup retries independently. File work does not await row sync; successful changes request a row refresh separately. OS background upload execution remains open.
+
+**Save or share** downloads only a processed file through a fresh grant, bounds its bytes to the advertised size and verifies its processed SHA-256 before opening the system share sheet. Requests omit ambient credentials and reject redirects. At most one verified download is cached per account; the next download replaces it, and note/attachment removal clears it on the next runtime pass. This cache is separate from durable upload originals. General offline pinning/LRU management remains open. An app-kill between making a durable copy and inserting its queue row can leave an orphan file; startup orphan reclamation remains to be implemented.
+
+The native dependencies match Expo SDK 57. Existing development binaries need rebuilding to include the picker/network/sharing modules. Modules are loaded lazily; an older binary can keep opening text features and shows file unavailability. This change does not install or navigate the emulator. Native picker/URI/PUT/share-sheet behavior still requires device acceptance; bundle export alone does not establish it.
+
 The shared descriptor uses an attachment UUID, parent UUID, display filename, declared MIME, byte size and lowercase SHA-256. Files are limited to 25 MiB. A local transfer stores a durable `file:///` URI, revision, multipart session, acknowledged ETags, state and retry deadline. Filenames reject path separators and control characters. Client MIME/hash declarations are not server validation.
 
 `createAttachmentTransferEngine` has its own queue and never calls or awaits row sync. The host creates one consumer for the signed-in account and calls `drain()` when connectivity/foreground state changes, an upload is enqueued, or the returned `nextAttemptAt` arrives. Concurrent calls share a single run. A failed file does not prevent later eligible files from being attempted.
@@ -56,15 +65,14 @@ Transient failures persist exponential backoff with equal jitter (1–2 seconds 
 
 The mobile store exposes `attachmentTransfers`. All operations filter by account and use the existing serialized SQLite write transactions. Enqueue is idempotent only for the same descriptor and URI. Progress replacement requires the previous revision and cannot insert a missing row, change identity or overwrite newer state.
 
-Parent or attachment purge atomically erases queue metadata, reserves the cancelled attachment ID, and records only the local URI in a file-removal queue. A late upload response cannot resurrect it. Ordinary cancellation follows the same path. The filesystem adapter must delete each file (or confirm it is absent) **before** acknowledging its removal; a failed deletion leaves the URI queued. File removal is not executed by this increment. No cache-clearing operation is exposed that could discard unsynced bytes.
+Parent or attachment purge atomically erases queue metadata, reserves the cancelled attachment ID, and records only the local URI in a file-removal queue. A late upload response cannot resurrect it. User removal also persists an account-scoped remote-removal request before returning to the UI. The runtime deletes the local file (or confirms it is absent) **before** acknowledging local cleanup, and acknowledges remote removal only after the API succeeds. Offline requests survive reopening. No cache-clearing operation is exposed that could discard unsynced bytes.
 
 ## Remaining integration
 
 - Deduplication and paid-plan storage quotas.
 - Scanner provisioning/signature freshness monitoring, real malware/format acceptance, HEIC decoder deployment and operator retry tooling for exhausted processing jobs. WebM audio currently fails closed because the signature detector identifies its container as video; track-level audio validation remains open.
-- Native picker, durable account-scoped file copies, hashing/PUT adapter and actual file-removal execution.
-- Attachment-ID editor nodes, progress/retry UI and other-device placeholders.
-- Connectivity/foreground scheduling, configurable 500 MiB LRU cache, pinned offline files, lazy downloads and eager recent thumbnails.
+- Attachment-ID editor nodes and inline image/thumbnail display; Files currently shows other-device metadata and download actions separately from note content.
+- Configurable 500 MiB LRU cache, pinned offline files, eager recent thumbnails and orphan local-copy reclamation.
 - Retention/account deletion across objects and local files; real-device interruption and app-kill acceptance.
 
-The engine's unit tests exercise interrupted/expired sessions, lost acknowledgements, retry deadlines, network policy, auth pause, cancellation and timeouts. Actual SQLite queries are exercised through the mobile store tests, with only Expo's native binding replaced. The integration suite also exercises PostgreSQL and a real private S3-compatible server; its current results are recorded in [verification.md](verification.md). Native file transfers and real-device acceptance remain open.
+The engine's unit tests exercise interrupted/expired sessions, lost acknowledgements, retry deadlines, network policy, auth pause, cancellation and timeouts. SQLite tests cover the runtime and durable removals. Adapter tests use actual filesystem bytes with Expo bindings replaced. The integration suite exercises PostgreSQL, private object storage and Redis/BullMQ; current results are in [verification.md](verification.md). Native interaction and real-device acceptance remain open.

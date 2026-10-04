@@ -102,6 +102,12 @@ export function createClient(baseUrl: string, token: () => string | null) {
       request(`/api/v1/attachments/${encodeURIComponent(id)}/download`, attachmentDownloadSchema, {
         variant,
       }),
+    removeAttachment: (id: string) =>
+      request(
+        `/api/v1/attachments/${encodeURIComponent(id)}/remove`,
+        z.object({ cancelled: z.literal(true) }),
+        {},
+      ),
     search: (input: SearchQuery) => {
       const query = searchQuerySchema.parse(input);
       const params = new URLSearchParams();

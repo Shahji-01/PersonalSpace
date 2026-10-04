@@ -8,6 +8,9 @@ export const attachmentTablesSql = `
     revision INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(user_id,id)
   );
   CREATE INDEX IF NOT EXISTS attachment_transfers_parent ON attachment_transfers(user_id,parent_id);
+  CREATE TABLE IF NOT EXISTS attachment_remote_removals (
+    user_id TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(user_id,id)
+  );
   CREATE TABLE IF NOT EXISTS attachment_transfer_tombstones (
     user_id TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(user_id,id)
   );
@@ -159,6 +162,66 @@ export function createAttachmentStore(
               resumed.descriptor.id,
             );
           }
+        }),
+      requestRemoval: (id: string) =>
+        transaction(async () => {
+          const transfer = await get(id);
+          if (transfer) await cancelInTransaction([transfer]);
+          await db.runAsync(
+            'INSERT OR IGNORE INTO attachment_transfer_tombstones(user_id,id) VALUES (?,?)',
+            userId,
+            id,
+          );
+          await db.runAsync(
+            'INSERT OR IGNORE INTO attachment_remote_removals(user_id,id) VALUES (?,?)',
+            userId,
+            id,
+          );
+        }),
+      pendingRemoteRemovals: () =>
+        db.getAllAsync<{ id: string }>(
+          'SELECT id FROM attachment_remote_removals WHERE user_id=? ORDER BY rowid',
+          userId,
+        ),
+      removedIds: async () =>
+        (
+          await db.getAllAsync<{ id: string }>(
+            'SELECT id FROM attachment_transfer_tombstones WHERE user_id=?',
+            userId,
+          )
+        ).map((row) => row.id),
+      acknowledgeRemoteRemoval: (id: string) =>
+        transaction(async () => {
+          await db.runAsync(
+            'DELETE FROM attachment_remote_removals WHERE user_id=? AND id=?',
+            userId,
+            id,
+          );
+        }),
+      retry: (id: string) =>
+        transaction(async () => {
+          const previous = await get(id);
+          if (
+            !previous ||
+            previous.state === 'ready' ||
+            previous.state === 'auth_required' ||
+            ['rejected', 'local_file', 'protocol'].includes(previous.error ?? '')
+          )
+            return;
+          const next = {
+            ...previous,
+            state: 'queued',
+            error: null,
+            nextAttemptAt: 0,
+            revision: previous.revision + 1,
+          };
+          await db.runAsync(
+            'UPDATE attachment_transfers SET revision=?,data=? WHERE user_id=? AND id=?',
+            next.revision,
+            JSON.stringify(next),
+            userId,
+            id,
+          );
         }),
       cancel: (id: string) =>
         transaction(async () => {
