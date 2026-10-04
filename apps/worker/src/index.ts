@@ -16,6 +16,7 @@ import {
   exportToJson,
   exportToCsv,
   executePendingDeletions,
+  processPendingMetadata,
 } from '@personalspace/domain';
 import { createClamScanner, readProcessorConfig } from './attachment-scanner';
 import {
@@ -255,6 +256,31 @@ deletionWorker.on('failed', (job) =>
 deletionWorker.on('error', () =>
   console.error(JSON.stringify({ event: 'deletion_unavailable' })),
 );
+
+// ============================================================
+// Metadata worker — fetch URL metadata for learning resources (§41)
+// ============================================================
+const metadataQueue = new Queue('metadata', { connection: redis });
+const metadataWorker = new Worker(
+  'metadata',
+  async () => {
+    try {
+      const processed = await processPendingMetadata(db);
+      if (processed > 0) {
+        console.log(JSON.stringify({ event: 'metadata_processed', count: processed }));
+      }
+    } catch (e) {
+      console.log(JSON.stringify({ event: 'metadata_processing_failed', error: String(e) }));
+    }
+  },
+  { connection: redis, concurrency: 1 },
+);
+metadataWorker.on('failed', (job) =>
+  console.error(JSON.stringify({ event: 'metadata_worker_failed', jobId: job?.id })),
+);
+metadataWorker.on('error', () =>
+  console.error(JSON.stringify({ event: 'metadata_worker_unavailable' })),
+);
 redis.on('error', () => console.error(JSON.stringify({ event: 'redis_unavailable' })));
 let stopping = false;
 async function relay() {
@@ -361,7 +387,22 @@ try {
       },
     );
   }
+  // Schedule metadata background fetch every 5 minutes.
+  const metadataJobs = await metadataQueue.getRepeatableJobs();
+  if (!metadataJobs.length) {
+    await metadataQueue.add(
+      'fetch-metadata',
+      {},
+      {
+        repeat: { pattern: '*/5 * * * *' }, // Every 5 minutes
+        removeOnComplete: { age: 7 * 86400 },
+        removeOnFail: false,
+      },
+    );
+  }
 } finally {
+  await metadataWorker.close();
+  await metadataQueue.close();
   await deletionWorker.close();
   await deletionQueue.close();
   await maintenanceWorker.close();

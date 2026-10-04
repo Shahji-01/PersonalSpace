@@ -54,6 +54,7 @@ Implemented:
 - [x] Background Data Export: worker jobs to generate complete JSON and CSV archives across all domains, with expiring secure download links.
 - [x] Account Deletion: full GDPR-compliant asynchronous pipeline (pending execution limits).
 - [x] Maintenance Worker: nightly background cleanup for 30-day Trash, 180-day tombstones, 7-day idempotency keys, export expiry, and balance drift reconciliation.
+- [x] Learning Metadata: safe URL fetcher with SSRF protection, size limits, and regex-based OpenGraph/Twitter meta tag extraction in a background worker.
 
 These checks mean code exists. Validation results are recorded separately in `docs/verification.md`; Phase 0 is **not** complete.
 

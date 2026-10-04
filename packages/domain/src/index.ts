@@ -67,3 +67,7 @@ export {
   getDeletionStatus,
   executePendingDeletions,
 } from './deletion';
+export {
+  extractMetadata,
+  processPendingMetadata,
+} from './metadata';
