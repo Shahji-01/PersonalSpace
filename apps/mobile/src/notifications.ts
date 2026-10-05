@@ -75,21 +75,23 @@ export async function requestNotificationPermission(): Promise<string | null> {
 
 /**
  * Register the device push token with the API server.
+ * Returns the device ID assigned by the server.
  */
 export async function registerDeviceToken(
   client: ReturnType<typeof createClient>,
   token: string,
-): Promise<void> {
+): Promise<string | null> {
   try {
-    // Use the API client to register the token
-    const platform = Platform.OS === 'ios' ? 'ios' : 'android';
-    await (client as any).registerDevice?.({
+    const platform = Platform.OS === 'ios' ? 'ios' as const : 'android' as const;
+    const result = await client.registerDevice({
       platform,
       token,
       appVersion: '0.1.0',
     });
+    return result.data.id;
   } catch (e) {
     console.warn('Failed to register device token:', e);
+    return null;
   }
 }
 
@@ -149,10 +151,11 @@ export async function scheduleLocalReminders(reminders: RecordItem[]): Promise<s
  */
 export async function updateDeviceWatermark(
   client: ReturnType<typeof createClient>,
+  deviceId: string,
   watermark: string,
 ): Promise<void> {
   try {
-    await (client as any).updateDeviceWatermark?.({
+    await client.updateDeviceWatermark(deviceId, {
       remindersScheduledThrough: watermark,
     });
   } catch (e) {
@@ -170,18 +173,19 @@ export async function updateDeviceWatermark(
 export async function setupNotifications(
   client: ReturnType<typeof createClient>,
   reminders: RecordItem[],
-): Promise<{ token: string | null; scheduled: number }> {
+): Promise<{ token: string | null; deviceId: string | null; scheduled: number }> {
   const token = await requestNotificationPermission();
+  let deviceId: string | null = null;
 
   if (token) {
-    await registerDeviceToken(client, token);
+    deviceId = await registerDeviceToken(client, token);
   }
 
   const watermark = await scheduleLocalReminders(reminders);
   let scheduledCount = 0;
 
-  if (watermark) {
-    await updateDeviceWatermark(client, watermark);
+  if (watermark && deviceId) {
+    await updateDeviceWatermark(client, deviceId, watermark);
     scheduledCount = reminders.filter(
       (r) =>
         r.type === 'reminder' &&
@@ -193,5 +197,5 @@ export async function setupNotifications(
     ).length;
   }
 
-  return { token, scheduled: scheduledCount };
+  return { token, deviceId, scheduled: scheduledCount };
 }

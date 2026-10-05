@@ -17,7 +17,7 @@ import {
   processPendingMetadata,
   deliverDueReminders,
   processPendingEmails,
-  ConsoleEmailProvider,
+  createEmailProvider,
 } from '@personalspace/domain';
 import { createClamScanner, readProcessorConfig } from './attachment-scanner';
 import {
@@ -267,7 +267,7 @@ notificationsWorker.on('error', () =>
 // Email worker — process and send transactional emails (§70)
 // ============================================================
 const emailQueue = new Queue('email', { connection: redis });
-const emailProvider = new ConsoleEmailProvider();
+const emailProvider = createEmailProvider();
 const emailWorker = new Worker(
   'email',
   async () => {

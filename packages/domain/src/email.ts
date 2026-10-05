@@ -22,6 +22,52 @@ export class ConsoleEmailProvider implements EmailProvider {
 }
 
 /**
+ * Resend email provider (https://resend.com).
+ * Uses the HTTP API directly — no SDK dependency.
+ */
+export class ResendEmailProvider implements EmailProvider {
+  constructor(
+    private readonly apiKey: string,
+    private readonly fromAddress: string = 'PersonalSpace <noreply@personalspace.app>',
+  ) {}
+
+  async sendEmail(to: string, subject: string, body: string, html?: string): Promise<void> {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify({
+        from: this.fromAddress,
+        to: [to],
+        subject,
+        text: body,
+        ...(html ? { html } : {}),
+      }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => 'Unknown error');
+      throw new Error(`Resend API error ${response.status}: ${errorBody}`);
+    }
+  }
+}
+
+/**
+ * Factory: pick provider based on environment configuration.
+ * Falls back to ConsoleEmailProvider when no API key is set.
+ */
+export function createEmailProvider(): EmailProvider {
+  const apiKey = process.env.RESEND_API_KEY;
+  const fromAddress = process.env.EMAIL_FROM_ADDRESS;
+  if (apiKey) {
+    return new ResendEmailProvider(apiKey, fromAddress || undefined);
+  }
+  return new ConsoleEmailProvider();
+}
+
+/**
  * Worker job to process and send pending emails.
  * Returns the number of emails processed.
  */

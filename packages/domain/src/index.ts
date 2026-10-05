@@ -77,4 +77,10 @@ export {
   fetchPlaylistItems,
   expandPlaylist,
 } from './youtube';
-export { ConsoleEmailProvider, processPendingEmails, type EmailProvider } from './email';
+export {
+  ConsoleEmailProvider,
+  ResendEmailProvider,
+  createEmailProvider,
+  processPendingEmails,
+  type EmailProvider,
+} from './email';

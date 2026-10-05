@@ -153,9 +153,9 @@ export function createClient(baseUrl: string, token: () => string | null) {
       request('/api/v1/me/deletion', deletionStatusResponseSchema, { action: 'cancel' }),
     // Devices (§50)
     registerDevice: (req: RegisterDevice) =>
-      request('/api/v1/devices', z.object({ success: z.literal(true) }), req),
-    updateDeviceWatermark: (req: { remindersScheduledThrough: string }) =>
-      request('/api/v1/devices/watermark', z.object({ success: z.literal(true) }), req),
+      request('/api/v1/devices', z.object({ data: z.object({ id: z.string() }) }), req),
+    updateDeviceWatermark: (deviceId: string, req: { remindersScheduledThrough: string }) =>
+      request(`/api/v1/devices/${encodeURIComponent(deviceId)}/watermark`, z.object({ status: z.literal('ok') }), req),
   };
 }
 
