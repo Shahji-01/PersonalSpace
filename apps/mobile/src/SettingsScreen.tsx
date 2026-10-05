@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Alert, Linking, Modal, ScrollView, Text, View } from 'react-native';
+import { Alert, Linking, Modal, ScrollView, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { createClient } from '@personalspace/api-client';
 import type {
   PreferencesResponse,
+  PreferencesUpdate,
   ExportJobResponse,
   DeletionStatusResponse,
 } from '@personalspace/validation';
@@ -61,6 +62,17 @@ export function SettingsScreen({
       clearInterval(timer);
     };
   }, [visible, client, exports]);
+
+  async function savePref(update: PreferencesUpdate) {
+    setSaving(true);
+    try {
+      setSettings(await client.updateSettings(update));
+    } catch (e) {
+      Alert.alert('Could not save preference', String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function downloadExport(id: string) {
     setSaving(true);
@@ -181,11 +193,94 @@ export function SettingsScreen({
             <>
               {settings && (
                 <Card>
-                  <Text style={styles.label}>Preferences</Text>
-                  <Text style={styles.subtitle}>Timezone: {settings.timezone}</Text>
-                  <Text style={styles.subtitle}>Theme: {settings.theme}</Text>
-                  <Text style={styles.subtitle}>Currency: {settings.baseCurrency}</Text>
-                  <Text style={styles.subtitle}>Text size: {settings.textSize}</Text>
+                  <Text style={styles.label}>Appearance</Text>
+                  <Text style={styles.subtitle}>Theme</Text>
+                  <View style={styles.row}>
+                    {(['system', 'light', 'dark'] as const).map((t) => (
+                      <Button
+                        key={t}
+                        secondary={settings.theme !== t}
+                        label={t}
+                        disabled={saving}
+                        onPress={() => void savePref({ theme: t })}
+                      />
+                    ))}
+                  </View>
+                  <Text style={styles.subtitle}>Text size</Text>
+                  <View style={styles.row}>
+                    {(['system', 'small', 'medium', 'large'] as const).map((t) => (
+                      <Button
+                        key={t}
+                        secondary={settings.textSize !== t}
+                        label={t}
+                        disabled={saving}
+                        onPress={() => void savePref({ textSize: t })}
+                      />
+                    ))}
+                  </View>
+
+                  <Text style={[styles.label, { marginTop: 12 }]}>Capture &amp; week</Text>
+                  <Text style={styles.subtitle}>Default capture destination</Text>
+                  <View style={styles.row}>
+                    {(['inbox', 'note', 'task'] as const).map((t) => (
+                      <Button
+                        key={t}
+                        secondary={settings.captureTarget !== t}
+                        label={t}
+                        disabled={saving}
+                        onPress={() => void savePref({ captureTarget: t })}
+                      />
+                    ))}
+                  </View>
+                  <Text style={styles.subtitle}>Week starts on</Text>
+                  <View style={styles.row}>
+                    <Button
+                      secondary={settings.weekStartDay !== 0}
+                      label="Sunday"
+                      disabled={saving}
+                      onPress={() => void savePref({ weekStartDay: 0 })}
+                    />
+                    <Button
+                      secondary={settings.weekStartDay !== 1}
+                      label="Monday"
+                      disabled={saving}
+                      onPress={() => void savePref({ weekStartDay: 1 })}
+                    />
+                  </View>
+
+                  <Text style={[styles.label, { marginTop: 12 }]}>Notifications</Text>
+                  {(
+                    [
+                      ['notificationReminder', 'Reminders'],
+                      ['notificationTaskDue', 'Task due dates'],
+                      ['notificationDebtDue', 'Debt due dates'],
+                      ['notificationExport', 'Export ready'],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <View key={key} style={[styles.row, { justifyContent: 'space-between' }]}>
+                      <Text style={[styles.subtitle, { flex: 1 }]}>{label}</Text>
+                      <Switch
+                        value={settings[key]}
+                        disabled={saving}
+                        onValueChange={(value) =>
+                          void savePref({ [key]: value } as PreferencesUpdate)
+                        }
+                      />
+                    </View>
+                  ))}
+
+                  <View style={[styles.row, { justifyContent: 'space-between', marginTop: 12 }]}>
+                    <Text style={[styles.subtitle, { flex: 1 }]}>Opt out of analytics</Text>
+                    <Switch
+                      value={settings.analyticsOptOut}
+                      disabled={saving}
+                      onValueChange={(value) => void savePref({ analyticsOptOut: value })}
+                    />
+                  </View>
+
+                  <Text style={[styles.subtitle, { marginTop: 12 }]}>
+                    Timezone {settings.timezone} · Currency {settings.baseCurrency}
+                  </Text>
                 </Card>
               )}
 

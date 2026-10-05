@@ -3913,4 +3913,23 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       ).rowCount,
     ).toBeGreaterThanOrEqual(1);
   });
+  it('reads and updates user preferences over the HTTP contract', async () => {
+    const get = await app.inject({ url: '/api/v1/preferences', headers: headers(tokenA) });
+    expect(get.statusCode, get.body).toBe(200);
+    expect(get.json().data).toMatchObject({ theme: expect.any(String) });
+    const patch = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/preferences',
+      headers: headers(tokenA),
+      payload: { theme: 'dark', notificationReminder: false, weekStartDay: 1 },
+    });
+    expect(patch.statusCode, patch.body).toBe(200);
+    expect(patch.json().data).toMatchObject({
+      theme: 'dark',
+      notificationReminder: false,
+      weekStartDay: 1,
+    });
+    const after = await app.inject({ url: '/api/v1/preferences', headers: headers(tokenA) });
+    expect(after.json().data).toMatchObject({ theme: 'dark', notificationReminder: false });
+  });
 });

@@ -35,6 +35,8 @@ const deletionResult = z.object({
     createdAt: z.string().nullable().default(null),
   }),
 });
+// Preferences responses are wrapped in { data } by the server.
+const settingsResult = z.object({ data: preferencesResponseSchema });
 
 export class ApiError extends Error {
   constructor(
@@ -52,7 +54,7 @@ export function createClient(baseUrl: string, token: () => string | null) {
     schema: z.ZodType<T>,
     body?: unknown,
     signal?: AbortSignal,
-    method?: 'GET' | 'POST' | 'DELETE',
+    method?: 'GET' | 'POST' | 'DELETE' | 'PATCH',
   ): Promise<T> {
     const currentToken = token();
     const response = await fetch(`${baseUrl}${path}`, {
@@ -147,10 +149,13 @@ export function createClient(baseUrl: string, token: () => string | null) {
       request('/api/v1/sync/push', pushResponseSchema, { mutations }),
     me: () => request('/api/v1/me', z.object({ data: z.object({ id: z.string() }) })),
     signOut: () => request('/api/auth/sign-out', z.unknown(), {}),
-    // Settings (§21)
-    getSettings: () => request('/api/v1/settings', preferencesResponseSchema),
+    // Settings (§21). The server keys these on /preferences, wraps the result in
+    // { data }, and updates via PATCH.
+    getSettings: () => request('/api/v1/preferences', settingsResult).then((r) => r.data),
     updateSettings: (update: PreferencesUpdate) =>
-      request('/api/v1/settings', preferencesResponseSchema, update),
+      request('/api/v1/preferences', settingsResult, update, undefined, 'PATCH').then(
+        (r) => r.data,
+      ),
     // Exports (§20.1)
     listExports: () =>
       request('/api/v1/exports', z.object({ data: z.array(exportJobResponseSchema) })),

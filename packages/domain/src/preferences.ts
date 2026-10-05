@@ -1,58 +1,52 @@
 import { eq } from 'drizzle-orm';
-import { userPreferences, type Database } from '@personalspace/db';
+import { userPreferences, withUser, type Database } from '@personalspace/db';
 import type { PreferencesUpdate } from '@personalspace/validation';
 
 /**
  * Get user preferences, creating defaults if none exist.
- * Uses INSERT ... ON CONFLICT to handle concurrent first reads.
+ * Runs inside withUser so the forced RLS owner policy is satisfied.
  */
 export async function getPreferences(db: Database, userId: string) {
-  const existing = await db
-    .select()
-    .from(userPreferences)
-    .where(eq(userPreferences.userId, userId));
-  if (existing.length) return serialize(existing[0]!);
-  // Create defaults on first access.
-  const inserted = await db
-    .insert(userPreferences)
-    .values({ userId })
-    .onConflictDoNothing()
-    .returning();
-  if (inserted.length) return serialize(inserted[0]!);
-  // Another transaction created it concurrently — re-read.
-  const retry = await db
-    .select()
-    .from(userPreferences)
-    .where(eq(userPreferences.userId, userId));
-  return serialize(retry[0]!);
+  return withUser(db, userId, async (tx) => {
+    const existing = await tx
+      .select()
+      .from(userPreferences)
+      .where(eq(userPreferences.userId, userId));
+    if (existing.length) return serialize(existing[0]!);
+    // Create defaults on first access.
+    const inserted = await tx
+      .insert(userPreferences)
+      .values({ userId })
+      .onConflictDoNothing()
+      .returning();
+    if (inserted.length) return serialize(inserted[0]!);
+    // Another transaction created it concurrently — re-read.
+    const retry = await tx.select().from(userPreferences).where(eq(userPreferences.userId, userId));
+    return serialize(retry[0]!);
+  });
 }
 
 /**
  * Update preferences. Upserts: creates defaults for missing rows,
- * then applies the patch atomically.
+ * then applies the patch atomically. Runs inside withUser for RLS.
  */
-export async function updatePreferences(
-  db: Database,
-  userId: string,
-  input: PreferencesUpdate,
-) {
-  // Ensure the row exists before patching.
-  await db
-    .insert(userPreferences)
-    .values({ userId })
-    .onConflictDoNothing();
+export async function updatePreferences(db: Database, userId: string, input: PreferencesUpdate) {
+  return withUser(db, userId, async (tx) => {
+    // Ensure the row exists before patching.
+    await tx.insert(userPreferences).values({ userId }).onConflictDoNothing();
 
-  const patch: Record<string, unknown> = { updatedAt: new Date() };
-  for (const [key, value] of Object.entries(input)) {
-    if (value !== undefined) patch[key] = value;
-  }
+    const patch: Record<string, unknown> = { updatedAt: new Date() };
+    for (const [key, value] of Object.entries(input)) {
+      if (value !== undefined) patch[key] = value;
+    }
 
-  const updated = await db
-    .update(userPreferences)
-    .set(patch)
-    .where(eq(userPreferences.userId, userId))
-    .returning();
-  return serialize(updated[0]!);
+    const updated = await tx
+      .update(userPreferences)
+      .set(patch)
+      .where(eq(userPreferences.userId, userId))
+      .returning();
+    return serialize(updated[0]!);
+  });
 }
 
 function serialize(row: typeof userPreferences.$inferSelect) {
