@@ -65,7 +65,7 @@ export function StorageScreen({
                 {mb(usage.originalBytes + usage.downloadedBytes)} used by files
               </Text>
               <Text style={styles.subtitle}>Upload originals: {mb(usage.originalBytes)}</Text>
-              <Text style={styles.subtitle}>Downloaded files: {mb(usage.downloadedBytes)}</Text>
+              <Text style={styles.subtitle}>Files and previews: {mb(usage.downloadedBytes)}</Text>
               <Text style={styles.subtitle}>Kept offline: {mb(usage.pinnedBytes)}</Text>
             </Card>
             <Text style={styles.label}>Download cache limit</Text>
@@ -83,6 +83,11 @@ export function StorageScreen({
             <Text style={styles.subtitle}>
               Older unused downloads are removed first. Files marked Keep offline stay available,
               even if they exceed this limit. Upload originals are protected.
+            </Text>
+            <Text style={styles.subtitle}>
+              Recent image previews download automatically while the app is open, when space is
+              available. Clearing the cache pauses this until the app next returns to the
+              foreground.
             </Text>
             <Button
               secondary

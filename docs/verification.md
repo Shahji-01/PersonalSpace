@@ -1,5 +1,13 @@
 # Verification
 
+## Automatic recent thumbnails — 5 October 2026
+
+- All 162 unit tests passed. Nine new cases cover the 30-day boundary, live-parent/ready/synced selection, cached/removed exclusions, newest-first ordering, bounded batches, retry delays, authentication pause, capacity protection, cancellation, clear-cache suppression and foreground restart. SQLite/runtime tests verify an upload can finish while preview I/O is stalled and that cancelled bytes do not enter the manifest.
+- Tools/tests and all 14 workspaces passed TypeScript in the shared checkout. Changed files passed ESLint, formatting and diff checks. Android/iOS Hermes + DOM exports passed.
+- No API, schema, native dependency or editor DOM implementation changed. The previous stage's integration/browser checks were not rerun for this mobile scheduler and status-label change. Native app lifecycle, Files/Storage accessibility and physical-device acceptance remain open; no emulator interaction was performed.
+
+Automatic fetching uses existing private thumbnail grants and shared cache capacity; it does not download full files. Clear-cache suppression and retry deadlines are session-scoped. Unrelated unfinished changes were kept outside the feature commit.
+
 ## Private image previews — 5 October 2026
 
 - All 153 unit tests passed. New coverage uses real WebP bytes for lossy/lossless/alpha headers, dimensions, animation rejection, base64 output, native digest checks, separate full-file/thumbnail paths, account-isolated SQLite variants, offline reuse, pin/clear behavior and revocation during preview reads.

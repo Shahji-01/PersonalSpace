@@ -3,6 +3,7 @@ import { createAttachmentTransferEngine, type AttachmentDrainResult } from '@per
 import type { LocalStore } from './store';
 import type { AttachmentFiles } from './attachment-files';
 import { createAttachmentCache } from './attachment-cache';
+import { createThumbnailPrefetcher, recentThumbnails } from './thumbnail-prefetch';
 
 export function createAttachmentRuntime(options: {
   store: LocalStore;
@@ -58,6 +59,26 @@ export function createAttachmentRuntime(options: {
     onChange: emit,
   });
   let recovery: Promise<void> | null = null;
+  const thumbnails = createThumbnailPrefetcher({
+    enabled: () =>
+      active && network.connected && !lifetime.signal.aborted && !state.authenticationRequired,
+    candidates: async () =>
+      recentThumbnails(
+        await store.list(),
+        await store.attachmentCache.list(),
+        await transfers.removedIds(),
+        Date.now(),
+      ),
+    fetch: cache.prefetchThumbnail,
+    retry: (error) => {
+      if (error instanceof ApiError && [401, 403].includes(error.status)) {
+        state.authenticationRequired = true;
+        emit();
+        return null;
+      }
+      return error instanceof ApiError ? (error.retryAfterMs ?? 0) : 0;
+    },
+  });
   const recoverOriginals = () => {
     if (!recovery)
       recovery = (async () => {
@@ -134,7 +155,10 @@ export function createAttachmentRuntime(options: {
         try {
           await recoverOriginals().catch(() => schedule(Date.now() + 30000));
           // Cache operations may await a share sheet. Never make uploads/row sync wait for it.
-          void cache.maintain().catch(() => schedule(Date.now() + 30000));
+          void cache
+            .maintain()
+            .then(() => thumbnails.request())
+            .catch(() => schedule(Date.now() + 30000));
           for (const item of await transfers.pendingFileRemovals()) {
             try {
               await files.remove(item.localUri);
@@ -158,6 +182,7 @@ export function createAttachmentRuntime(options: {
             }
           }
           state = await engine.drain();
+          void thumbnails.request();
           if (state.nextAttemptAt) schedule(state.nextAttemptAt);
           if ((await transfers.pendingRemoteRemovals()).length) schedule(Date.now() + 30000);
           if (changed) {
@@ -178,6 +203,7 @@ export function createAttachmentRuntime(options: {
   }
   const unwatch = files.watchNetwork((value) => {
     network = value;
+    if (!value.connected) thumbnails.interrupt();
     void request();
     emit();
   });
@@ -193,10 +219,14 @@ export function createAttachmentRuntime(options: {
     setActive: (value: boolean) => {
       active = value;
       if (!value) {
+        thumbnails.interrupt();
         resetEngine();
         if (timer) clearTimeout(timer);
         timer = null;
-      } else void request();
+      } else {
+        thumbnails.resume();
+        void request();
+      }
     },
     setCellular: (value: boolean) => {
       cellular = value;
@@ -244,9 +274,13 @@ export function createAttachmentRuntime(options: {
     },
     unpin: cache.unpin,
     storageUsage: cache.usage,
-    clearCache: cache.clear,
+    clearCache: async () => {
+      thumbnails.pause();
+      await cache.clear();
+    },
     setCacheLimitMb: cache.setLimitMb,
     dispose: () => {
+      thumbnails.dispose();
       lifetime.abort();
       active = false;
       engine.dispose();

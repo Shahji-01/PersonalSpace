@@ -179,6 +179,9 @@ export function NoteFilesScreen({
           if (!descriptor) return null;
           const ready = remote?.status === 'ready' || job?.state === 'ready';
           const local = cached.find((entry) => entry.id === id && entry.variant !== 'thumbnail');
+          const previewOffline = cached.some(
+            (entry) => entry.id === id && entry.variant === 'thumbnail',
+          );
           const canPreview =
             available && ready && remote?.hasThumbnail && remote.processedMime === 'image/webp';
           const label = ready
@@ -201,6 +204,7 @@ export function NoteFilesScreen({
               <Text style={styles.label}>{descriptor.filename}</Text>
               <Text style={styles.subtitle}>
                 {(descriptor.size / (1024 * 1024)).toFixed(2)} MB · {label}
+                {canPreview && previewOffline && !local ? ' · Preview offline' : ''}
               </Text>
               <View style={styles.row}>
                 {canPreview && (

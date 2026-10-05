@@ -50,7 +50,8 @@ describe('editor attachment choices', () => {
       },
     ]);
     expect(result[0]!.canPreview).toBe(true);
-    expect(result[0]!.detail).not.toContain('offline');
+    expect(result[0]!.detail).toContain('Preview offline');
+    expect(result[0]!.detail).not.toContain('Kept offline');
     file.attachment.status = 'processing';
     expect(noteAttachments([parent, file], parent.id)[0]!.canPreview).toBe(false);
   });

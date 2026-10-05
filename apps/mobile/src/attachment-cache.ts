@@ -127,6 +127,49 @@ export function createAttachmentCache(options: {
     return maintenance;
   };
   return {
+    prefetchThumbnail: (id: string, requestSignal: AbortSignal) =>
+      serial(async () => {
+        requestSignal.throwIfAborted();
+        if (!options.connected() || !(await options.permitted(id)))
+          throw new Error('Preview unavailable');
+        const entries = await store.list();
+        if (entries.some((entry) => entry.id === id && entry.variant === 'thumbnail'))
+          return 'cached' as const;
+        const remaining =
+          (await store.limitMb()) * 1024 * 1024 -
+          entries.reduce((sum, entry) => sum + entry.size, 0);
+        // Automatic downloads never evict an existing file or exceed the cache cap.
+        if (remaining <= 0) return 'full' as const;
+        const controller = new AbortController(),
+          abort = () => controller.abort();
+        signal.addEventListener('abort', abort, { once: true });
+        requestSignal.addEventListener('abort', abort, { once: true });
+        const timeout = setTimeout(abort, 60000);
+        try {
+          if (signal.aborted || requestSignal.aborted) controller.abort();
+          controller.signal.throwIfAborted();
+          const grant = await options.grant(id, 'thumbnail');
+          controller.signal.throwIfAborted();
+          if (grant.size > remaining) return 'full' as const;
+          const entry = await files.download(
+            id,
+            grant,
+            controller.signal,
+            () => options.permitted(id),
+            'thumbnail',
+          );
+          if (controller.signal.aborted || !(await options.permitted(id))) {
+            await files.removeDownload(entry);
+            throw new Error('Preview unavailable');
+          }
+          await store.put({ ...entry, accessedAt: Date.now(), pinned: false });
+          return 'cached' as const;
+        } finally {
+          clearTimeout(timeout);
+          signal.removeEventListener('abort', abort);
+          requestSignal.removeEventListener('abort', abort);
+        }
+      }),
     share: (id: string) =>
       ensure(id, false, 'file', (entry, signal) =>
         files.shareDownloaded(entry, signal, () => options.permitted(id)),

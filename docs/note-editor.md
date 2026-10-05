@@ -14,7 +14,7 @@ Every valid editor change is queued to account-scoped SQLite draft storage. “D
 
 The implementation does not decide ADR-027. Run the specification's editor spike on a 3–4 GB Android phone and an older supported iPhone: 5,000-word notes editable within 500 ms, keystrokes within 50 ms, Hindi/English Gboard and SwiftKey composition, caret/keyboard scrolling, app-kill recovery offline, TalkBack and VoiceOver. Automated schema, SQLite, API tests and emulator checks do not replace those measurements.
 
-Inline file references and on-demand image previews are implemented; eager thumbnail loading and cross-device draft merging remain unfinished. Saved-version history, editing checkpoints, folders and backlinks are implemented.
+Inline file references, on-demand image previews and automatic recent-thumbnail downloads are implemented; cross-device draft merging remains unfinished. Saved-version history, editing checkpoints, folders and backlinks are implemented.
 
 ## Inline files
 
@@ -24,7 +24,7 @@ An `attachmentReference` inline atom stores only `{ attachmentId }`, never a fil
 
 Removing a label from the text leaves the upload intact; **Files** manages deletion. A recovered draft copy keeps references to the original files rather than duplicating their bytes or changing their parent. Downloads remain subject to the original parent note's lifecycle. When that parent or file is deleted, references in other notes become unavailable. Native Library/history previews resolve filenames when their records are available. Plain text uses `[[File]]`; Markdown uses `[[file:UUID]]`, leaving file packaging/resolution to a future full export implementation.
 
-Opening a ready image saves the draft and opens a phone-width preview dialog with Close and Save or share controls. Once viewed, a thumbnail also appears in its inline file card. The editor keeps at most three preview data strings in memory; they never enter the saved document. Deleted/unavailable images clear their preview. The Files screen offers Preview image and keeps one image in memory. Previews load on demand; eager thumbnails remain pending.
+Opening a ready image saves the draft and opens a phone-width preview dialog with Close and Save or share controls. Once viewed, a thumbnail also appears in its inline file card. The editor keeps at most three preview data strings in memory; they never enter the saved document. Deleted/unavailable images clear their preview. The Files screen offers Preview image and keeps one image in memory. Recent thumbnails download automatically to the native cache while the app is open. Preview offline labels distinguish a cached thumbnail from a full downloaded image. Display still begins when the user opens the preview, keeping DOM image data bounded.
 
 This is an additive change to the development v1 document schema: update API and mobile together. Older clients reject the unfamiliar node rather than flattening it. Browser tests use the real DOM editor with synthetic native callbacks; native picker/share-sheet/WebView-bridge and screen-reader acceptance remain open.
 

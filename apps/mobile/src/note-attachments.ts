@@ -31,6 +31,9 @@ export function noteAttachments(
     .map((row) => {
       const file = row.attachment!,
         local = cached.find((entry) => entry.id === row.id && entry.variant !== 'thumbnail');
+      const previewOffline = cached.some(
+        (entry) => entry.id === row.id && entry.variant === 'thumbnail',
+      );
       const status =
         file.status === 'ready'
           ? local?.pinned
@@ -46,7 +49,7 @@ export function noteAttachments(
       return {
         id: row.id,
         filename: file.filename,
-        detail: `${(file.size / (1024 * 1024)).toFixed(2)} MB · ${status}`,
+        detail: `${(file.size / (1024 * 1024)).toFixed(2)} MB · ${status}${file.status === 'ready' && previewOffline && !local ? ' · Preview offline' : ''}`,
         canInsert: row.parentId === noteId && row.version > 0 && file.status !== 'rejected',
         canOpen: file.status === 'ready',
         canPreview:

@@ -146,6 +146,95 @@ async function runtimeFixture() {
 }
 
 describe('foreground attachment runtime', () => {
+  it('does not block uploads or runtime requests behind automatic preview I/O', async () => {
+    const f = await runtimeFixture(),
+      id = v7();
+    await f.store.merge(
+      [
+        recordSchema.parse({
+          ...f.parent,
+          id,
+          type: 'attachment',
+          parentId: f.parent.id,
+          version: 4,
+          attachment: {
+            ...f.job.descriptor,
+            id,
+            status: 'ready',
+            hasThumbnail: true,
+            processedMime: 'image/webp',
+          },
+        }),
+      ],
+      4,
+    );
+    let finish: () => void = () => {};
+    let downloadSignal: AbortSignal | undefined;
+    vi.mocked(f.files.download).mockImplementationOnce(async (_id, _grant, signal) => {
+      downloadSignal = signal;
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      signal.throwIfAborted();
+      return { ...cachedFile(1), id, variant: 'thumbnail' };
+    });
+    try {
+      f.network(true, true);
+      f.runtime.setActive(true);
+      await vi.waitFor(() => expect(f.files.download).toHaveBeenCalledTimes(1));
+      await f.runtime.pick(f.parent.id);
+      await f.runtime.request();
+      expect((await f.store.attachmentTransfers.get(f.job.descriptor.id))!.state).toBe('ready');
+      f.runtime.setActive(false);
+      expect(downloadSignal!.aborted).toBe(true);
+    } finally {
+      finish();
+      f.runtime.dispose();
+    }
+  });
+  it('prefetches recent synced thumbnails independently and pauses refill after clearing cache', async () => {
+    const f = await runtimeFixture();
+    const id = f.job.descriptor.id;
+    await f.store.merge(
+      [
+        recordSchema.parse({
+          ...f.parent,
+          id,
+          type: 'attachment',
+          parentId: f.parent.id,
+          version: 4,
+          attachment: {
+            ...f.job.descriptor,
+            status: 'ready',
+            hasThumbnail: true,
+            processedMime: 'image/webp',
+          },
+        }),
+      ],
+      4,
+    );
+    try {
+      f.network(true, true);
+      await f.runtime.request();
+      expect(f.files.download).not.toHaveBeenCalled();
+      f.runtime.setActive(true);
+      await vi.waitFor(async () =>
+        expect(await f.store.attachmentCache.list()).toMatchObject([
+          { id, variant: 'thumbnail', pinned: false },
+        ]),
+      );
+      expect(f.client.downloadAttachment).toHaveBeenCalledWith(id, 'thumbnail');
+      expect(f.files.shareDownloaded).not.toHaveBeenCalled();
+      await f.runtime.clearCache();
+      await f.runtime.request();
+      expect(await f.store.attachmentCache.list()).toEqual([]);
+      f.runtime.setActive(false);
+      f.runtime.setActive(true);
+      await vi.waitFor(async () => expect(await f.store.attachmentCache.list()).toHaveLength(1));
+    } finally {
+      f.runtime.dispose();
+    }
+  });
   it('finishes startup orphan cleanup before a picker can create a new durable copy', async () => {
     const f = await runtimeFixture();
     await f.store.attachmentTransfers.enqueue(f.job);
@@ -326,6 +415,48 @@ function cachedFile(accessedAt: number, pinned = false): AttachmentCacheEntry {
   };
 }
 describe('durable offline download cache', () => {
+  it('prefetches only thumbnails without evicting cached files or touching recency on a repeat', async () => {
+    const f = await cacheFixture(),
+      id = v7(),
+      signal = new AbortController().signal;
+    await f.cache.prefetchThumbnail(id, signal);
+    const entry = (await f.store.attachmentCache.list())[0]!;
+    await f.cache.prefetchThumbnail(id, signal);
+    expect((await f.store.attachmentCache.list())[0]!.accessedAt).toBe(entry.accessedAt);
+    expect(f.files.download).toHaveBeenCalledTimes(1);
+    expect(f.files.previewData).not.toHaveBeenCalled();
+    await f.cache.setLimitMb(100);
+    for (let i = 0; i < 4; i++) await f.store.attachmentCache.put(cachedFile(i, i === 0));
+    expect(await f.cache.prefetchThumbnail(v7(), signal)).toBe('full');
+    expect(f.files.download).toHaveBeenCalledTimes(1);
+    expect(f.files.removeDownload).not.toHaveBeenCalled();
+    // A grant larger than remaining room also leaves existing downloads intact.
+    await f.store.attachmentCache.remove(entry.id, 'thumbnail');
+    const files = await f.store.attachmentCache.list();
+    await f.store.attachmentCache.remove(files[0]!.id);
+    f.client.downloadAttachment.mockResolvedValueOnce({
+      url: 'https://storage.example.test/file',
+      expiresAt: '',
+      mime: 'image/webp',
+      size: 26 * 1024 * 1024,
+      sha256: 'a'.repeat(64),
+    });
+    expect(await f.cache.prefetchThumbnail(v7(), signal)).toBe('full');
+    expect(f.files.removeDownload).not.toHaveBeenCalled();
+  });
+  it('discards thumbnail downloads cancelled during I/O and never publishes revoked data', async () => {
+    const f = await cacheFixture(),
+      controller = new AbortController();
+    vi.mocked(f.files.download).mockImplementationOnce(async (id) => {
+      controller.abort();
+      return { ...cachedFile(1), id, variant: 'thumbnail' };
+    });
+    await expect(f.cache.prefetchThumbnail(v7(), controller.signal)).rejects.toThrow();
+    expect(await f.store.attachmentCache.list()).toEqual([]);
+    expect(f.files.removeDownload).toHaveBeenCalledTimes(1);
+    await expect(f.cache.prefetchThumbnail(v7(), controller.signal)).rejects.toThrow();
+    expect(f.files.download).toHaveBeenCalledTimes(1);
+  });
   it('stores thumbnails separately, reuses them offline, and unpins both variants', async () => {
     const f = await cacheFixture(),
       id = v7();

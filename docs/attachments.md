@@ -79,11 +79,17 @@ Ready images offer on-demand previews in the editor and Files screen. The API re
 
 The native adapter verifies byte length and digest, accepts only non-animated WebP headers with dimensions at most 320 × 320, and sends bounded image data to the UI. Signed URLs and native file paths never cross into note JSON. Full files and thumbnails use separate account-scoped cache keys and paths, sharing the existing LRU capacity and removal rules. Keep offline pins the full file and its thumbnail; if downloading the thumbnail fails, the full-file pin remains. Unpin releases both. Cached previews work offline, while deletion/sign-out prevents in-flight preview results from being returned. Offline revocations require row sync. Native image-decoder and device acceptance remain open.
 
+## Automatic recent thumbnails
+
+While the app is active and connected, ready images created in the last 30 days download their thumbnails automatically, newest first. Candidates require a live synced note and exclude Trash, local removals and already cached thumbnails. A separate scheduler processes at most 20 items per batch, then yields for one second; each cache operation is queued individually so user actions can run between downloads. Uploads and row sync do not await prefetch work.
+
+Prefetch shares checksum verification and account-scoped cache storage with manual previews, but never evicts an existing file or exceeds the configured capacity. A full cache pauses automatic attempts for five minutes. Failures retry after at least five minutes, respecting a longer API Retry-After; authentication failure pauses the batch. Backgrounding, network loss, sign-out and Clear cache abort current automatic work. Clear cache additionally suppresses refill until the next foreground activation. This pause and retry bookkeeping are session-scoped; restarting the app resumes automatic downloads. Full files still download only on user request. A Preview offline label indicates that just the thumbnail is available locally.
+
 ## Remaining integration
 
 - Deduplication and paid-plan storage quotas.
 - Scanner provisioning/signature freshness monitoring, real malware/format acceptance, HEIC decoder deployment and operator retry tooling for exhausted processing jobs. WebM audio currently fails closed because the signature detector identifies its container as video; track-level audio validation remains open.
-- Eager recent thumbnails, reclaiming redundant completed-upload originals and native container-path migration on restore/reinstall. Configurable LRU downloads, offline pins, storage controls and startup orphan reclamation are implemented.
+- Reclaiming redundant completed-upload originals and native container-path migration on restore/reinstall. Configurable LRU downloads, offline pins, storage controls and startup orphan reclamation are implemented.
 - Retention/account deletion across objects and local files; real-device interruption and app-kill acceptance.
 
 The engine's unit tests exercise interrupted/expired sessions, lost acknowledgements, retry deadlines, network policy, auth pause, cancellation and timeouts. SQLite tests cover the runtime and durable removals. Adapter tests use actual filesystem bytes with Expo bindings replaced. The integration suite exercises PostgreSQL, private object storage and Redis/BullMQ; current results are in [verification.md](verification.md). Native interaction and real-device acceptance remain open.
