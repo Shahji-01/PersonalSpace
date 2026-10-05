@@ -20,7 +20,7 @@ const toMinor = (rupees: string): number | null => {
   return Math.round(n * 100);
 };
 
-type MoneyTab = 'accounts' | 'transactions' | 'categories' | 'debts' | 'people';
+type MoneyTab = 'accounts' | 'transactions' | 'categories' | 'debts' | 'people' | 'reports';
 
 export function MoneyScreen({
   records,
@@ -65,10 +65,10 @@ export function MoneyScreen({
   const categories = records
     .filter((r) => r.type === 'category' && !r.deletedAt)
     .sort((a, b) => a.text.localeCompare(b.text));
-  const transactions = records
+  const allTransactions = records
     .filter((r) => r.type === 'transaction' && !r.deletedAt)
-    .sort((a, b) => (b.transactionDate ?? '').localeCompare(a.transactionDate ?? ''))
-    .slice(0, 50);
+    .sort((a, b) => (b.transactionDate ?? '').localeCompare(a.transactionDate ?? ''));
+  const transactions = allTransactions.slice(0, 50);
   const debts = records
     .filter((r) => r.type === 'debt' && !r.deletedAt)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -288,6 +288,7 @@ export function MoneyScreen({
     { key: 'categories', label: 'Categories' },
     { key: 'debts', label: 'Debts' },
     { key: 'people', label: 'People' },
+    { key: 'reports', label: 'Reports' },
   ];
 
   return (
@@ -627,7 +628,241 @@ export function MoneyScreen({
             ))}
           </>
         )}
+
+        {/* ==================== REPORTS TAB ==================== */}
+        {tab === 'reports' && (
+          <MoneyReports
+            accounts={accounts}
+            categories={categories}
+            allTransactions={allTransactions}
+            debts={debts}
+          />
+        )}
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+// ====================================================================
+// Money Reports (embedded component)
+// ====================================================================
+
+function MoneyReports({
+  accounts,
+  categories,
+  allTransactions,
+  debts,
+}: {
+  accounts: RecordItem[];
+  categories: RecordItem[];
+  allTransactions: RecordItem[];
+  debts: RecordItem[];
+}) {
+  const fmt = (minor: number) => `₹${Math.abs(minor / 100).toFixed(2)}`;
+  const thisMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
+  const lastMonth = (() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 1);
+    return d.toISOString().slice(0, 7);
+  })();
+
+  // Posted, non-void transactions only
+  const posted = allTransactions.filter(
+    (t) => t.transactionStatus !== 'void',
+  );
+
+  // ---- Net Worth ----
+  const netWorth = accounts.reduce((sum, a) => sum + a.cachedBalanceMinor, 0);
+
+  // ---- Monthly aggregation ----
+  const byMonth = new Map<string, { income: number; expense: number; count: number }>();
+  for (const t of posted) {
+    const month = (t.transactionDate ?? '').slice(0, 7);
+    if (!month) continue;
+    const entry = byMonth.get(month) ?? { income: 0, expense: 0, count: 0 };
+    if (t.transactionType === 'income') entry.income += t.amountMinor;
+    else if (t.transactionType === 'expense') entry.expense += t.amountMinor;
+    entry.count++;
+    byMonth.set(month, entry);
+  }
+  const thisMonthData = byMonth.get(thisMonth);
+  const lastMonthData = byMonth.get(lastMonth);
+
+  // ---- Category breakdown for this month ----
+  const catMap = new Map<string, { name: string; total: number }>();
+  for (const t of posted) {
+    if ((t.transactionDate ?? '').slice(0, 7) !== thisMonth) continue;
+    if (t.transactionType !== 'expense') continue;
+    if (t.splits?.length) {
+      for (const split of t.splits as Array<{ categoryId: string | null; amountMinor: number }>) {
+        if (split.categoryId) {
+          const cat = categories.find((c) => c.id === split.categoryId);
+          const name = cat?.text ?? 'Other';
+          const entry = catMap.get(split.categoryId) ?? { name, total: 0 };
+          entry.total += split.amountMinor;
+          catMap.set(split.categoryId, entry);
+        }
+      }
+    }
+  }
+  const catBreakdown = [...catMap.values()]
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 10);
+  const catTotal = catBreakdown.reduce((s, c) => s + c.total, 0);
+
+  // ---- Top merchants this month ----
+  const merchMap = new Map<string, number>();
+  for (const t of posted) {
+    if ((t.transactionDate ?? '').slice(0, 7) !== thisMonth) continue;
+    if (t.transactionType !== 'expense') continue;
+    if (t.merchant) {
+      merchMap.set(t.merchant, (merchMap.get(t.merchant) ?? 0) + t.amountMinor);
+    }
+  }
+  const topMerchants = [...merchMap.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5);
+
+  // ---- Monthly trend (last 6 months) ----
+  const months: string[] = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date();
+    d.setMonth(d.getMonth() - i);
+    months.push(d.toISOString().slice(0, 7));
+  }
+  const trend = months.map((m) => ({
+    month: m,
+    ...(byMonth.get(m) ?? { income: 0, expense: 0, count: 0 }),
+  }));
+  const maxExpense = Math.max(...trend.map((t) => t.expense), 1);
+
+  // ---- Debt summary ----
+  const openDebts = debts.filter((d) => d.status === 'open');
+  const iOwe = openDebts
+    .filter((d) => d.debtDirection === 'i_owe')
+    .reduce((s, d) => s + d.cachedOutstandingMinor, 0);
+  const owedToMe = openDebts
+    .filter((d) => d.debtDirection === 'owed_to_me')
+    .reduce((s, d) => s + d.cachedOutstandingMinor, 0);
+
+  return (
+    <>
+      {/* Net Worth */}
+      <Card>
+        <Text style={styles.label}>Net Worth</Text>
+        <Text style={[styles.title, { color: netWorth >= 0 ? '#2D6A4F' : '#D62828' }]}>
+          {netWorth >= 0 ? '' : '−'}{fmt(netWorth)}
+        </Text>
+        <Text style={styles.subtitle}>
+          Across {accounts.length} account{accounts.length !== 1 ? 's' : ''}
+        </Text>
+      </Card>
+
+      {/* This Month Summary */}
+      <Card>
+        <Text style={styles.label}>This Month ({thisMonth})</Text>
+        {thisMonthData ? (
+          <>
+            <View style={[styles.row, { justifyContent: 'space-between' }]}>
+              <Text style={[styles.subtitle, { color: '#2D6A4F' }]}>Income: {fmt(thisMonthData.income)}</Text>
+              <Text style={[styles.subtitle, { color: '#D62828' }]}>Expenses: {fmt(thisMonthData.expense)}</Text>
+            </View>
+            <Text style={styles.subtitle}>
+              Net: {thisMonthData.income - thisMonthData.expense >= 0 ? '+' : '−'}
+              {fmt(thisMonthData.income - thisMonthData.expense)}
+              {' · '}{thisMonthData.count} transaction{thisMonthData.count !== 1 ? 's' : ''}
+            </Text>
+            {lastMonthData && lastMonthData.expense > 0 && (
+              <Text style={styles.subtitle}>
+                vs Last Month: {thisMonthData.expense > lastMonthData.expense ? '↑' : '↓'}
+                {' '}
+                {Math.abs(Math.round(((thisMonthData.expense - lastMonthData.expense) / lastMonthData.expense) * 100))}%
+                {' spending'}
+              </Text>
+            )}
+          </>
+        ) : (
+          <Text style={styles.subtitle}>No transactions this month.</Text>
+        )}
+      </Card>
+
+      {/* Category Breakdown */}
+      {catBreakdown.length > 0 && (
+        <Card>
+          <Text style={styles.label}>Expense by Category ({thisMonth})</Text>
+          {catBreakdown.map((cat) => (
+            <View key={cat.name} style={{ marginVertical: 4 }}>
+              <View style={[styles.row, { justifyContent: 'space-between' }]}>
+                <Text style={styles.subtitle}>{cat.name}</Text>
+                <Text style={styles.subtitle}>{fmt(cat.total)} ({catTotal > 0 ? Math.round((cat.total / catTotal) * 100) : 0}%)</Text>
+              </View>
+              <View style={{ height: 6, borderRadius: 3, backgroundColor: '#e0e0e0', marginTop: 2 }}>
+                <View
+                  style={{
+                    height: 6,
+                    borderRadius: 3,
+                    backgroundColor: '#2D6A4F',
+                    width: `${catTotal > 0 ? Math.round((cat.total / catTotal) * 100) : 0}%` as any,
+                  }}
+                />
+              </View>
+            </View>
+          ))}
+        </Card>
+      )}
+
+      {/* Top Merchants */}
+      {topMerchants.length > 0 && (
+        <Card>
+          <Text style={styles.label}>Top Merchants ({thisMonth})</Text>
+          {topMerchants.map(([name, total]) => (
+            <View key={name} style={[styles.row, { justifyContent: 'space-between' }]}>
+              <Text style={styles.subtitle}>{name}</Text>
+              <Text style={styles.subtitle}>{fmt(total)}</Text>
+            </View>
+          ))}
+        </Card>
+      )}
+
+      {/* Monthly Trend */}
+      {trend.some((t) => t.expense > 0 || t.income > 0) && (
+        <Card>
+          <Text style={styles.label}>6-Month Trend</Text>
+          {trend.map((t) => (
+            <View key={t.month} style={{ marginVertical: 4 }}>
+              <Text style={[styles.subtitle, { fontSize: 11 }]}>{t.month}</Text>
+              <View style={[styles.row, { gap: 4 }]}>
+                <View
+                  style={{
+                    height: 10,
+                    borderRadius: 5,
+                    backgroundColor: '#D62828',
+                    width: `${Math.max(Math.round((t.expense / maxExpense) * 100), 2)}%` as any,
+                  }}
+                />
+                <Text style={[styles.subtitle, { fontSize: 10 }]}>{fmt(t.expense)}</Text>
+              </View>
+            </View>
+          ))}
+          <Text style={[styles.subtitle, { marginTop: 4, fontSize: 10 }]}>■ Expenses</Text>
+        </Card>
+      )}
+
+      {/* Debt Summary */}
+      {openDebts.length > 0 && (
+        <Card>
+          <Text style={styles.label}>Debt Summary</Text>
+          <View style={[styles.row, { justifyContent: 'space-between' }]}>
+            <Text style={[styles.subtitle, { color: '#D62828' }]}>I owe: {fmt(iOwe)}</Text>
+            <Text style={[styles.subtitle, { color: '#2D6A4F' }]}>Owed to me: {fmt(owedToMe)}</Text>
+          </View>
+          <Text style={styles.subtitle}>{openDebts.length} open debt{openDebts.length !== 1 ? 's' : ''}</Text>
+        </Card>
+      )}
+
+      {!posted.length && (
+        <Text style={styles.subtitle}>Add some transactions to see your reports.</Text>
+      )}
+    </>
   );
 }
