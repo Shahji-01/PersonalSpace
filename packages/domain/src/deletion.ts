@@ -35,6 +35,9 @@ import {
   notificationLog,
   exportJobs,
   attachments,
+  authUsers,
+  authAccounts,
+  authSessions,
   type Database,
 } from '@personalspace/db';
 import { DomainError } from './errors';
@@ -42,11 +45,7 @@ import { DomainError } from './errors';
 const GRACE_DAYS = 14;
 
 /** Request account deletion. Creates a pending request with a 14-day grace period. */
-export async function requestDeletion(
-  db: Database,
-  userId: string,
-  reason?: string,
-) {
+export async function requestDeletion(db: Database, userId: string, reason?: string) {
   // Check for existing active request.
   const existing = await db
     .select()
@@ -89,11 +88,7 @@ export async function cancelDeletion(db: Database, userId: string) {
     .from(deletionRequests)
     .where(and(eq(deletionRequests.userId, userId), eq(deletionRequests.status, 'pending')));
   if (!existing.length) {
-    throw new DomainError(
-      'NO_ACTIVE_DELETION',
-      'No active deletion request found.',
-      404,
-    );
+    throw new DomainError('NO_ACTIVE_DELETION', 'No active deletion request found.', 404);
   }
   await db
     .update(deletionRequests)
@@ -143,10 +138,7 @@ export async function executePendingDeletions(
     .select()
     .from(deletionRequests)
     .where(
-      and(
-        eq(deletionRequests.status, 'pending'),
-        lte(deletionRequests.graceEndsAt, new Date()),
-      ),
+      and(eq(deletionRequests.status, 'pending'), lte(deletionRequests.graceEndsAt, new Date())),
     );
 
   const deleted: string[] = [];
@@ -245,6 +237,28 @@ export async function executePendingDeletions(
 
       await logStep('audit_logs');
       await db.delete(auditLogs).where(eq(auditLogs.userId, userId));
+
+      // Step 2b: Erase authentication PII. Credentials and sessions are deleted
+      // outright; the user row is anonymized rather than deleted so the
+      // deletion_requests ledger (FK → auth_user) survives as an audit record.
+      await logStep('auth_sessions');
+      await db.delete(authSessions).where(eq(authSessions.userId, userId));
+
+      await logStep('auth_accounts');
+      await db.delete(authAccounts).where(eq(authAccounts.userId, userId));
+
+      await logStep('auth_user_anonymized');
+      await db
+        .update(authUsers)
+        .set({
+          // Email is UNIQUE, so scope the tombstone to the user id to avoid collisions.
+          email: `deleted+${userId}@deleted.invalid`,
+          name: 'Deleted User',
+          image: null,
+          emailVerified: false,
+          updatedAt: new Date(),
+        })
+        .where(eq(authUsers.id, userId));
 
       // Step 3: Object storage cleanup.
       if (onStorageCleanup) {

@@ -3842,12 +3842,25 @@ describe('authenticated capture → PostgreSQL → sync', () => {
     ])
       expect(await countFor(table)).toBe(0);
 
-    // The ledger row is kept and marked completed; the auth row remains.
+    // The ledger row is kept and marked completed.
     expect(
       (await owner.query('SELECT status FROM deletion_requests WHERE user_id=$1', [userC])).rows[0]
         .status,
     ).toBe('completed');
-    expect((await owner.query('SELECT 1 FROM auth_user WHERE id=$1', [userC])).rowCount).toBe(1);
+    // The auth row survives as a ledger anchor but its PII is anonymized, and the
+    // credential/session rows are gone.
+    const authRow = await owner.query('SELECT email, name, image FROM auth_user WHERE id=$1', [
+      userC,
+    ]);
+    expect(authRow.rowCount).toBe(1);
+    expect(authRow.rows[0]).toMatchObject({ name: 'Deleted User', image: null });
+    expect(authRow.rows[0].email).toBe(`deleted+${userC}@deleted.invalid`);
+    expect(
+      (await owner.query('SELECT 1 FROM auth_account WHERE user_id=$1', [userC])).rowCount,
+    ).toBe(0);
+    expect(
+      (await owner.query('SELECT 1 FROM auth_session WHERE user_id=$1', [userC])).rowCount,
+    ).toBe(0);
 
     // Owner isolation: userA's data is untouched.
     expect(
