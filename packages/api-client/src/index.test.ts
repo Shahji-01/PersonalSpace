@@ -14,6 +14,37 @@ const file = {
   mime: 'text/plain' as const,
   sha256: 'a'.repeat(64),
 };
+it('unwraps export creation responses and accepts only web download URLs', async () => {
+  const job = {
+    id: '6ef04704-e8f7-4456-ae4b-6c7b3e0a993b',
+    format: 'csv',
+    scope: 'notes',
+    status: 'queued',
+    sizeBytes: null,
+    createdAt: '2026-10-05T00:00:00Z',
+    completedAt: null,
+  };
+  const grant = {
+    url: 'https://objects.example.test/private?signature=test',
+    expiresAt: '2026-10-05T00:01:00Z',
+    filename: 'export.zip',
+    mime: 'application/zip',
+    size: 100,
+  };
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify({ data: job })))
+    .mockResolvedValueOnce(new Response(JSON.stringify(grant)))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ ...grant, url: 'file:///private' })));
+  vi.stubGlobal('fetch', fetcher);
+  const client = createClient('https://api.example.test', () => 'token');
+  expect(await client.startExport({ format: 'csv', scope: 'notes' })).toEqual(job);
+  expect(await client.downloadExport(file.id)).toEqual(grant);
+  expect(fetcher.mock.calls[1]![0]).toBe(
+    `https://api.example.test/api/v1/exports/${file.id}/download`,
+  );
+  await expect(client.downloadExport(file.id)).rejects.toThrow();
+});
 function attachmentSetup() {
   const grant = {
     url: 'https://objects.example.test/private?signature=test',

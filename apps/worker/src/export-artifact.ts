@@ -7,7 +7,8 @@ import {
   type ExportFormat,
 } from '@personalspace/domain';
 
-const MAX_BYTES = 50 * 1024 * 1024;
+// Match the private object storage adapter's bounded write limit.
+const MAX_BYTES = 25 * 1024 * 1024;
 const MAX_FILES = 20000;
 
 export async function buildExportArtifact(data: ExportData, format: ExportFormat) {

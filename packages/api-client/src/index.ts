@@ -143,19 +143,39 @@ export function createClient(baseUrl: string, token: () => string | null) {
     listExports: () =>
       request('/api/v1/exports', z.object({ data: z.array(exportJobResponseSchema) })),
     startExport: (req: ExportRequest) =>
-      request('/api/v1/exports', exportJobResponseSchema, req),
+      request('/api/v1/exports', z.object({ data: exportJobResponseSchema }), req).then(
+        (result) => result.data,
+      ),
+    downloadExport: (id: string) =>
+      request(
+        `/api/v1/exports/${encodeURIComponent(id)}/download`,
+        z.object({
+          url: z.url().refine((url) => /^https?:\/\//.test(url)),
+          expiresAt: z.iso.datetime(),
+          filename: z.string(),
+          mime: z.enum(['application/json', 'application/zip']),
+          size: z.number().int().positive(),
+        }),
+      ),
     // Deletion (§64.3)
-    getDeletionStatus: () =>
-      request('/api/v1/me/deletion-status', deletionStatusResponseSchema),
+    getDeletionStatus: () => request('/api/v1/me/deletion-status', deletionStatusResponseSchema),
     requestDeletion: (req: DeletionRequest) =>
       request('/api/v1/me/deletion', deletionStatusResponseSchema, req),
     cancelDeletion: () =>
       request('/api/v1/me/deletion', deletionStatusResponseSchema, { action: 'cancel' }),
     // Devices (§50)
     registerDevice: (req: RegisterDevice) =>
-      request('/api/v1/devices', z.object({ data: z.object({ id: z.string() }) }), req),
+      request(
+        '/api/v1/devices',
+        z.object({ data: z.object({ id: z.string() }) }),
+        registerDeviceSchema.parse(req),
+      ),
     updateDeviceWatermark: (deviceId: string, req: { remindersScheduledThrough: string }) =>
-      request(`/api/v1/devices/${encodeURIComponent(deviceId)}/watermark`, z.object({ status: z.literal('ok') }), req),
+      request(
+        `/api/v1/devices/${encodeURIComponent(deviceId)}/watermark`,
+        z.object({ status: z.literal('ok') }),
+        updateDeviceWatermarkSchema.parse(req),
+      ),
   };
 }
 

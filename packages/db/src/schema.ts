@@ -70,6 +70,16 @@ export const authVerifications = pgTable('auth_verification', {
   createdAt: instant('created_at').notNull().defaultNow(),
   updatedAt: instant('updated_at').notNull().defaultNow(),
 });
+// Signing keys for the Better Auth JWT plugin (short-lived access tokens, ADR-013).
+export const authJwks = pgTable('jwks', {
+  id: uuid('id').primaryKey(),
+  publicKey: text('public_key').notNull(),
+  privateKey: text('private_key').notNull(),
+  createdAt: instant('created_at').notNull().defaultNow(),
+  expiresAt: instant('expires_at'),
+  alg: text('alg'),
+  crv: text('crv'),
+});
 const std = () => ({
   id: uuid('id').primaryKey(),
   userId: uuid('user_id').notNull(),

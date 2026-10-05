@@ -1,4 +1,5 @@
 export { createCaptureService } from './capture';
+export { createExportAccess } from './export-access';
 export { createAttachmentService } from './attachments';
 export { createAttachmentProcessor, type ProcessingResult } from './attachment-processing';
 export { DomainError } from './errors';

@@ -27,6 +27,7 @@ import { createS3Storage, readStorageConfig } from '../packages/storage/src/inde
 import { createApp } from '../apps/api/src/app';
 import { cleanAttachment } from '../apps/worker/src/attachment-cleanup';
 import { processExport } from '../apps/worker/src/export-processing';
+import { createExportAccess } from '../packages/domain/src/export-access';
 import {
   attachmentUploadStateSchema,
   attachmentUploadGrantSchema,
@@ -1110,6 +1111,79 @@ describe('private export artifacts', () => {
   async function status(id: string) {
     return (await owner.query('SELECT * FROM export_jobs WHERE id=$1', [id])).rows[0];
   }
+  it('creates and lists exports with owner RLS and returns private authenticated download grants', async () => {
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/exports',
+      headers: headers(),
+      payload: { format: 'csv', scope: 'notes' },
+    });
+    expect(created.statusCode, created.body).toBe(200);
+    const record = created.json().data;
+    const input = { jobId: record.id, userId: userA, format: 'csv', scope: 'notes' };
+    const list = await app.inject({ method: 'GET', url: '/api/v1/exports', headers: headers() });
+    expect(list.statusCode, list.body).toBe(200);
+    expect(list.json().data.map((item: { id: string }) => item.id)).toContain(record.id);
+    const foreign = await app.inject({
+      method: 'GET',
+      url: '/api/v1/exports',
+      headers: headers(tokenB),
+    });
+    expect(foreign.json().data.map((item: { id: string }) => item.id)).not.toContain(record.id);
+    const url = `/api/v1/exports/${record.id}/download`;
+    expect((await app.inject({ method: 'GET', url, headers: headers() })).statusCode).toBe(409);
+    await processExport(maintenance.db, storage, input);
+    expect((await app.inject({ method: 'GET', url })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'GET', url, headers: headers(tokenB) })).statusCode).toBe(
+      404,
+    );
+    const grant = await app.inject({ method: 'GET', url, headers: headers() });
+    expect(grant.statusCode, grant.body).toBe(200);
+    expect(grant.headers['cache-control']).toBe('no-store');
+    expect(grant.json().mime).toBe('application/zip');
+    const download = await fetch(grant.json().url);
+    expect(download.status).toBe(200);
+    expect(download.headers.get('content-type')).toBe('application/zip');
+    expect(download.headers.get('content-disposition')).toContain('.zip');
+    expect(new URL(grant.json().url).searchParams.get('X-Amz-Expires')).toBe('60');
+    await download.body?.cancel();
+    await owner.query(
+      "UPDATE export_jobs SET download_url_expires_at=now()-interval '1 second' WHERE id=$1",
+      [record.id],
+    );
+    expect((await app.inject({ method: 'GET', url, headers: headers() })).statusCode).toBe(410);
+  });
+  it('rechecks export expiry after storage I/O and rejects missing or foreign object keys', async () => {
+    const input = await job();
+    await processExport(maintenance.db, storage, input);
+    const ready = await status(input.jobId);
+    await owner.query('UPDATE export_jobs SET storage_key=$2 WHERE id=$1', [
+      input.jobId,
+      `exports/${userB}/${input.jobId}/foreign.json`,
+    ]);
+    await expect(
+      createExportAccess(domain.db, storage).download(userA, input.jobId),
+    ).rejects.toMatchObject({ code: 'EXPORT_UNAVAILABLE' });
+    await owner.query('UPDATE export_jobs SET storage_key=$2 WHERE id=$1', [
+      input.jobId,
+      ready.storage_key,
+    ]);
+    await expect(
+      createExportAccess(domain.db, { ...storage, head: async () => null }).download(
+        userA,
+        input.jobId,
+      ),
+    ).rejects.toMatchObject({ code: 'EXPORT_UNAVAILABLE' });
+    await expect(
+      createExportAccess(domain.db, {
+        ...storage,
+        head: async (key) => {
+          await owner.query("UPDATE export_jobs SET status='expired' WHERE id=$1", [input.jobId]);
+          return storage.head(key);
+        },
+      }).download(userA, input.jobId),
+    ).rejects.toMatchObject({ code: 'EXPORT_NOT_READY' });
+  });
   it('stores actual JSON and ZIP bytes through the restricted maintenance role and isolates users', async () => {
     const own = await note(),
       foreign = await note(userB);
@@ -1122,7 +1196,7 @@ describe('private export artifacts', () => {
         24 * 3600 * 1000,
         -2,
       );
-      const bytes = (await storage.read(ready.storage_key, 50 * MB))!;
+      const bytes = (await storage.read(ready.storage_key, 25 * MB))!;
       expect(Number(ready.size_bytes)).toBe(bytes.length);
       if (format === 'json') {
         const ids = JSON.parse(bytes.toString()).notes.map((row: { id: string }) => row.id);

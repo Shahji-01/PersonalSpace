@@ -18,7 +18,11 @@ let Notifications: typeof import('expo-notifications') | null = null;
 let Device: typeof import('expo-device') | null = null;
 
 try {
+  // Metro resolves these native modules at runtime; a dynamic require lets the app
+  // degrade gracefully where Expo Notifications is unavailable (web, tests).
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   Notifications = require('expo-notifications');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   Device = require('expo-device');
 } catch {
   // Not available in this environment

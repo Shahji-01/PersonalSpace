@@ -11,10 +11,11 @@ import { Redis } from 'ioredis';
 import type { ServerConfig } from '@personalspace/config';
 import { eq as drizzleEq } from 'drizzle-orm';
 import type { Database } from '@personalspace/db';
-import { exportJobs, deviceTokens, authUsers, notificationLog } from '@personalspace/db';
+import { deviceTokens, authUsers, notificationLog } from '@personalspace/db';
 import type { AttachmentStorage } from '@personalspace/storage';
 import {
   createCaptureService,
+  createExportAccess,
   createAttachmentService,
   createNoteHistoryService,
   createSearchService,
@@ -75,6 +76,7 @@ export async function createApp(deps: {
   });
   const auth = createAuth(deps.authDb, config);
   const capture = createCaptureService(deps.db);
+  const exports = createExportAccess(deps.db, deps.storage);
   const noteHistory = createNoteHistoryService(deps.db);
   const attachmentService = deps.storage ? createAttachmentService(deps.db, deps.storage) : null;
   const files = () => {
@@ -490,14 +492,7 @@ export async function createApp(deps: {
       // ============================================================
       api.post('/exports', { schema: { security: [{ bearerAuth: [] }] } }, async (request) => {
         const input = exportRequestSchema.parse(request.body);
-        const [job] = await deps.db
-          .insert(exportJobs)
-          .values({
-            userId: request.userId,
-            format: input.format,
-            scope: input.scope,
-          })
-          .returning();
+        const job = await exports.create(request.userId, input);
         // Enqueue background export job via BullMQ if Redis is available.
         try {
           const redisUrl = process.env.REDIS_URL;
@@ -539,11 +534,7 @@ export async function createApp(deps: {
         };
       });
       api.get('/exports', { schema: { security: [{ bearerAuth: [] }] } }, async (request) => {
-        const jobs = await deps.db
-          .select()
-          .from(exportJobs)
-          .where(drizzleEq(exportJobs.userId, request.userId))
-          .orderBy(exportJobs.createdAt);
+        const jobs = await exports.list(request.userId);
         return {
           data: jobs.map((j) => ({
             id: j.id,
@@ -556,6 +547,16 @@ export async function createApp(deps: {
           })),
         };
       });
+
+      api.get(
+        '/exports/:id/download',
+        { schema: { security: [{ bearerAuth: [] }] } },
+        async (request, reply) => {
+          reply.header('Cache-Control', 'no-store');
+          const { id } = z.object({ id: z.uuid() }).parse(request.params);
+          return exports.download(request.userId, id);
+        },
+      );
 
       // ============================================================
       // Account Deletion (§64.3)

@@ -1070,7 +1070,8 @@ export const exportRequestSchema = z.strictObject({
 export type ExportRequest = z.infer<typeof exportRequestSchema>;
 
 export const exportJobResponseSchema = z.strictObject({
-  id: idSchema,
+  // Existing infrastructure jobs use PostgreSQL's UUIDv4 default.
+  id: z.uuid(),
   format: z.string(),
   scope: z.string(),
   status: z.enum(['queued', 'processing', 'ready', 'expired', 'failed']),

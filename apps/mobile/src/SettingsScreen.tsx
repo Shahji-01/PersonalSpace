@@ -1,8 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Alert, Modal, ScrollView, Text, TextInput, View } from 'react-native';
+import { Alert, Linking, Modal, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { createClient } from '@personalspace/api-client';
-import type { PreferencesResponse, ExportJobResponse, DeletionStatusResponse } from '@personalspace/validation';
+import type {
+  PreferencesResponse,
+  ExportJobResponse,
+  DeletionStatusResponse,
+} from '@personalspace/validation';
 import { Button, Card, Field, styles } from './components';
 
 type ExportFormat = 'json' | 'csv' | 'markdown';
@@ -41,12 +45,58 @@ export function SettingsScreen({
       .finally(() => setLoading(false));
   }, [visible, client]);
 
+  useEffect(() => {
+    if (!visible || !exports.some((job) => ['queued', 'processing'].includes(job.status))) return;
+    let alive = true;
+    const timer = setInterval(() => {
+      void client
+        .listExports()
+        .then((result) => {
+          if (alive) setExports(result.data);
+        })
+        .catch(() => {});
+    }, 5000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [visible, client, exports]);
+
+  async function downloadExport(id: string) {
+    setSaving(true);
+    try {
+      const grant = await client.downloadExport(id);
+      await Linking.openURL(grant.url);
+    } catch {
+      Alert.alert(
+        'Export unavailable',
+        'Refresh the list or create a new export. Downloads expire after 24 hours.',
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function refreshExports() {
+    setSaving(true);
+    try {
+      setExports((await client.listExports()).data);
+    } catch {
+      Alert.alert('Could not refresh exports', 'Try again when connected.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function handleExport() {
     setSaving(true);
     try {
       const res = await client.startExport({ format: exportFormat, scope: exportScope });
       setExports([res, ...exports]);
-      Alert.alert('Export started', `Your ${exportFormat.toUpperCase()} export is being generated. You will be notified when ready.`);
+      Alert.alert(
+        'Export started',
+        'Keep this screen open to see progress, or return and refresh the list.',
+      );
     } catch (e) {
       Alert.alert('Export failed', String(e));
     } finally {
@@ -122,7 +172,7 @@ export function SettingsScreen({
             <Text style={styles.eyebrow}>SETTINGS</Text>
             <Button secondary label="Close" onPress={onClose} disabled={saving} />
           </View>
-          
+
           <Text style={styles.title}>Your Account</Text>
 
           {loading ? (
@@ -148,11 +198,13 @@ export function SettingsScreen({
               </Card>
 
               <Text style={[styles.title, { marginTop: 24 }]}>Data &amp; Export</Text>
-              
+
               <Card>
                 <Text style={styles.label}>Export your data</Text>
                 <Text style={styles.subtitle}>
-                  Download a complete backup of your notes, tasks, and everything else.
+                  Export selected records, up to 25 MB. Attachments and version history are not
+                  included. CSV and Markdown download as ZIP files. Ready downloads are available
+                  for 24 hours.
                 </Text>
 
                 <Text style={styles.label}>Format</Text>
@@ -180,26 +232,51 @@ export function SettingsScreen({
                 </View>
 
                 <Button
-                  label={saving ? 'Starting…' : `Export ${exportScope} as ${exportFormat.toUpperCase()}`}
+                  label={
+                    saving ? 'Starting…' : `Export ${exportScope} as ${exportFormat.toUpperCase()}`
+                  }
                   onPress={() => void handleExport()}
                   disabled={saving}
                 />
-                
+                <Button
+                  secondary
+                  label="Refresh exports"
+                  disabled={saving}
+                  onPress={() => void refreshExports()}
+                />
+
                 {exports.length > 0 && (
                   <View style={{ marginTop: 12, gap: 8 }}>
                     <Text style={styles.label}>Recent Exports</Text>
                     {exports.slice(0, 5).map((job) => (
-                      <View key={job.id} style={[styles.row, { justifyContent: 'space-between' }]}>
+                      <View key={job.id} style={{ gap: 6 }}>
                         <Text style={styles.subtitle}>
-                          {new Date(job.createdAt).toLocaleDateString()} · {job.format.toUpperCase()} · {job.scope}
+                          {new Date(job.createdAt).toLocaleDateString()} ·{' '}
+                          {job.format.toUpperCase()} · {job.scope}
                         </Text>
-                        <Text style={[styles.subtitle, {
-                          color: job.status === 'ready' ? '#2D6A4F' :
-                                 job.status === 'failed' ? '#D62828' : '#666',
-                        }]}>
+                        <Text
+                          style={[
+                            styles.subtitle,
+                            {
+                              color:
+                                job.status === 'ready'
+                                  ? '#2D6A4F'
+                                  : job.status === 'failed'
+                                    ? '#D62828'
+                                    : '#666',
+                            },
+                          ]}
+                        >
                           {job.status.toUpperCase()}
                           {job.sizeBytes ? ` · ${(job.sizeBytes / 1024).toFixed(0)} KB` : ''}
                         </Text>
+                        {job.status === 'ready' && (
+                          <Button
+                            label="Download export"
+                            disabled={saving}
+                            onPress={() => void downloadExport(job.id)}
+                          />
+                        )}
                       </View>
                     ))}
                   </View>
@@ -211,7 +288,9 @@ export function SettingsScreen({
               <Card>
                 {deletion && deletion.status !== 'none' && deletion.status !== 'cancelled' ? (
                   <>
-                    <Text style={[styles.label, { color: '#D62828' }]}>⚠ Account deletion scheduled</Text>
+                    <Text style={[styles.label, { color: '#D62828' }]}>
+                      ⚠ Account deletion scheduled
+                    </Text>
                     <Text style={styles.subtitle}>
                       Your account and all associated data will be permanently deleted on{' '}
                       {new Date(deletion.graceEndsAt!).toLocaleDateString()}.
@@ -230,12 +309,10 @@ export function SettingsScreen({
                   <>
                     <Text style={[styles.label, { color: '#D62828' }]}>Delete Account</Text>
                     <Text style={styles.subtitle}>
-                      Permanently delete your account and all data. After requesting deletion,
-                      you have a 14-day grace period during which you can cancel.
+                      Permanently delete your account and all data. After requesting deletion, you
+                      have a 14-day grace period during which you can cancel.
                     </Text>
-                    <Text style={styles.subtitle}>
-                      We recommend exporting your data first.
-                    </Text>
+                    <Text style={styles.subtitle}>We recommend exporting your data first.</Text>
                     <Field
                       label="Type DELETE to confirm"
                       value={deleteConfirm}

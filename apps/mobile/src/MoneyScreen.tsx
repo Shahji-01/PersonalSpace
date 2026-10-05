@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ScrollView, Text, View } from 'react-native';
+import { ScrollView, Text, View, type DimensionValue } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   commandSchema,
@@ -431,7 +431,12 @@ export function MoneyScreen({
                 <Text style={styles.subtitle}>
                   {t.transactionDate} · {accountName(t.accountId)}
                   {t.merchant ? ` · ${t.merchant}` : ''}
-                  {t.splits?.length ? ` · ${t.splits.map((s: any) => categoryNameOf(s.categoryId)).filter(Boolean).join(', ')}` : ''}
+                  {t.splits?.length
+                    ? ` · ${t.splits
+                        .map((s) => categoryNameOf(s.categoryId))
+                        .filter(Boolean)
+                        .join(', ')}`
+                    : ''}
                   {t.transactionStatus === 'void' ? ' · VOID' : ''}
                   {pending(t) ? ' · Sync pending' : ''}
                 </Text>
@@ -802,7 +807,7 @@ function MoneyReports({
                     height: 6,
                     borderRadius: 3,
                     backgroundColor: '#2D6A4F',
-                    width: `${catTotal > 0 ? Math.round((cat.total / catTotal) * 100) : 0}%` as any,
+                    width: `${catTotal > 0 ? Math.round((cat.total / catTotal) * 100) : 0}%` as DimensionValue,
                   }}
                 />
               </View>
@@ -837,7 +842,7 @@ function MoneyReports({
                     height: 10,
                     borderRadius: 5,
                     backgroundColor: '#D62828',
-                    width: `${Math.max(Math.round((t.expense / maxExpense) * 100), 2)}%` as any,
+                    width: `${Math.max(Math.round((t.expense / maxExpense) * 100), 2)}%` as DimensionValue,
                   }}
                 />
                 <Text style={[styles.subtitle, { fontSize: 10 }]}>{fmt(t.expense)}</Text>
