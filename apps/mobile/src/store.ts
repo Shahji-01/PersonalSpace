@@ -19,6 +19,40 @@ import { attachmentCacheTablesSql, createAttachmentCacheStore } from './attachme
 
 export type NoteDraft = { content: NoteDocument; baseVersion: number };
 
+// Account-scoped cache schema as an ordered, versioned migration list tracked by
+// SQLite's PRAGMA user_version. Append new migrations; never edit an applied one.
+// v1 is written with IF NOT EXISTS so databases created before versioning (which
+// sit at user_version 0 with these tables already present) adopt it harmlessly.
+export const CACHE_MIGRATIONS: string[] = [
+  // v1 — records, outbox, sync cursors/recovery, drafts, tombstones, note history,
+  // attachment transfer/cache tables and the FTS search index.
+  `CREATE TABLE IF NOT EXISTS records (user_id TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(user_id,id));
+   CREATE TABLE IF NOT EXISTS outbox (user_id TEXT NOT NULL, id TEXT NOT NULL, mutation TEXT NOT NULL, previous TEXT, error TEXT, PRIMARY KEY(user_id,id));
+   CREATE TABLE IF NOT EXISTS cursors (user_id TEXT PRIMARY KEY, cursor INTEGER NOT NULL DEFAULT 0);
+   CREATE TABLE IF NOT EXISTS sync_recovery (user_id TEXT PRIMARY KEY);
+   CREATE TABLE IF NOT EXISTS note_drafts (user_id TEXT NOT NULL, note_id TEXT NOT NULL, content TEXT NOT NULL, base_version INTEGER NOT NULL, PRIMARY KEY(user_id,note_id));
+   CREATE TABLE IF NOT EXISTS tombstones (user_id TEXT NOT NULL, id TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY(user_id,id));
+   CREATE TABLE IF NOT EXISTS note_history (user_id TEXT NOT NULL, note_id TEXT NOT NULL, id TEXT NOT NULL, version INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(user_id,id));
+   CREATE INDEX IF NOT EXISTS note_history_by_note ON note_history(user_id,note_id,version DESC);
+   ${attachmentTablesSql}
+   ${attachmentCacheTablesSql}
+   ${searchIndexSql}`,
+];
+
+/** Apply pending cache migrations, advancing PRAGMA user_version one step at a time. */
+export async function migrateCache(db: SQLite.SQLiteDatabase): Promise<number> {
+  const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
+  let version = row?.user_version ?? 0;
+  for (; version < CACHE_MIGRATIONS.length; version++) {
+    await db.withTransactionAsync(async () => {
+      await db.execAsync(CACHE_MIGRATIONS[version]!);
+      // user_version only accepts a literal; the value is our own array index.
+      await db.execAsync(`PRAGMA user_version = ${version + 1}`);
+    });
+  }
+  return version;
+}
+
 export const newId = () => v7({ random: Crypto.getRandomBytes(16) });
 type OutboxRow = { id: string; mutation: string; previous: string | null; error: string | null };
 let writes: Promise<void> = Promise.resolve();
@@ -32,19 +66,9 @@ export async function openStore(
     writes = result.catch(() => {});
     return result;
   };
-  await db.execAsync(`PRAGMA journal_mode = WAL;
-    CREATE TABLE IF NOT EXISTS records (user_id TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(user_id,id));
-    CREATE TABLE IF NOT EXISTS outbox (user_id TEXT NOT NULL, id TEXT NOT NULL, mutation TEXT NOT NULL, previous TEXT, error TEXT, PRIMARY KEY(user_id,id));
-    CREATE TABLE IF NOT EXISTS cursors (user_id TEXT PRIMARY KEY, cursor INTEGER NOT NULL DEFAULT 0);
-    CREATE TABLE IF NOT EXISTS sync_recovery (user_id TEXT PRIMARY KEY);
-    CREATE TABLE IF NOT EXISTS note_drafts (user_id TEXT NOT NULL, note_id TEXT NOT NULL, content TEXT NOT NULL, base_version INTEGER NOT NULL, PRIMARY KEY(user_id,note_id));
-    CREATE TABLE IF NOT EXISTS tombstones (user_id TEXT NOT NULL, id TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY(user_id,id));
-    CREATE TABLE IF NOT EXISTS note_history (user_id TEXT NOT NULL, note_id TEXT NOT NULL, id TEXT NOT NULL, version INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(user_id,id));
-    CREATE INDEX IF NOT EXISTS note_history_by_note ON note_history(user_id,note_id,version DESC);
-    ${attachmentTablesSql}
-    ${attachmentCacheTablesSql}`);
+  await db.execAsync('PRAGMA journal_mode = WAL;');
+  await migrateCache(db);
   await transaction(async () => {
-    await db.execAsync(searchIndexSql);
     if (!(await db.getFirstAsync('SELECT version FROM search_index_meta WHERE version = 1'))) {
       // Populate existing caches once through the same trigger used by later writes.
       await db.execAsync(

@@ -10,7 +10,7 @@ import {
   type Mutation,
   type RecordItem,
 } from '@personalspace/validation';
-import { openStore } from './store';
+import { openStore, CACHE_MIGRATIONS } from './store';
 import { ApiError, createClient } from '@personalspace/api-client';
 import { createAttachmentRuntime } from './attachment-runtime';
 import type { AttachmentFiles } from './attachment-files';
@@ -46,6 +46,26 @@ beforeEach(() => {
   database = new DatabaseSync(':memory:');
 });
 afterEach(() => database.close());
+
+const userVersion = () =>
+  (database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+
+describe('cache migrations', () => {
+  it('stamps the schema version and re-opening is a no-op', async () => {
+    const userId = v7();
+    await openStore(userId);
+    expect(userVersion()).toBe(CACHE_MIGRATIONS.length);
+    await openStore(userId);
+    expect(userVersion()).toBe(CACHE_MIGRATIONS.length);
+  });
+
+  it('adopts a pre-versioning database whose tables already exist at user_version 0', async () => {
+    database.exec(CACHE_MIGRATIONS[0]!);
+    expect(userVersion()).toBe(0);
+    await openStore(v7());
+    expect(userVersion()).toBe(CACHE_MIGRATIONS.length);
+  });
+});
 
 function note(version = 3): RecordItem {
   const now = new Date().toISOString();
