@@ -11,7 +11,7 @@ import { Redis } from 'ioredis';
 import type { ServerConfig } from '@personalspace/config';
 import { eq as drizzleEq } from 'drizzle-orm';
 import type { Database } from '@personalspace/db';
-import { deviceTokens, authUsers, notificationLog } from '@personalspace/db';
+import { deviceTokens, authUsers, notificationLog, withUser } from '@personalspace/db';
 import type { AttachmentStorage } from '@personalspace/storage';
 import {
   createCaptureService,
@@ -74,7 +74,25 @@ export async function createApp(deps: {
     bodyLimit: 1024 * 1024,
     ajv: { customOptions: { removeAdditional: false, coerceTypes: false, useDefaults: false } },
   });
-  const auth = createAuth(deps.authDb, config);
+  // Transactional auth emails are queued in the notification log (owner-scoped via
+  // withUser so RLS is satisfied) and delivered by the email worker.
+  const auth = createAuth(deps.authDb, config, (email) =>
+    withUser(deps.db, email.userId, (tx) =>
+      tx
+        .insert(notificationLog)
+        .values({
+          userId: email.userId,
+          type: 'transactional',
+          channel: 'email',
+          status: 'pending',
+          dedupeKey: email.dedupeKey,
+          title: email.subject,
+          body: email.body,
+        })
+        .onConflictDoNothing()
+        .then(() => undefined),
+    ),
+  );
   const capture = createCaptureService(deps.db);
   const exports = createExportAccess(deps.db, deps.storage);
   const noteHistory = createNoteHistoryService(deps.db);
@@ -182,8 +200,17 @@ export async function createApp(deps: {
         '/get-session',
         '/list-sessions',
         '/revoke-session',
+        '/request-password-reset',
+        '/reset-password',
+        '/verify-email',
+        '/send-verification-email',
+        '/sign-in/social',
       ];
-      if (!enabled.some((suffix) => path === `/api/auth${suffix}`))
+      // OAuth providers redirect back through /api/auth/callback/<provider>.
+      const allowed =
+        enabled.some((suffix) => path === `/api/auth${suffix}`) ||
+        path.startsWith('/api/auth/callback/');
+      if (!allowed)
         return reply
           .code(404)
           .send({ error: { code: 'NOT_FOUND', message: 'This endpoint is not enabled.' } });

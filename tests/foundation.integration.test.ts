@@ -3627,14 +3627,13 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       },
     };
     // The background role can read only id+email from auth_user (column grant).
-    expect(await processPendingEmails(maintenance.db, provider)).toBe(1);
-    expect(sent).toEqual([
-      {
-        to: 'a@example.test',
-        subject: 'Your export is ready',
-        body: 'Download it within 24 hours.',
-      },
-    ]);
+    // Other pending emails (e.g. sign-up verification) may also be delivered.
+    expect(await processPendingEmails(maintenance.db, provider)).toBeGreaterThanOrEqual(1);
+    expect(sent).toContainEqual({
+      to: 'a@example.test',
+      subject: 'Your export is ready',
+      body: 'Download it within 24 hours.',
+    });
     const row = await owner.query(
       'SELECT status, sent_at FROM notification_log WHERE dedupe_key=$1',
       [dedupe],
@@ -3642,8 +3641,9 @@ describe('authenticated capture → PostgreSQL → sync', () => {
     expect(row.rows[0]).toMatchObject({ status: 'sent' });
     expect(row.rows[0].sent_at).not.toBeNull();
     // Already-sent rows are not reprocessed.
+    const delivered = sent.length;
     expect(await processPendingEmails(maintenance.db, provider)).toBe(0);
-    expect(sent).toHaveLength(1);
+    expect(sent).toHaveLength(delivered);
     // The column grant does not expose credentials: selecting password-bearing
     // auth_account is denied for the background role.
     await expect(maintenance.db.execute(sql`SELECT password FROM auth_account`)).rejects.toThrow();
@@ -3869,5 +3869,48 @@ describe('authenticated capture → PostgreSQL → sync', () => {
           .rows[0].c,
       ),
     ).toBeGreaterThan(0);
+  });
+  it('queues verification and password-reset emails through the notification log', async () => {
+    const email = `reset-${v7()}@example.test`;
+    const signup = await app.inject({
+      method: 'POST',
+      url: '/api/auth/sign-up/email',
+      headers: { origin: 'personalspace://', 'sec-fetch-mode': 'cors' },
+      payload: {
+        name: 'Reset User',
+        email,
+        password: 'a-test-password-123',
+        ageConfirmed: true,
+        termsAccepted: true,
+      },
+    });
+    expect(signup.statusCode, signup.body).toBe(200);
+    const userId = signup.json<{ user: { id: string } }>().user.id;
+    // A verification email is queued on sign-up.
+    expect(
+      (
+        await owner.query(
+          "SELECT 1 FROM notification_log WHERE user_id=$1 AND channel='email' AND dedupe_key LIKE 'verify_%'",
+          [userId],
+        )
+      ).rowCount,
+    ).toBeGreaterThanOrEqual(1);
+
+    // Requesting a password reset queues a reset email (and never reveals account existence).
+    const reset = await app.inject({
+      method: 'POST',
+      url: '/api/auth/request-password-reset',
+      headers: { origin: 'personalspace://', 'sec-fetch-mode': 'cors' },
+      payload: { email, redirectTo: 'personalspace://reset' },
+    });
+    expect(reset.statusCode, reset.body).toBe(200);
+    expect(
+      (
+        await owner.query(
+          "SELECT 1 FROM notification_log WHERE user_id=$1 AND dedupe_key LIKE 'reset_%'",
+          [userId],
+        )
+      ).rowCount,
+    ).toBeGreaterThanOrEqual(1);
   });
 });

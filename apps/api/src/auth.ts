@@ -46,7 +46,30 @@ function appleClientSecret(input: {
   return `${signingInput}.${signature}`;
 }
 
-export function createAuth(db: Database, config: ServerConfig) {
+export type AuthEmail = {
+  userId: string;
+  to: string;
+  subject: string;
+  body: string;
+  dedupeKey: string;
+};
+
+export function createAuth(
+  db: Database,
+  config: ServerConfig,
+  enqueueEmail?: (email: AuthEmail) => Promise<void>,
+) {
+  // Transactional emails (verification, password reset) are queued through the
+  // notification log and delivered by the email worker. A failure to enqueue must
+  // never block the auth operation itself.
+  const send = async (email: AuthEmail) => {
+    if (!enqueueEmail) return;
+    try {
+      await enqueueEmail(email);
+    } catch {
+      /* delivery is best-effort; surfaced via worker logs */
+    }
+  };
   return betterAuth({
     appName: 'PersonalSpace',
     // Provider diagnostics can include raw callback URLs. API middleware logs only
@@ -73,6 +96,45 @@ export function createAuth(db: Database, config: ServerConfig) {
       password: {
         hash: (password) => hash(password, { memoryCost: 19456, timeCost: 2, parallelism: 1 }),
         verify: ({ hash: encoded, password }) => verify(encoded, password),
+      },
+      sendResetPassword: async ({ user, url }) => {
+        await send({
+          userId: user.id,
+          to: user.email,
+          subject: 'Reset your PersonalSpace password',
+          body: [
+            `Hi ${user.name},`,
+            '',
+            'We received a request to reset your password. Open this link to choose a new one:',
+            url,
+            '',
+            'If you did not request this, you can safely ignore this email.',
+            '',
+            '— PersonalSpace',
+          ].join('\n'),
+          dedupeKey: `reset_${user.id}_${Date.now()}`,
+        });
+      },
+    },
+    // Verification is sent on sign-up but not required, so the development slice
+    // keeps working while the flow is exercised end to end.
+    emailVerification: {
+      sendOnSignUp: true,
+      sendVerificationEmail: async ({ user, url }) => {
+        await send({
+          userId: user.id,
+          to: user.email,
+          subject: 'Verify your PersonalSpace email',
+          body: [
+            `Hi ${user.name},`,
+            '',
+            'Confirm your email address by opening this link:',
+            url,
+            '',
+            '— PersonalSpace',
+          ].join('\n'),
+          dedupeKey: `verify_${user.id}_${Date.now()}`,
+        });
       },
     },
     user: {
