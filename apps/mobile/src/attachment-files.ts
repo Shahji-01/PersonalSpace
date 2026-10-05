@@ -7,6 +7,7 @@ import {
 import { AttachmentTransferError, newAttachmentTransfer } from '@personalspace/sync';
 import type { createAttachmentTransport } from '@personalspace/api-client';
 import { downloadedAttachmentSchema, type DownloadedAttachment } from './attachment-cache-store';
+import { validateWebpThumbnail, webpPreviewData } from './image-preview';
 
 export type NativePut = Parameters<typeof createAttachmentTransport>[1];
 export interface AttachmentFiles {
@@ -19,7 +20,9 @@ export interface AttachmentFiles {
     grant: { url: string; size: number; sha256: string | null; mime: string },
     signal: AbortSignal,
     permitted: () => Promise<boolean>,
+    variant?: 'file' | 'thumbnail',
   ): Promise<DownloadedAttachment>;
+  previewData(file: DownloadedAttachment, signal: AbortSignal): Promise<string>;
   verifyDownload(file: DownloadedAttachment, signal: AbortSignal): Promise<boolean>;
   hasDownload(file: DownloadedAttachment): Promise<boolean>;
   shareDownloaded(
@@ -66,7 +69,10 @@ export async function createNativeAttachmentFiles(
   const ownDownload = (raw: DownloadedAttachment) => {
     const entry = downloadedAttachmentSchema.parse(raw);
     const file = new fs.File(entry.uri);
-    const expected = new fs.File(cache, `${entry.id}.${extension(entry.mime)}`);
+    const expected = new fs.File(
+      cache,
+      `${entry.id}${entry.variant === 'thumbnail' ? '.thumbnail' : ''}.${extension(entry.mime)}`,
+    );
     if (file.uri !== expected.uri) throw new Error('Invalid cached file path');
     return file;
   };
@@ -231,6 +237,19 @@ export async function createNativeAttachmentFiles(
       const file = ownDownload(entry);
       return file.exists && file.size === entry.size;
     },
+    previewData: async (entry, signal) => {
+      signal.throwIfAborted();
+      if (entry.variant !== 'thumbnail' || entry.mime !== 'image/webp' || entry.size > 1024 * 1024)
+        throw new Error('This image preview is unavailable.');
+      const file = ownDownload(entry);
+      if (!file.exists || file.size !== entry.size)
+        throw new Error('This image preview is unavailable.');
+      const bytes = await file.bytes();
+      if (bytes.length !== entry.size || (await hash(bytes)) !== entry.sha256)
+        throw new Error('Preview verification failed.');
+      signal.throwIfAborted();
+      return webpPreviewData(bytes);
+    },
     removeDownload: async (entry) => {
       const file = ownDownload(entry);
       if (file.exists) file.delete();
@@ -246,10 +265,12 @@ export async function createNativeAttachmentFiles(
         dialogTitle: 'Save or share file',
       });
     },
-    download: async (id, grant, signal, permitted) => {
+    download: async (id, grant, signal, permitted, variant = 'file') => {
       z.uuidv7().parse(id);
       if (!grant.sha256 || grant.size < 1 || grant.size > attachmentLimits.maxBytes)
         throw new Error('Invalid download metadata.');
+      if (variant === 'thumbnail' && (grant.mime !== 'image/webp' || grant.size > 1024 * 1024))
+        throw new Error('Invalid preview metadata.');
       signal.throwIfAborted();
       const response = await http.fetch(grant.url, {
         signal,
@@ -283,9 +304,20 @@ export async function createNativeAttachmentFiles(
       signal.throwIfAborted();
       if (!(await permitted())) throw new Error('This file is no longer available.');
       signal.throwIfAborted();
-      const file = new fs.File(cache, `${id}.${extension(grant.mime)}`);
+      if (variant === 'thumbnail') validateWebpThumbnail(bytes);
+      const file = new fs.File(
+        cache,
+        `${id}${variant === 'thumbnail' ? '.thumbnail' : ''}.${extension(grant.mime)}`,
+      );
       file.write(bytes);
-      return { id, uri: file.uri, mime: grant.mime, size: grant.size, sha256: grant.sha256 };
+      return {
+        id,
+        uri: file.uri,
+        mime: grant.mime,
+        size: grant.size,
+        sha256: grant.sha256,
+        ...(variant === 'thumbnail' ? { variant } : {}),
+      };
     },
     watchNetwork: (listener) => {
       let active = true,

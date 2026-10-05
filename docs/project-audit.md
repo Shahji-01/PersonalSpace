@@ -1,4 +1,4 @@
-# Project audit — updated 4 October 2026
+# Project audit — updated 5 October 2026
 
 Source of truth: `PersonalSpace-Specification-v1.2.md`. This audit covers all four applications, nine shared packages, database migrations, infrastructure, CI, tests and implementation documentation. A feature with code is not automatically complete under the specification's definition of done (§69).
 
@@ -6,7 +6,7 @@ Source of truth: `PersonalSpace-Specification-v1.2.md`. This audit covers all fo
 
 The current checkout includes reminder, learning and money schemas/commands/sync, mobile screens for those modules, project-related resources, settings/export/deletion screens, metadata/YouTube jobs, notification/email jobs and maintenance/export/deletion workers. Migrations now extend through 0038, including background-role permissions. Recent integration tests cover several of these database paths, but code and passing domain tests do not establish working provider delivery or complete end-user flows.
 
-Attachments have a transfer engine, SQLite queue, private upload API, metadata sync, quota checks, processing/cleanup, scanner integration and private downloads (migrations 0027–0028). Mobile Files adds picker/copy/hash, foreground uploads, progress/retry/removal, other-device metadata and verified download/share. Offline pins, configurable LRU download storage, safe cache clearing and startup orphan reclamation are implemented. The editor now includes ID-only inline file labels, searchable insertion and draft-safe native add/open actions. Inline image/thumbnail display, scanner provisioning, remaining formats and native acceptance stay open. Files remain quarantined unless the configured processor succeeds. See [attachment status](attachments.md).
+Attachments have a transfer engine, SQLite queue, private upload API, metadata sync, quota checks, processing/cleanup, scanner integration and private downloads (migrations 0027–0028). Mobile Files adds picker/copy/hash, foreground uploads, progress/retry/removal, other-device metadata and verified download/share. Offline pins, configurable LRU download storage, safe cache clearing and startup orphan reclamation are implemented. The editor now includes ID-only inline file labels, searchable insertion and draft-safe native add/open actions. On-demand image previews are implemented in the editor and Files screen. Eager thumbnails, scanner provisioning, remaining formats and native acceptance stay open. Files remain quarantined unless the configured processor succeeds. See [attachment status](attachments.md).
 
 The repository is a development preview with a substantial PostgreSQL/RLS and offline-sync foundation. It is **not a completed v1.0 application**. Phase 0 and milestone acceptance remain open. Production startup is intentionally gated in `packages/config`.
 
@@ -21,7 +21,7 @@ These findings were checked against the shared checkout after the newer module c
 - The account-deletion worker's storage callback in `apps/worker/src/index.ts` currently logs a cleanup event without deleting objects. The auth-user erasure lifecycle is also incomplete. Database row deletion alone does not complete account erasure.
 - The export worker can mark an export ready when storage is unavailable. Its CSV branch serializes a map of files as JSON, and its Markdown branch emits JSON. Correct format artifacts, durable storage, expiry/cleanup and the user download flow need acceptance before exports are described as complete.
 - Mobile Money has basic account/transaction/people flows; category/split/debt workflows, reports and wider ledger property testing remain. Learning needs player/progress and metadata/provider acceptance. The new module screens still need native validation.
-- Inline image/thumbnail display, formal versioned SQLite migrations, OAuth/recovery/refresh-family work, native capture/widget surfaces, AI and production/release gates remain unfinished. Inline editor file-reference nodes are implemented.
+- Eager thumbnail loading, formal versioned SQLite migrations, OAuth/recovery/refresh-family work, native capture/widget surfaces, AI and production/release gates remain unfinished. Inline editor file-reference nodes are implemented.
 
 The offline-storage implementation and its verification are recorded in [attachments](attachments.md) and [verification](verification.md). The table below is the earlier notes/tasks coverage baseline; the current inventory and operational findings above supersede its later-module entries.
 

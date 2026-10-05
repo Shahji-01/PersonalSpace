@@ -8,6 +8,7 @@ export const downloadedAttachmentSchema = z.object({
   mime: z.string().min(1),
   size: z.number().int().positive().max(attachmentLimits.maxBytes),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  variant: z.enum(['file', 'thumbnail']).optional(),
 });
 export type DownloadedAttachment = z.infer<typeof downloadedAttachmentSchema>;
 const entrySchema = downloadedAttachmentSchema.extend({
@@ -43,14 +44,18 @@ export function createAttachmentCacheStore(
         await db.runAsync(
           'INSERT OR REPLACE INTO attachment_cache(user_id,id,data) VALUES (?,?,?)',
           userId,
-          entry.id,
+          entry.variant === 'thumbnail' ? `thumbnail:${entry.id}` : entry.id,
           JSON.stringify(entry),
         );
       });
     },
-    remove: (id: string) =>
+    remove: (id: string, variant?: 'file' | 'thumbnail') =>
       transaction(async () => {
-        await db.runAsync('DELETE FROM attachment_cache WHERE user_id=? AND id=?', userId, id);
+        await db.runAsync(
+          'DELETE FROM attachment_cache WHERE user_id=? AND id=?',
+          userId,
+          variant === 'thumbnail' ? `thumbnail:${id}` : id,
+        );
       }),
     limitMb: async () =>
       (

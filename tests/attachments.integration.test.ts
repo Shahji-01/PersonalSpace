@@ -825,6 +825,8 @@ describe('attachment processing and download', () => {
     const thumb = await download(input.id, tokenA, 'thumbnail');
     expect(thumb.statusCode).toBe(200);
     const small = Buffer.from(await (await fetch(thumb.json().url)).arrayBuffer());
+    expect(thumb.json().sha256).toBe(createHash('sha256').update(small).digest('hex'));
+    expect(thumb.json().size).toBe(small.length);
     expect((await sharp(small).metadata()).width).toBeLessThanOrEqual(320);
     expect((await fetch(`${endpoint}/private-test-attachments/${ready.processedKey}`)).status).toBe(
       403,
@@ -889,6 +891,47 @@ describe('attachment processing and download', () => {
     });
     for (const id of [corrupt.input.id, wrong.input.id, infected.input.id])
       expect((await download(id)).statusCode).toBe(409);
+  });
+
+  it('bounds thumbnail reads and rechecks ownership lifecycle before granting a preview', async () => {
+    const bytes = await sharp({
+      create: { width: 24, height: 24, channels: 3, background: '#abc' },
+    })
+      .png()
+      .toBuffer();
+    const { input } = await uploaded(bytes, 'image/png');
+    await processAttachment(processor(), storage, clean, userA, input.id);
+    const oversized = createAttachmentService(domain.db, {
+      ...storage,
+      head: async (key) => ({ ...(await storage.head(key))!, size: MB + 1 }),
+      read: async () => {
+        throw new Error('Must not read oversized thumbnail');
+      },
+    });
+    await expect(oversized.download(userA, input.id, true)).rejects.toMatchObject({
+      code: 'ATTACHMENT_UNAVAILABLE',
+    });
+    const missing = createAttachmentService(domain.db, { ...storage, read: async () => null });
+    await expect(missing.download(userA, input.id, true)).rejects.toMatchObject({
+      code: 'ATTACHMENT_UNAVAILABLE',
+    });
+    const revoked = createAttachmentService(domain.db, {
+      ...storage,
+      read: async (key, limit) => {
+        const result = await storage.read(key, limit);
+        const removal = await app.inject({
+          method: 'POST',
+          url: `/api/v1/attachments/${input.id}/remove`,
+          headers: headers(),
+          payload: {},
+        });
+        expect(removal.statusCode).toBe(200);
+        return result;
+      },
+    });
+    await expect(revoked.download(userA, input.id, true)).rejects.toMatchObject({
+      statusCode: 404,
+    });
   });
 
   it('retries scanner outages without releasing files and cleans up abandoned output reservations', async () => {

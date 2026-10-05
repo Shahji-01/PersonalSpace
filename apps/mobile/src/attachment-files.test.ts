@@ -17,6 +17,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { v7 } from 'uuid';
 import { createNativeAttachmentFiles } from './attachment-files';
+import { previewData } from '../test/preview-fixture';
 
 let directory: string;
 const picked = vi.fn(),
@@ -126,6 +127,28 @@ function select(bytes: Buffer, mime = 'text/plain') {
 }
 
 describe('native attachment adapter with actual filesystem bytes', () => {
+  it('keeps verified thumbnails separate from full downloads and refuses corrupt preview bytes', async () => {
+    const files = await createNativeAttachmentFiles(v7(), v7),
+      id = v7();
+    const bytes = Buffer.from(previewData.split(',')[1]!, 'base64');
+    const grant = {
+      url: 'https://storage.example.test/image',
+      mime: 'image/webp',
+      size: bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    };
+    fetchMock.mockImplementation(async () => new Response(bytes));
+    const full = await files.download(id, grant, signal(), async () => true);
+    const thumb = await files.download(id, grant, signal(), async () => true, 'thumbnail');
+    expect(thumb.uri).not.toBe(full.uri);
+    expect(await files.previewData(thumb, signal())).toBe(previewData);
+    await expect(files.previewData(full, signal())).rejects.toThrow();
+    await files.removeDownload(thumb);
+    expect(await files.verifyDownload(full, signal())).toBe(true);
+    const again = await files.download(id, grant, signal(), async () => true, 'thumbnail');
+    writeFileSync(fileURLToPath(again.uri), Buffer.alloc(bytes.length, 1));
+    await expect(files.previewData(again, signal())).rejects.toThrow();
+  });
   it('makes a durable account copy, fingerprints it and never deletes the picker source', async () => {
     const user = v7(),
       files = await createNativeAttachmentFiles(user, v7),

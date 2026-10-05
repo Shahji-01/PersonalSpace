@@ -54,7 +54,7 @@ export function createAttachmentRuntime(options: {
     signal: lifetime.signal,
     permitted,
     connected: () => network.connected,
-    grant: (id) => client.downloadAttachment(id),
+    grant: (id, variant) => client.downloadAttachment(id, variant),
     onChange: emit,
   });
   let recovery: Promise<void> | null = null;
@@ -234,7 +234,14 @@ export function createAttachmentRuntime(options: {
       void request();
     },
     share: cache.share,
-    keepOffline: cache.pin,
+    previewImage: cache.preview,
+    keepOffline: async (id: string) => {
+      await cache.pin(id);
+      const record = (await store.list()).find(
+        (item) => item.id === id && item.type === 'attachment',
+      );
+      if (record?.attachment?.hasThumbnail) await cache.pinPreview(id);
+    },
     unpin: cache.unpin,
     storageUsage: cache.usage,
     clearCache: cache.clear,

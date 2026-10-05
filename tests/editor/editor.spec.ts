@@ -1,5 +1,52 @@
 import { test, expect, type Page } from '@playwright/test';
 
+test('previews images privately, preserves ID-only drafts and clears removed images', async ({
+  page,
+}, testInfo) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Insert file', exact: true }).click();
+  await page
+    .getByRole('region', { name: 'Choose a file' })
+    .getByRole('button', { name: /Garden inspiration/ })
+    .click();
+  const file = page.locator('.tiptap [data-attachment-reference]');
+  await page.evaluate(() => localStorage.setItem('failDraft', 'true'));
+  await file.click();
+  await expect(page.getByRole('alert')).toContainText('Your changes are still here');
+  expect(await page.evaluate(() => localStorage.getItem('previewedFile'))).toBeNull();
+  await page.evaluate(() => {
+    localStorage.removeItem('failDraft');
+    localStorage.setItem('unsafePreview', 'true');
+  });
+  await file.click();
+  await expect(page.getByRole('dialog')).not.toBeVisible();
+  await page.evaluate(() => localStorage.removeItem('unsafePreview'));
+  await file.click();
+  const dialog = page.getByRole('dialog', { name: 'Image preview' });
+  await expect(dialog).toBeVisible();
+  await expect
+    .poll(() => dialog.locator('img').evaluate((img: HTMLImageElement) => img.naturalWidth))
+    .toBe(240);
+  expect(await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('image-preview-mobile.png'), fullPage: true });
+  await dialog.getByRole('button', { name: 'Save or share' }).click();
+  await expect(dialog).not.toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem('openedFile'))).toBe(
+    '0199a1b0-0000-7000-8000-000000000013',
+  );
+  await expect(file.locator('img')).toBeVisible();
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  const saved = await page.evaluate(() => localStorage.getItem('saved'));
+  expect(saved).toContain('0199a1b0-0000-7000-8000-000000000013');
+  expect(saved).not.toContain('data:image');
+  await file.click();
+  await expect(dialog).toBeVisible();
+  await page.evaluate(() => window.dispatchEvent(new Event('removeFile')));
+  await expect(dialog).not.toBeVisible();
+  await expect(file.locator('img')).toBeHidden();
+  await expect(file).toContainText('Unavailable file');
+});
+
 test('inserts ID-only files, preserves drafts before opening and keeps unavailable labels', async ({
   page,
 }, testInfo) => {

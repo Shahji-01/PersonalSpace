@@ -87,15 +87,17 @@ async function runtimeFixture() {
     inspect: vi.fn(async () => ({ size: job.descriptor.size, sha256: job.descriptor.sha256 })),
     put: vi.fn(async () => ({ status: 200, etag: 'etag' })),
     remove: vi.fn(async () => {}),
-    download: vi.fn(async (id, grant) => ({
+    download: vi.fn(async (id, grant, _signal, _permitted, variant) => ({
       id,
-      uri: `file:///downloads/${id}.txt`,
+      uri: `file:///downloads/${id}${variant === 'thumbnail' ? '.thumbnail' : ''}.txt`,
       size: grant.size,
       mime: grant.mime,
       sha256: grant.sha256!,
+      ...(variant === 'thumbnail' ? { variant } : {}),
     })),
     shareDownloaded: vi.fn(async () => {}),
     verifyDownload: vi.fn(async () => true),
+    previewData: vi.fn(async () => 'data:image/webp;base64,UklGRfixture'),
     hasDownload: vi.fn(async () => true),
     removeDownload: vi.fn(async () => {}),
     reconcileDownloads: vi.fn(async () => {}),
@@ -324,6 +326,40 @@ function cachedFile(accessedAt: number, pinned = false): AttachmentCacheEntry {
   };
 }
 describe('durable offline download cache', () => {
+  it('stores thumbnails separately, reuses them offline, and unpins both variants', async () => {
+    const f = await cacheFixture(),
+      id = v7();
+    await f.cache.pin(id);
+    await f.cache.pinPreview(id);
+    expect(await (await openStore('a')).attachmentCache.list()).toHaveLength(2);
+    expect(await (await openStore('b')).attachmentCache.list()).toEqual([]);
+    expect(f.client.downloadAttachment).toHaveBeenNthCalledWith(1, id, 'file');
+    expect(f.client.downloadAttachment).toHaveBeenNthCalledWith(2, id, 'thumbnail');
+    f.offline();
+    await f.cache.preview(id);
+    await f.cache.share(id);
+    expect(f.client.downloadAttachment).toHaveBeenCalledTimes(2);
+    expect(f.files.previewData).toHaveBeenCalledWith(
+      expect.objectContaining({ variant: 'thumbnail' }),
+      expect.any(AbortSignal),
+    );
+    expect(vi.mocked(f.files.shareDownloaded).mock.calls[0]![0].variant).toBeUndefined();
+    await f.cache.clear();
+    expect(await f.store.attachmentCache.list()).toHaveLength(2);
+    await f.cache.unpin(id);
+    await f.cache.clear();
+    expect(await f.store.attachmentCache.list()).toEqual([]);
+  });
+  it('does not return preview bytes after access is revoked during a disk read', async () => {
+    const f = await cacheFixture();
+    vi.mocked(f.files.previewData).mockImplementationOnce(async () => {
+      f.revoke();
+      return 'private bytes';
+    });
+    await expect(f.cache.preview(v7())).rejects.toThrow('no longer available');
+    await f.cache.maintain();
+    expect(await f.store.attachmentCache.list()).toEqual([]);
+  });
   it('persists pins and per-account settings across reopening and shares verified files offline', async () => {
     const f = await cacheFixture(),
       id = v7();

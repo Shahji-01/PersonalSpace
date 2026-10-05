@@ -1,0 +1,3 @@
+// Small generated WebP used by preview tests.
+export const previewData =
+  'data:image/webp;base64,UklGRoQAAABXRUJQVlA4IHgAAABQCwCdASrwAKAAPm02mUmkIyKhIEgAgA2JaW7hdrEbQBWb0VcIMghqqTXbaLhBkENVSa7bRcIMghqqTXbaLhBkENVSa7bRcIMghqqTXbaLhBkENVSa7bRcIMghqqTXbaLg3AAA/v9wnf3FNM/0l0uLQAAAAAAAAAA=';

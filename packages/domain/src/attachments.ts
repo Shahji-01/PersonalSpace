@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { v7 } from 'uuid';
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
@@ -358,9 +358,24 @@ export function createAttachmentService(
           'This file is temporarily unavailable.',
           503,
         );
+      let sha256 = row.processedSha256;
+      if (thumbnail) {
+        // Thumbnails are small, immutable processor outputs. Hash outside the
+        // account transaction, including older outputs without a stored digest.
+        if (object.size > 1024 * 1024 || object.size !== row.thumbnailSize)
+          throw new DomainError('ATTACHMENT_UNAVAILABLE', 'This preview is unavailable.', 503);
+        const bytes = await storage.read(key, 1024 * 1024);
+        if (!bytes || bytes.length !== object.size)
+          throw new DomainError('ATTACHMENT_UNAVAILABLE', 'This preview is unavailable.', 503);
+        sha256 = createHash('sha256').update(bytes).digest('hex');
+      }
       // Recheck Trash/purge after the storage request before issuing a grant.
       const current = await read(userId, id);
-      if (current.status !== 'ready' || current.processedKey !== row.processedKey)
+      if (
+        current.status !== 'ready' ||
+        current.processedKey !== row.processedKey ||
+        (thumbnail && current.thumbnailKey !== key)
+      )
         throw new DomainError(
           'ATTACHMENT_NOT_READY',
           'This file is not available for download yet.',
@@ -373,7 +388,7 @@ export function createAttachmentService(
         ...(await storage.download(key, filename, mime)),
         mime,
         size: object.size,
-        sha256: thumbnail ? null : row.processedSha256,
+        sha256,
       };
     },
     open: async (userId: string, descriptor: AttachmentDescriptor, requestId: string) =>

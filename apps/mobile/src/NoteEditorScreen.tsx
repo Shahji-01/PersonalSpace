@@ -100,6 +100,14 @@ export function NoteEditorScreen({
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
           <NoteEditor
+            onPreviewAttachment={
+              isTask
+                ? undefined
+                : async (id) => {
+                    if (!attachments) throw new Error('Files unavailable');
+                    return attachments.previewImage(id);
+                  }
+            }
             onAddAttachment={
               isTask
                 ? undefined

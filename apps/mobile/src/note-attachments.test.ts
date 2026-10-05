@@ -34,6 +34,26 @@ function fixture() {
   return { parent, file };
 }
 describe('editor attachment choices', () => {
+  it('offers ready image previews without counting a cached thumbnail as the full offline file', () => {
+    const { parent, file } = fixture();
+    file.attachment = { ...file.attachment!, hasThumbnail: true, processedMime: 'image/webp' };
+    const result = noteAttachments([parent, file], parent.id, [
+      {
+        id: file.id,
+        uri: 'file:///thumbnail',
+        mime: 'image/webp',
+        size: 100,
+        sha256: 'a'.repeat(64),
+        pinned: true,
+        accessedAt: 1,
+        variant: 'thumbnail',
+      },
+    ]);
+    expect(result[0]!.canPreview).toBe(true);
+    expect(result[0]!.detail).not.toContain('offline');
+    file.attachment.status = 'processing';
+    expect(noteAttachments([parent, file], parent.id)[0]!.canPreview).toBe(false);
+  });
   it('offers this note’s registered files and resolves cross-note references without offering them for insertion', () => {
     const { parent, file } = fixture();
     expect(noteAttachments([parent, file], parent.id)).toMatchObject([

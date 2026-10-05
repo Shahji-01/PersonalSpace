@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Alert, ScrollView, Switch, Text, View } from 'react-native';
+import { Alert, Image, ScrollView, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { AttachmentTransfer, RecordItem } from '@personalspace/validation';
 import type { LocalStore } from './store';
 import type { AttachmentRuntime } from './attachment-runtime';
 import type { AttachmentCacheEntry } from './attachment-cache-store';
 import { Button, Card, styles } from './components';
+import { isPreviewData } from './image-preview';
 
 function transferLabel(
   job: AttachmentTransfer,
@@ -54,11 +55,29 @@ export function NoteFilesScreen({
   const [jobs, setJobs] = useState<AttachmentTransfer[]>([]),
     [removed, setRemoved] = useState<string[]>([]);
   const [cached, setCached] = useState<AttachmentCacheEntry[]>([]);
+  const [preview, setPreview] = useState<{ id: string; data: string } | null>(null);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [tick, setTick] = useState(0);
   const parent = records.find((item) => item.id === note.id);
   const available = !!parent && !parent.deletedAt && parent.version > 0;
+  useEffect(() => {
+    setPreview((current) =>
+      current &&
+      available &&
+      !removed.includes(current.id) &&
+      records.some(
+        (item) =>
+          item.id === current.id &&
+          item.parentId === note.id &&
+          !item.deletedAt &&
+          item.attachment?.status === 'ready' &&
+          item.attachment.hasThumbnail,
+      )
+        ? current
+        : null,
+    );
+  }, [available, removed, records, note.id]);
   useEffect(() => runtime?.subscribe(() => setTick((value) => value + 1)), [runtime]);
   useEffect(() => {
     let alive = true;
@@ -159,7 +178,9 @@ export function NoteFilesScreen({
           const descriptor = remote ?? job?.descriptor;
           if (!descriptor) return null;
           const ready = remote?.status === 'ready' || job?.state === 'ready';
-          const local = cached.find((entry) => entry.id === id);
+          const local = cached.find((entry) => entry.id === id && entry.variant !== 'thumbnail');
+          const canPreview =
+            available && ready && remote?.hasThumbnail && remote.processedMime === 'image/webp';
           const label = ready
             ? local?.pinned
               ? 'Kept offline'
@@ -182,6 +203,24 @@ export function NoteFilesScreen({
                 {(descriptor.size / (1024 * 1024)).toFixed(2)} MB · {label}
               </Text>
               <View style={styles.row}>
+                {canPreview && (
+                  <Button
+                    secondary
+                    label={preview?.id === id ? 'Hide preview' : 'Preview image'}
+                    disabled={busy || !runtime}
+                    onPress={() => {
+                      if (preview?.id === id) {
+                        setPreview(null);
+                        return;
+                      }
+                      void action(async () => {
+                        const data = await runtime!.previewImage(id);
+                        if (!isPreviewData(data)) throw new Error('Invalid preview');
+                        setPreview({ id, data });
+                      });
+                    }}
+                  />
+                )}
                 {ready && (
                   <>
                     <Button
@@ -230,6 +269,23 @@ export function NoteFilesScreen({
                   }
                 />
               </View>
+              {canPreview && preview?.id === id && (
+                <Image
+                  source={{ uri: preview.data }}
+                  accessibilityLabel={`Preview of ${descriptor.filename}`}
+                  style={{
+                    width: '100%',
+                    height: 220,
+                    borderRadius: 12,
+                    backgroundColor: '#EDF0E8',
+                  }}
+                  resizeMode="contain"
+                  onError={() => {
+                    setPreview(null);
+                    setError('Could not display this image. Try Save or share.');
+                  }}
+                />
+              )}
             </Card>
           );
         })}

@@ -73,11 +73,16 @@ The mobile store exposes `attachmentTransfers`. All operations filter by account
 
 Parent or attachment purge atomically erases queue metadata, reserves the cancelled attachment ID, and records only the local URI in a file-removal queue. A late upload response cannot resurrect it. User removal also persists an account-scoped remote-removal request before returning to the UI. The runtime deletes the local file (or confirms it is absent) **before** acknowledging local cleanup, and acknowledges remote removal only after the API succeeds. Offline requests survive reopening. No cache-clearing operation is exposed that could discard unsynced bytes.
 
+## Private image previews
+
+Ready images offer on-demand previews in the editor and Files screen. The API returns a SHA-256 for the existing processed thumbnail by reading at most 1 MiB outside the account transaction, then rechecks the attachment/parent lifecycle before issuing its short-lived grant. This supports already processed images without a database migration.
+
+The native adapter verifies byte length and digest, accepts only non-animated WebP headers with dimensions at most 320 × 320, and sends bounded image data to the UI. Signed URLs and native file paths never cross into note JSON. Full files and thumbnails use separate account-scoped cache keys and paths, sharing the existing LRU capacity and removal rules. Keep offline pins the full file and its thumbnail; if downloading the thumbnail fails, the full-file pin remains. Unpin releases both. Cached previews work offline, while deletion/sign-out prevents in-flight preview results from being returned. Offline revocations require row sync. Native image-decoder and device acceptance remain open.
+
 ## Remaining integration
 
 - Deduplication and paid-plan storage quotas.
 - Scanner provisioning/signature freshness monitoring, real malware/format acceptance, HEIC decoder deployment and operator retry tooling for exhausted processing jobs. WebM audio currently fails closed because the signature detector identifies its container as video; track-level audio validation remains open.
-- Inline image/thumbnail display. Attachment-ID editor nodes and file labels are implemented; see [editor behavior](note-editor.md).
 - Eager recent thumbnails, reclaiming redundant completed-upload originals and native container-path migration on restore/reinstall. Configurable LRU downloads, offline pins, storage controls and startup orphan reclamation are implemented.
 - Retention/account deletion across objects and local files; real-device interruption and app-kill acceptance.
 

@@ -281,6 +281,49 @@ body,
   font-size: 22px;
   flex-shrink: 0;
 }
+.file-thumbnail {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+.file-thumbnail[hidden] {
+  display: none;
+}
+.image-preview-dialog {
+  width: min(480px, calc(100% - 32px));
+  max-height: 85dvh;
+  box-sizing: border-box;
+  overflow: auto;
+  padding: 20px;
+  border: 1px solid #cbd8cc;
+  border-radius: 18px;
+  background: #fafbf6;
+  color: #214e3d;
+}
+.image-preview-dialog::backdrop {
+  background: rgb(20 35 27 / 65%);
+}
+.image-preview-dialog h2 {
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+.image-preview-dialog img {
+  display: block;
+  width: 100%;
+  max-height: 45dvh;
+  object-fit: contain;
+  border-radius: 10px;
+  background: #edf0e8;
+}
+.image-preview-dialog p {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.image-preview-dialog button {
+  margin: 4px 8px 4px 0;
+}
 .file-caption {
   min-width: 0;
 }

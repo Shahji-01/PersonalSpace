@@ -2,6 +2,7 @@ import { createRoot } from 'react-dom/client';
 import { useEffect, useState } from 'react';
 import NoteEditor from '../src/NoteEditor';
 import { plainTextDocument, readDocument } from '@personalspace/editor-schema';
+import { previewData } from './preview-fixture';
 
 const draft = localStorage.getItem('draft');
 function Harness() {
@@ -28,6 +29,14 @@ function Harness() {
           ? []
           : [
               {
+                id: '0199a1b0-0000-7000-8000-000000000013',
+                filename: 'Garden inspiration.webp',
+                detail: '0.02 MB · Ready',
+                canInsert: true,
+                canOpen: true,
+                canPreview: true,
+              },
+              {
                 id: '0199a1b0-0000-7000-8000-000000000011',
                 filename: 'Journey notes — यात्रा.pdf',
                 detail: '1.20 MB · Kept offline',
@@ -49,6 +58,10 @@ function Harness() {
           return 'Could not open this file. Try again when online.';
         localStorage.setItem('openedFile', id);
         return null;
+      }}
+      onPreviewAttachment={async (id) => {
+        localStorage.setItem('previewedFile', id);
+        return localStorage.getItem('unsafePreview') ? 'https://example.test/private' : previewData;
       }}
       onAddAttachment={async () => {
         localStorage.setItem('pickedFile', 'true');

@@ -13,6 +13,7 @@ import {
 import './note-editor.css';
 import type { ReferenceNote } from './note-links';
 import type { NoteAttachment } from './note-attachments';
+import { isPreviewData } from './image-preview';
 
 type Props = {
   label?: string;
@@ -33,6 +34,7 @@ type Props = {
   attachments?: NoteAttachment[];
   onOpenAttachment?: (id: string) => Promise<string | null>;
   onAddAttachment?: () => Promise<string | null>;
+  onPreviewAttachment?: (id: string) => Promise<string>;
   dom?: import('expo/dom').DOMProps;
 };
 
@@ -42,7 +44,7 @@ export default function NoteEditor(props: Props) {
   const callbacks = useRef(props);
   callbacks.current = props;
   const [editor, setEditor] = useState<Editor | null>(null);
-  const [, redraw] = useState(0);
+  const [transaction, redraw] = useState(0);
   const [status, setStatus] = useState(
     props.recovered
       ? 'Recovered your draft on this device.'
@@ -64,6 +66,24 @@ export default function NoteEditor(props: Props) {
   const [attachmentOpen, setAttachmentOpen] = useState(false);
   const [attachmentQuery, setAttachmentQuery] = useState('');
   const attachmentSelection = useRef<{ from: number; to: number } | null>(null);
+  const [previews, setPreviews] = useState<Record<string, string>>({});
+  const [previewId, setPreviewId] = useState<string | null>(null);
+  const previewDialog = useRef<HTMLDialogElement>(null);
+  const previewFile = props.attachments?.find((file) => file.id === previewId && file.canPreview);
+  useEffect(() => {
+    if (previewFile && previewId && previews[previewId]) previewDialog.current?.showModal();
+    else previewDialog.current?.close();
+  }, [previewFile, previewId, previews]);
+  useEffect(() => {
+    setPreviews((previous) => {
+      const next = Object.fromEntries(
+        Object.entries(previous).filter(([id]) =>
+          props.attachments?.some((file) => file.id === id && file.canPreview),
+        ),
+      );
+      return Object.keys(next).length === Object.keys(previous).length ? previous : next;
+    });
+  }, [props.attachments]);
   const previousCloseRequest = useRef(props.closeRequest);
   useEffect(() => {
     if (previousCloseRequest.current === props.closeRequest) return;
@@ -144,9 +164,18 @@ export default function NoteEditor(props: Props) {
         file ? `Open file: ${file.filename}. ${file.detail}` : 'Unavailable file',
       );
       element.setAttribute('aria-disabled', String(!file?.canOpen));
+      const thumbnail = element.querySelector<HTMLImageElement>('.file-thumbnail');
+      const src = file?.canPreview ? previews[file.id] : undefined;
+      if (thumbnail) {
+        thumbnail.hidden = !src;
+        if (src) {
+          thumbnail.src = src;
+          thumbnail.alt = `Preview of ${file!.filename}`;
+        } else thumbnail.removeAttribute('src');
+      }
     }
   }
-  useEffect(refreshAttachmentLabels, [props.attachments]);
+  useEffect(refreshAttachmentLabels, [props.attachments, previews, transaction]);
 
   useEffect(() => {
     const initial = callbacks.current.initialContent;
@@ -198,7 +227,8 @@ export default function NoteEditor(props: Props) {
                   ? `Open file: ${file.filename}. ${file.detail}`
                   : 'Unavailable file',
               },
-              ['span', { class: 'file-icon', 'aria-hidden': 'true' }, '↗'],
+              ['img', { class: 'file-thumbnail', hidden: 'hidden', alt: '', draggable: 'false' }],
+              ['span', { class: 'file-icon', 'aria-hidden': 'true' }, file?.canPreview ? '▧' : '↗'],
               [
                 'span',
                 { class: 'file-caption' },
@@ -392,10 +422,26 @@ export default function NoteEditor(props: Props) {
         await callbacks.current.onDraft(parsed.data);
         setError('');
         setStatus('Draft saved on this device.');
-        const failure = await callbacks.current.onOpenAttachment?.(id);
-        if (failure) setError(failure);
+        if (file.canPreview && callbacks.current.onPreviewAttachment) {
+          const data = previews[id] ?? (await callbacks.current.onPreviewAttachment(id));
+          if (!isPreviewData(data)) throw new Error('Invalid preview');
+          if (!callbacks.current.attachments?.some((item) => item.id === id && item.canPreview))
+            return;
+          setPreviews((previous) => ({
+            ...Object.fromEntries(
+              Object.entries(previous)
+                .filter(([key]) => key !== id)
+                .slice(-2),
+            ),
+            [id]: data,
+          }));
+          setPreviewId(id);
+        } else {
+          const failure = await callbacks.current.onOpenAttachment?.(id);
+          if (failure) setError(failure);
+        }
       } catch {
-        setError('Your changes are still here. Could not save; please try again.');
+        setError('Your changes are still here. Could not save or open the file; please try again.');
       } finally {
         setBusy(false);
         instance.current?.setEditable(true, false);
@@ -528,6 +574,53 @@ export default function NoteEditor(props: Props) {
 
   return (
     <main className="note-editor">
+      <dialog
+        ref={previewDialog}
+        className="image-preview-dialog"
+        aria-label="Image preview"
+        onClose={() => setPreviewId(null)}
+      >
+        {previewFile && previewId && previews[previewId] && (
+          <>
+            <h2>{previewFile.filename}</h2>
+            <img
+              src={previews[previewId]}
+              alt={`Preview of ${previewFile.filename}`}
+              onError={() => {
+                setPreviews((previous) =>
+                  Object.fromEntries(Object.entries(previous).filter(([id]) => id !== previewId)),
+                );
+                setPreviewId(null);
+                setError('Could not display this image. Try Save or share from Files.');
+              }}
+            />
+            <p>Image preview · Save or share opens the full-size image.</p>
+            <div className="actions">
+              <button
+                className="primary"
+                disabled={busy}
+                onClick={() => {
+                  setBusy(true);
+                  void (callbacks.current.onOpenAttachment?.(previewId) ?? Promise.resolve(null))
+                    .then((failure) => {
+                      if (failure) setError(failure);
+                    })
+                    .catch(() => setError('Could not open this file. Try again when online.'))
+                    .finally(() => {
+                      setBusy(false);
+                      setPreviewId(null);
+                    });
+                }}
+              >
+                Save or share
+              </button>
+              <button disabled={busy} onClick={() => setPreviewId(null)}>
+                Close preview
+              </button>
+            </div>
+          </>
+        )}
+      </dialog>
       <header>
         <div>
           <p className="eyebrow">YOUR NOTE</p>

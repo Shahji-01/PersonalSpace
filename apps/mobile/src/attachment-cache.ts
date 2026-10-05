@@ -9,6 +9,7 @@ export function createAttachmentCache(options: {
   connected: () => boolean;
   grant: (
     id: string,
+    variant?: 'file' | 'thumbnail',
   ) => Promise<{ url: string; mime: string; size: number; sha256: string | null }>;
   onChange: () => void;
 }) {
@@ -31,7 +32,7 @@ export function createAttachmentCache(options: {
   const remove = async (entry: AttachmentCacheEntry) => {
     // A disk failure must retain metadata so deletion can be retried.
     await files.removeDownload(entry);
-    await store.remove(entry.id);
+    await store.remove(entry.id, entry.variant);
   };
   const trim = async (clear = false) => {
     const entries = (await store.list()).sort(
@@ -47,7 +48,12 @@ export function createAttachmentCache(options: {
       }
     }
   };
-  const ensure = async (id: string, pin: boolean, share: boolean) =>
+  const ensure = async <T>(
+    id: string,
+    pin: boolean,
+    variant: 'file' | 'thumbnail',
+    consume: (entry: AttachmentCacheEntry, signal: AbortSignal) => Promise<T>,
+  ) =>
     serial(async () => {
       if (!(await options.permitted(id))) throw new Error('This file is no longer available.');
       signal.throwIfAborted();
@@ -56,7 +62,9 @@ export function createAttachmentCache(options: {
       signal.addEventListener('abort', abort, { once: true });
       const timeout = setTimeout(abort, 60000);
       try {
-        let entry = (await store.list()).find((item) => item.id === id);
+        let entry = (await store.list()).find(
+          (item) => item.id === id && (item.variant ?? 'file') === variant,
+        );
         const pinned = pin || !!entry?.pinned;
         if (entry && !(await files.verifyDownload(entry, controller.signal))) {
           await remove(entry);
@@ -65,10 +73,14 @@ export function createAttachmentCache(options: {
         if (!entry) {
           if (!options.connected())
             throw new Error('Available when online. Connect to download this file.');
-          const grant = await options.grant(id);
+          const grant = await options.grant(id, variant);
           controller.signal.throwIfAborted();
-          const downloaded = await files.download(id, grant, controller.signal, () =>
-            options.permitted(id),
+          const downloaded = await files.download(
+            id,
+            grant,
+            controller.signal,
+            () => options.permitted(id),
+            variant,
           );
           entry = { ...downloaded, pinned, accessedAt: Date.now() };
         } else entry = { ...entry, pinned, accessedAt: Date.now() };
@@ -79,8 +91,10 @@ export function createAttachmentCache(options: {
         controller.signal.throwIfAborted();
         await store.put(entry);
         // Keep the file until the OS share sheet closes, even when pins fill the cap.
-        if (share)
-          await files.shareDownloaded(entry, controller.signal, () => options.permitted(id));
+        const result = await consume(entry, controller.signal);
+        if (!(await options.permitted(id))) throw new Error('This file is no longer available.');
+        controller.signal.throwIfAborted();
+        return result;
       } finally {
         clearTimeout(timeout);
         signal.removeEventListener('abort', abort);
@@ -113,12 +127,17 @@ export function createAttachmentCache(options: {
     return maintenance;
   };
   return {
-    share: (id: string) => ensure(id, false, true),
-    pin: (id: string) => ensure(id, true, false),
+    share: (id: string) =>
+      ensure(id, false, 'file', (entry, signal) =>
+        files.shareDownloaded(entry, signal, () => options.permitted(id)),
+      ),
+    pin: (id: string) => ensure(id, true, 'file', async () => {}),
+    preview: (id: string) => ensure(id, false, 'thumbnail', files.previewData),
+    pinPreview: (id: string) => ensure(id, true, 'thumbnail', async () => {}),
     unpin: (id: string) =>
       serial(async () => {
-        const entry = (await store.list()).find((item) => item.id === id);
-        if (entry) await store.put({ ...entry, pinned: false });
+        for (const entry of (await store.list()).filter((item) => item.id === id))
+          await store.put({ ...entry, pinned: false });
         await trim();
       }),
     clear: () => serial(() => trim(true)),

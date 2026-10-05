@@ -1,5 +1,14 @@
 # Verification
 
+## Private image previews — 5 October 2026
+
+- All 153 unit tests passed. New coverage uses real WebP bytes for lossy/lossless/alpha headers, dimensions, animation rejection, base64 output, native digest checks, separate full-file/thumbnail paths, account-isolated SQLite variants, offline reuse, pin/clear behavior and revocation during preview reads.
+- The full 70-test integration suite passed; after adding the thumbnail lifecycle case, all 24 attachment integration tests passed (71 integration cases total, including the previously passing 47 foundation cases). Thumbnail grants match actual object byte size and SHA-256; oversized/missing reads and removal during the read fail closed.
+- All eight editor browser tests passed at 390px in headless Chrome. Preview coverage checks draft-write failure, unsafe preview sources, actual image decoding, bounded dialog layout, full-file sharing, transient image data and removal cleanup. The preview screenshot was visually reviewed.
+- Tools/tests and all 14 workspaces passed TypeScript in the shared checkout. Changed feature files passed ESLint, formatting and diff checks. API/worker builds and Android/iOS Hermes + DOM exports passed. Unrelated existing work was preserved and excluded from this feature's commit.
+
+No database migration or native dependency was added. Update the API for checksum-bearing thumbnail grants before using the new mobile preview flow. Browser/native adapter tests use synthetic bridge/Expo bindings; Files-screen interaction, native decoder, accessibility and physical-device acceptance remain open. Eager thumbnail loading remains unimplemented. The emulator was not installed, restarted or navigated.
+
 ## Inline note files and editor UX — 4 October 2026
 
 - All 145 unit tests passed. New cases cover ID-only schema/Markdown output, unsafe extra attributes, account-record visibility, processing/offline labels and exclusion from task descriptions.

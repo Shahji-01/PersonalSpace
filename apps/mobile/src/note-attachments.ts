@@ -7,6 +7,7 @@ export type NoteAttachment = {
   detail: string;
   canInsert: boolean;
   canOpen: boolean;
+  canPreview?: boolean;
 };
 export function noteAttachments(
   records: RecordItem[],
@@ -29,7 +30,7 @@ export function noteAttachments(
     )
     .map((row) => {
       const file = row.attachment!,
-        local = cached.find((entry) => entry.id === row.id);
+        local = cached.find((entry) => entry.id === row.id && entry.variant !== 'thumbnail');
       const status =
         file.status === 'ready'
           ? local?.pinned
@@ -48,6 +49,8 @@ export function noteAttachments(
         detail: `${(file.size / (1024 * 1024)).toFixed(2)} MB · ${status}`,
         canInsert: row.parentId === noteId && row.version > 0 && file.status !== 'rejected',
         canOpen: file.status === 'ready',
+        canPreview:
+          file.status === 'ready' && file.hasThumbnail && file.processedMime === 'image/webp',
       };
     })
     .sort((a, b) => a.filename.localeCompare(b.filename) || a.id.localeCompare(b.id));
