@@ -27,6 +27,7 @@ export default function Layout({ children }: Readonly<{ children: React.ReactNod
           <nav aria-label="Legal">
             <Link href="/privacy">Privacy draft</Link>
             <Link href="/terms">Terms draft</Link>
+            <Link href="/delete-account">Delete account</Link>
           </nav>
         </footer>
       </body>

@@ -19,11 +19,22 @@ import {
   type ExportRequest,
   exportJobResponseSchema,
   type DeletionRequest,
+  deletionRequestSchema,
   deletionStatusResponseSchema,
   registerDeviceSchema,
   type RegisterDevice,
   updateDeviceWatermarkSchema,
 } from '@personalspace/validation';
+
+// The deletion endpoints wrap the status in { data }. graceEndsAt/createdAt are
+// present on request/status but omitted on a cancel reply, so default them.
+const deletionResult = z.object({
+  data: z.object({
+    status: deletionStatusResponseSchema.shape.status,
+    graceEndsAt: z.string().nullable().default(null),
+    createdAt: z.string().nullable().default(null),
+  }),
+});
 
 export class ApiError extends Error {
   constructor(
@@ -41,10 +52,11 @@ export function createClient(baseUrl: string, token: () => string | null) {
     schema: z.ZodType<T>,
     body?: unknown,
     signal?: AbortSignal,
+    method?: 'GET' | 'POST' | 'DELETE',
   ): Promise<T> {
     const currentToken = token();
     const response = await fetch(`${baseUrl}${path}`, {
-      method: body ? 'POST' : 'GET',
+      method: method ?? (body ? 'POST' : 'GET'),
       headers: {
         'Content-Type': 'application/json',
         Origin: 'personalspace://',
@@ -157,12 +169,17 @@ export function createClient(baseUrl: string, token: () => string | null) {
           size: z.number().int().positive(),
         }),
       ),
-    // Deletion (§64.3)
-    getDeletionStatus: () => request('/api/v1/me/deletion-status', deletionStatusResponseSchema),
+    // Deletion (§64.3). The server wraps the status in { data } and keys all three
+    // verbs on /account/delete; graceEndsAt/createdAt are absent on a cancel reply.
+    getDeletionStatus: () => request('/api/v1/account/delete', deletionResult).then((r) => r.data),
     requestDeletion: (req: DeletionRequest) =>
-      request('/api/v1/me/deletion', deletionStatusResponseSchema, req),
+      request('/api/v1/account/delete', deletionResult, deletionRequestSchema.parse(req)).then(
+        (r) => r.data,
+      ),
     cancelDeletion: () =>
-      request('/api/v1/me/deletion', deletionStatusResponseSchema, { action: 'cancel' }),
+      request('/api/v1/account/delete', deletionResult, undefined, undefined, 'DELETE').then(
+        (r) => r.data,
+      ),
     // Devices (§50)
     registerDevice: (req: RegisterDevice) =>
       request(
