@@ -1,5 +1,9 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
-import { attachmentTransferSchema, type AttachmentTransfer } from '@personalspace/validation';
+import {
+  attachmentTransferSchema,
+  recordSchema,
+  type AttachmentTransfer,
+} from '@personalspace/validation';
 import type { AttachmentTransferStore } from '@personalspace/sync';
 
 export const attachmentTablesSql = `
@@ -48,6 +52,9 @@ export function createAttachmentStore(
       await transaction(async () => {
         const previous = await get(transfer.descriptor.id);
         if (!previous || previous.revision !== expectedRevision) return;
+        if (previous.originalCleanupScheduled) return;
+        if (transfer.originalCleanupScheduled)
+          throw new Error('Original cleanup requires synced confirmation');
         if (
           JSON.stringify(previous.descriptor) !== JSON.stringify(transfer.descriptor) ||
           previous.localUri !== transfer.localUri ||
@@ -98,7 +105,8 @@ export function createAttachmentStore(
           transfer.parts.length ||
           transfer.failures ||
           transfer.nextAttemptAt ||
-          transfer.error
+          transfer.error ||
+          transfer.originalCleanupScheduled
         )
           throw new Error('Only a new transfer can be enqueued');
         await transaction(async () => {
@@ -163,6 +171,74 @@ export function createAttachmentStore(
             );
           }
         }),
+      queueCompletedOriginalCleanup: async (id: string, expectedRevision: number) => {
+        let queued = false;
+        await transaction(async () => {
+          const previous = await get(id);
+          if (
+            !previous ||
+            previous.revision !== expectedRevision ||
+            previous.state !== 'ready' ||
+            previous.originalCleanupScheduled
+          )
+            return;
+          const readRecord = async (recordId: string) => {
+            const row = await db.getFirstAsync<{ data: string }>(
+              'SELECT data FROM records WHERE user_id=? AND id=?',
+              userId,
+              recordId,
+            );
+            return row ? recordSchema.parse(JSON.parse(row.data)) : null;
+          };
+          // Verify synced metadata in the same transaction as reserving cleanup.
+          // A completion response alone is insufficient while row sync catches up.
+          const remote = await readRecord(id),
+            parent = await readRecord(previous.descriptor.parentId);
+          const file = remote?.attachment,
+            descriptor = previous.descriptor;
+          if (
+            !remote ||
+            remote.type !== 'attachment' ||
+            remote.version <= 0 ||
+            remote.deletedAt ||
+            !parent ||
+            parent.type !== 'note' ||
+            parent.version <= 0 ||
+            parent.deletedAt ||
+            remote.parentId !== descriptor.parentId ||
+            file?.status !== 'ready' ||
+            file.id !== descriptor.id ||
+            file.parentId !== descriptor.parentId ||
+            file.sha256 !== descriptor.sha256 ||
+            file.size !== descriptor.size ||
+            file.mime !== descriptor.mime ||
+            !file.processedSize ||
+            !file.processedMime ||
+            !/^[a-f0-9]{64}$/.test(file.processedSha256 ?? '')
+          )
+            return;
+          await db.runAsync(
+            'INSERT OR IGNORE INTO attachment_file_removals(user_id,id,local_uri) VALUES (?,?,?)',
+            userId,
+            id,
+            previous.localUri,
+          );
+          const next: AttachmentTransfer = {
+            ...previous,
+            revision: previous.revision + 1,
+            originalCleanupScheduled: true,
+          };
+          await db.runAsync(
+            'UPDATE attachment_transfers SET revision=?,data=? WHERE user_id=? AND id=?',
+            next.revision,
+            JSON.stringify(next),
+            userId,
+            id,
+          );
+          queued = true;
+        });
+        return queued;
+      },
       requestRemoval: (id: string) =>
         transaction(async () => {
           const transfer = await get(id);

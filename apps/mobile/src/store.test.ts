@@ -76,6 +76,23 @@ function attachment(parentId = v7()) {
   );
 }
 
+function readyAttachment(parent: RecordItem, job: ReturnType<typeof attachment>) {
+  return recordSchema.parse({
+    ...parent,
+    id: job.descriptor.id,
+    type: 'attachment',
+    parentId: parent.id,
+    version: parent.version + 1,
+    attachment: {
+      ...job.descriptor,
+      status: 'ready',
+      processedMime: 'image/webp',
+      processedSize: 100,
+      processedSha256: 'b'.repeat(64),
+    },
+  });
+}
+
 async function runtimeFixture() {
   const store = await openStore('a'),
     parent = note(),
@@ -146,6 +163,40 @@ async function runtimeFixture() {
 }
 
 describe('foreground attachment runtime', () => {
+  it('reclaims completed originals only after matching ready metadata syncs, retrying disk failures', async () => {
+    const f = await runtimeFixture(),
+      id = f.job.descriptor.id;
+    try {
+      await f.runtime.pick(f.parent.id);
+      f.network(true, true);
+      f.runtime.setActive(true);
+      await f.runtime.request();
+      expect((await f.store.attachmentTransfers.get(id))!.state).toBe('ready');
+      expect(f.files.remove).not.toHaveBeenCalled();
+      await f.runtime.keepOffline(id);
+      const pins = await f.store.attachmentCache.list();
+      await f.store.merge([readyAttachment(f.parent, f.job)], 4);
+      vi.mocked(f.files.remove).mockRejectedValueOnce(new Error('disk locked'));
+      await f.runtime.request();
+      expect(await f.store.attachmentTransfers.pendingFileRemovals()).toEqual([
+        { id, localUri: f.job.localUri },
+      ]);
+      expect((await f.store.attachmentTransfers.get(id))!.originalCleanupScheduled).toBe(true);
+      await f.runtime.request();
+      expect(await f.store.attachmentTransfers.pendingFileRemovals()).toEqual([]);
+      expect(await f.store.attachmentCache.list()).toEqual(pins);
+      const removals = vi.mocked(f.files.remove).mock.calls.length;
+      await f.runtime.retry(id);
+      await f.runtime.request();
+      expect(f.files.remove).toHaveBeenCalledTimes(removals);
+      expect(f.client.removeAttachment).not.toHaveBeenCalled();
+      f.network(false);
+      await f.runtime.share(id);
+      expect(f.files.shareDownloaded).toHaveBeenCalled();
+    } finally {
+      f.runtime.dispose();
+    }
+  });
   it('does not block uploads or runtime requests behind automatic preview I/O', async () => {
     const f = await runtimeFixture(),
       id = v7();
@@ -611,6 +662,112 @@ describe('durable offline download cache', () => {
 });
 
 describe('account-scoped attachment persistence', () => {
+  it('reserves completed-original cleanup atomically and preserves the ready attachment across reopening', async () => {
+    const store = await openStore('a'),
+      parent = note(),
+      original = attachment(parent.id);
+    await store.merge([parent, readyAttachment(parent, original)], 4);
+    await store.attachmentTransfers.enqueue(original);
+    expect(
+      await store.attachmentTransfers.queueCompletedOriginalCleanup(original.descriptor.id, 0),
+    ).toBe(false);
+    await store.attachmentTransfers.replace(0, { ...original, revision: 1, state: 'ready' });
+    expect(
+      await (
+        await openStore('b')
+      ).attachmentTransfers.queueCompletedOriginalCleanup(original.descriptor.id, 1),
+    ).toBe(false);
+    expect(
+      await store.attachmentTransfers.queueCompletedOriginalCleanup(original.descriptor.id, 0),
+    ).toBe(false);
+    expect(
+      await store.attachmentTransfers.queueCompletedOriginalCleanup(original.descriptor.id, 1),
+    ).toBe(true);
+    const reopened = (await openStore('a')).attachmentTransfers;
+    expect(await reopened.pendingFileRemovals()).toEqual([
+      { id: original.descriptor.id, localUri: original.localUri },
+    ]);
+    expect(await reopened.get(original.descriptor.id)).toMatchObject({
+      revision: 2,
+      state: 'ready',
+      originalCleanupScheduled: true,
+    });
+    expect(await reopened.removedIds()).toEqual([]);
+    expect(await reopened.pendingRemoteRemovals()).toEqual([]);
+    expect(await reopened.queueCompletedOriginalCleanup(original.descriptor.id, 2)).toBe(false);
+    await reopened.acknowledgeFileRemoval(original.descriptor.id);
+    expect(await reopened.queueCompletedOriginalCleanup(original.descriptor.id, 2)).toBe(false);
+    expect(await reopened.replace(2, { ...original, revision: 3, state: 'queued' })).toBe(false);
+    await reopened.enqueue(original); // Retrying the original enqueue never resets a retired upload.
+    expect((await reopened.get(original.descriptor.id))!.state).toBe('ready');
+    expect(await reopened.pendingFileRemovals()).toEqual([]);
+    await reopened.requestRemoval(original.descriptor.id);
+    expect(await reopened.get(original.descriptor.id)).toBeNull();
+    expect(await reopened.pendingRemoteRemovals()).toEqual([{ id: original.descriptor.id }]);
+  });
+  it('protects originals until synced metadata is ready, live and matches their identity', async () => {
+    const store = await openStore('a'),
+      parent = note(),
+      original = attachment(parent.id),
+      id = original.descriptor.id;
+    await store.merge([parent], 3);
+    await store.attachmentTransfers.enqueue(original);
+    await store.attachmentTransfers.replace(0, { ...original, revision: 1, state: 'ready' });
+    expect(await store.attachmentTransfers.queueCompletedOriginalCleanup(id, 1)).toBe(false);
+    const valid = readyAttachment(parent, original);
+    const variants = [
+      { ...valid, attachment: { ...valid.attachment!, status: 'processing' as const } },
+      { ...valid, attachment: { ...valid.attachment!, sha256: 'c'.repeat(64) } },
+      { ...valid, attachment: { ...valid.attachment!, processedSha256: null } },
+      { ...valid, attachment: { ...valid.attachment!, size: 20 } },
+      { ...valid, deletedAt: new Date().toISOString() },
+    ];
+    let version = 4;
+    for (const remote of variants) {
+      await store.merge([{ ...remote, version: ++version }], version);
+      expect(await store.attachmentTransfers.queueCompletedOriginalCleanup(id, 1)).toBe(false);
+    }
+    await store.merge(
+      [
+        { ...valid, version: ++version },
+        { ...parent, version, deletedAt: new Date().toISOString() },
+      ],
+      version,
+    );
+    expect(await store.attachmentTransfers.queueCompletedOriginalCleanup(id, 1)).toBe(false);
+    expect(await store.attachmentTransfers.pendingFileRemovals()).toEqual([]);
+    expect((await store.attachmentTransfers.get(id))!.originalCleanupScheduled).toBeUndefined();
+    await expect(
+      store.attachmentTransfers.replace(1, {
+        ...original,
+        revision: 2,
+        state: 'ready',
+        originalCleanupScheduled: true,
+      }),
+    ).rejects.toThrow('synced confirmation');
+  });
+  it('rolls back cleanup reservation if its transfer marker cannot be saved', async () => {
+    const store = await openStore('a'),
+      parent = note(),
+      original = attachment(parent.id);
+    await store.merge([parent, readyAttachment(parent, original)], 4);
+    await store.attachmentTransfers.enqueue(original);
+    await store.attachmentTransfers.replace(0, { ...original, revision: 1, state: 'ready' });
+    database.exec(
+      "CREATE TRIGGER fail_cleanup BEFORE UPDATE ON attachment_transfers BEGIN SELECT RAISE(ABORT,'disk full'); END;",
+    );
+    await expect(
+      store.attachmentTransfers.queueCompletedOriginalCleanup(original.descriptor.id, 1),
+    ).rejects.toThrow('disk full');
+    expect(await store.attachmentTransfers.pendingFileRemovals()).toEqual([]);
+    expect(await store.attachmentTransfers.get(original.descriptor.id)).toMatchObject({
+      revision: 1,
+      state: 'ready',
+    });
+    expect(
+      (await store.attachmentTransfers.get(original.descriptor.id))!.originalCleanupScheduled,
+    ).toBeUndefined();
+  });
   it('persists offline removals across reopening without leaking between accounts', async () => {
     const store = await openStore('a'),
       original = attachment();

@@ -127,6 +127,33 @@ function select(bytes: Buffer, mime = 'text/plain') {
 }
 
 describe('native attachment adapter with actual filesystem bytes', () => {
+  it('reclaims an upload copy without deleting the picker source or verified offline download', async () => {
+    const files = await createNativeAttachmentFiles(v7(), v7);
+    const sourceBytes = Buffer.from('original photo bytes'),
+      source = select(sourceBytes, 'image/jpeg');
+    const job = (await files.pick(v7(), signal()))!;
+    const bytes = Buffer.from(previewData.split(',')[1]!, 'base64');
+    fetchMock.mockImplementation(async () => new Response(bytes));
+    const downloaded = await files.download(
+      job.descriptor.id,
+      {
+        url: 'https://storage.example.test/file',
+        mime: 'image/webp',
+        size: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      },
+      signal(),
+      async () => true,
+    );
+    expect(await files.originalBytes()).toBe(sourceBytes.length);
+    await files.remove(job.localUri);
+    await files.remove(job.localUri); // A restart can retry after deletion but before SQLite acknowledgement.
+    expect(await files.originalBytes()).toBe(0);
+    expect(readFileSync(source)).toEqual(sourceBytes);
+    expect(await files.verifyDownload(downloaded, signal())).toBe(true);
+    await files.shareDownloaded(downloaded, signal(), async () => true);
+    expect(readFileSync(fileURLToPath(share.mock.calls[0]![0]))).toEqual(bytes);
+  });
   it('keeps verified thumbnails separate from full downloads and refuses corrupt preview bytes', async () => {
     const files = await createNativeAttachmentFiles(v7(), v7),
       id = v7();

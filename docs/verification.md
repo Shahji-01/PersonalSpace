@@ -1,5 +1,13 @@
 # Verification
 
+## Completed upload-copy cleanup — 5 October 2026
+
+- All 167 unit tests passed. Five new cases cover atomic cleanup reservation, matching synced readiness, original fingerprint and parent lifecycle checks, account isolation, stale progress/retry protection, restart/idempotent cleanup, disk failure and transaction rollback. An actual-filesystem adapter test confirms removal frees upload-copy bytes while preserving the picker source and verified offline download/share.
+- Tools/tests and all 14 workspaces passed TypeScript in the shared checkout. Changed files passed ESLint, formatting and diff checks. Android/iOS Hermes + DOM exports passed.
+- This changes the local transfer schema and mobile cleanup/storage UI; API contracts and server processing are unchanged. Integration/browser suites were not rerun. The optional marker accepts older persisted rows, but downgrading to a strict older client after cleanup is not supported. No new database table or native dependency was added.
+
+SQLite tests exercise the actual store transactions; filesystem tests replace Expo bindings. Physical-device storage interruption and OS acceptance remain open. The emulator was untouched, and unrelated unfinished work was excluded from the commit.
+
 ## Automatic recent thumbnails — 5 October 2026
 
 - All 162 unit tests passed. Nine new cases cover the 30-day boundary, live-parent/ready/synced selection, cached/removed exclusions, newest-first ordering, bounded batches, retry delays, authentication pause, capacity protection, cancellation, clear-cache suppression and foreground restart. SQLite/runtime tests verify an upload can finish while preview I/O is stalled and that cancelled bytes do not enter the manifest.

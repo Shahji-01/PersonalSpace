@@ -129,6 +129,8 @@ export const attachmentTransferSchema = z.strictObject({
   descriptor: attachmentDescriptorSchema,
   // Set only after the picker asset has been copied to account-scoped durable app storage.
   localUri: z.string().startsWith('file:///').max(4096),
+  // Local-only terminal marker: a durable cleanup request now owns these bytes.
+  originalCleanupScheduled: z.literal(true).optional(),
   revision: z.number().int().nonnegative().safe(),
   state: z.enum(['queued', 'uploading', 'processing', 'ready', 'failed', 'auth_required']),
   session: attachmentUploadSessionSchema.nullable(),

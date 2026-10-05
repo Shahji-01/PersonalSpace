@@ -64,7 +64,7 @@ export function StorageScreen({
               <Text style={styles.label}>
                 {mb(usage.originalBytes + usage.downloadedBytes)} used by files
               </Text>
-              <Text style={styles.subtitle}>Upload originals: {mb(usage.originalBytes)}</Text>
+              <Text style={styles.subtitle}>Local upload copies: {mb(usage.originalBytes)}</Text>
               <Text style={styles.subtitle}>Files and previews: {mb(usage.downloadedBytes)}</Text>
               <Text style={styles.subtitle}>Kept offline: {mb(usage.pinnedBytes)}</Text>
             </Card>
@@ -82,7 +82,11 @@ export function StorageScreen({
             </View>
             <Text style={styles.subtitle}>
               Older unused downloads are removed first. Files marked Keep offline stay available,
-              even if they exceed this limit. Upload originals are protected.
+              even if they exceed this limit. Uploads awaiting confirmation are protected.
+            </Text>
+            <Text style={styles.subtitle}>
+              Local upload copies are removed after the server confirms processing and sync
+              completes. Keep offline preserves a downloaded copy for use without a connection.
             </Text>
             <Text style={styles.subtitle}>
               Recent image previews download automatically while the app is open, when space is
@@ -96,7 +100,7 @@ export function StorageScreen({
               onPress={() =>
                 Alert.alert(
                   'Clear downloaded cache?',
-                  'Downloaded files can be fetched again when online. Files kept offline and upload originals stay on this device.',
+                  'Downloaded files can be fetched again when online. Files kept offline and uploads awaiting confirmation stay on this device.',
                   [
                     { text: 'Cancel', style: 'cancel' },
                     { text: 'Clear cache', onPress: () => void action(runtime.clearCache) },

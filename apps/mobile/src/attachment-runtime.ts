@@ -159,7 +159,13 @@ export function createAttachmentRuntime(options: {
             .maintain()
             .then(() => thumbnails.request())
             .catch(() => schedule(Date.now() + 30000));
+          for (const job of await transfers.list()) {
+            lifetime.signal.throwIfAborted();
+            if (job.state === 'ready' && !job.originalCleanupScheduled)
+              await transfers.queueCompletedOriginalCleanup(job.descriptor.id, job.revision);
+          }
           for (const item of await transfers.pendingFileRemovals()) {
+            lifetime.signal.throwIfAborted();
             try {
               await files.remove(item.localUri);
               await transfers.acknowledgeFileRemoval(item.id);
