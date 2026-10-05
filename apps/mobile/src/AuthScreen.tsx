@@ -11,6 +11,7 @@ import {
 import { Button, Field, styles } from './components';
 import {
   completeSocialSession,
+  requestPasswordReset,
   signIn,
   startSocialSignIn,
   tokenFromCallback,
@@ -25,6 +26,25 @@ export function AuthScreen({ onSession }: { onSession: (session: Session) => voi
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+
+  async function forgotPassword() {
+    if (!email.trim()) {
+      setError('Enter your email first, then tap “Forgot password?”.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await requestPasswordReset(email.trim());
+      setNotice('If that email has an account, a reset link is on its way.');
+    } catch {
+      setError('Could not start a password reset. Try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   // Complete a social sign-in when the provider redirects back to the app.
   useEffect(() => {
@@ -126,6 +146,11 @@ export function AuthScreen({ onSession }: { onSession: (session: Session) => voi
             {error}
           </Text>
         )}
+        {!!notice && (
+          <Text accessibilityRole="alert" style={styles.subtitle}>
+            {notice}
+          </Text>
+        )}
         <Button
           label={busy ? 'Please wait…' : signup ? 'Create account' : 'Sign in'}
           disabled={
@@ -133,6 +158,14 @@ export function AuthScreen({ onSession }: { onSession: (session: Session) => voi
           }
           onPress={() => void submit()}
         />
+        {!signup && (
+          <Button
+            secondary
+            label="Forgot password?"
+            disabled={busy}
+            onPress={() => void forgotPassword()}
+          />
+        )}
         <Button
           secondary
           label={signup ? 'Already have an account? Sign in' : 'New here? Create an account'}

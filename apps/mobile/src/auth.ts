@@ -49,6 +49,19 @@ export async function signIn(input: {
 }
 export const clearSession = () => SecureStore.deleteItemAsync('personalspace.session');
 
+/**
+ * Request a password-reset email. Resolves regardless of whether the email has an
+ * account — the server never reveals account existence.
+ */
+export async function requestPasswordReset(email: string): Promise<void> {
+  await fetch(`${apiUrl}/api/auth/request-password-reset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: 'personalspace://' },
+    body: JSON.stringify({ email, redirectTo: 'personalspace://reset' }),
+    signal: AbortSignal.timeout(15000),
+  });
+}
+
 export const SOCIAL_CALLBACK = 'personalspace://oauth';
 
 /**
