@@ -2,9 +2,10 @@ import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { z } from 'zod';
 import { and, eq, isNull } from 'drizzle-orm';
-import { createDatabase, outboxEvents, exportJobs } from '@personalspace/db';
+import { createDatabase, outboxEvents } from '@personalspace/db';
 import { createS3Storage, readStorageConfig } from '@personalspace/storage';
 import { cleanAttachment, cleanupEventSchema } from './attachment-cleanup';
+import { processExport } from './export-processing';
 import {
   createAttachmentProcessor,
   cleanupTrash,
@@ -12,9 +13,6 @@ import {
   cleanupIdempotencyKeys,
   reconcileBalances,
   expireExports,
-  generateExportData,
-  exportToJson,
-  exportToCsv,
   executePendingDeletions,
   processPendingMetadata,
   deliverDueReminders,
@@ -124,7 +122,7 @@ worker.on('error', () => console.error(JSON.stringify({ event: 'worker_unavailab
 const maintenanceQueue = new Queue('maintenance', { connection: redis });
 const maintenanceWorker = new Worker(
   'maintenance',
-  async (job) => {
+  async () => {
     const log = (event: string, detail?: object) =>
       console.log(JSON.stringify({ event, ...detail }));
     try {
@@ -177,65 +175,7 @@ maintenanceWorker.on('error', () =>
 const exportQueue = new Queue('export', { connection: redis });
 const exportWorker = new Worker(
   'export',
-  async (job) => {
-    const data = z
-      .object({
-        userId: z.uuid(),
-        jobId: z.uuid(),
-        format: z.enum(['json', 'csv', 'markdown']),
-        scope: z.enum(['everything', 'notes', 'tasks', 'learning', 'money']),
-      })
-      .parse(job.data);
-    const { eq } = await import('drizzle-orm');
-    await maintenanceDb
-      .update(exportJobs)
-      .set({ status: 'processing', startedAt: new Date() })
-      .where(eq(exportJobs.id, data.jobId));
-    try {
-      const exportData = await generateExportData(maintenanceDb, data.userId, data.scope);
-      let result: string;
-      let sizeBytes: number;
-      if (data.format === 'json') {
-        result = exportToJson(exportData);
-        sizeBytes = Buffer.byteLength(result, 'utf8');
-      } else if (data.format === 'csv') {
-        const files = exportToCsv(exportData);
-        result = JSON.stringify(files);
-        sizeBytes = Buffer.byteLength(result, 'utf8');
-      } else {
-        // Markdown: export notes as plain text.
-        result = exportToJson(exportData);
-        sizeBytes = Buffer.byteLength(result, 'utf8');
-      }
-      // In production, upload to S3. For now, store size.
-      const storageKey = `exports/${data.userId}/${data.jobId}.${data.format}`;
-      if (storage) {
-        const mime =
-          data.format === 'json'
-            ? 'application/json'
-            : data.format === 'csv'
-              ? 'text/csv'
-              : 'text/markdown';
-        await storage.write(storageKey, Buffer.from(result, 'utf8'), mime);
-      }
-      await maintenanceDb
-        .update(exportJobs)
-        .set({
-          status: 'ready',
-          storageKey,
-          sizeBytes,
-          completedAt: new Date(),
-          downloadUrlExpiresAt: new Date(Date.now() + 24 * 3600 * 1000),
-        })
-        .where(eq(exportJobs.id, data.jobId));
-    } catch (e) {
-      await maintenanceDb
-        .update(exportJobs)
-        .set({ status: 'failed', error: String(e), completedAt: new Date() })
-        .where(eq(exportJobs.id, data.jobId));
-      throw e;
-    }
-  },
+  async (job) => processExport(maintenanceDb, storage, job.data),
   { connection: redis, concurrency: 1 },
 );
 exportWorker.on('failed', (job) =>

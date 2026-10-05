@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ScrollView, Text, View } from 'react-native';
+import { ScrollView, Text, View, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   commandSchema,
@@ -246,6 +246,23 @@ export function LearningScreen({
               ))}
             </View>
             <View style={styles.row}>
+              {!!r.url && (
+                <Button
+                  secondary
+                  label="Open URL"
+                  disabled={saving}
+                  onPress={() => {
+                    void Linking.openURL(r.url!);
+                    if (r.status === 'saved' || r.status === 'want_to_learn') {
+                      void enqueue(
+                        { op: 'resource.setStatus', id: r.id, status: 'in_progress', baseVersion: r.version },
+                        { ...r, status: 'in_progress' },
+                        r,
+                      );
+                    }
+                  }}
+                />
+              )}
               <Button
                 secondary
                 label="+25%"

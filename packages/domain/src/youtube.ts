@@ -6,10 +6,34 @@
  */
 
 import { v7 as uuidv7 } from 'uuid';
-import { eq, and, isNull } from 'drizzle-orm';
 import { learningResources, type Database } from '@personalspace/db';
 
 const YOUTUBE_API_URL = 'https://www.googleapis.com/youtube/v3';
+
+interface YouTubeSnippet {
+  title: string;
+  description: string;
+  channelTitle: string;
+  position?: number;
+  thumbnails?: { high?: { url: string }; default?: { url: string } };
+  resourceId?: { videoId: string };
+}
+interface YouTubeItem {
+  snippet: YouTubeSnippet;
+  contentDetails?: { duration?: string };
+}
+interface YouTubeListResponse {
+  items?: YouTubeItem[];
+  nextPageToken?: string;
+}
+interface PlaylistItem {
+  videoId: string;
+  title: string;
+  description: string;
+  thumbnailUrl?: string;
+  author: string;
+  position?: number;
+}
 
 /** Parses a YouTube video ID or playlist ID from a URL. */
 export function parseYouTubeId(urlStr: string): { type: 'video' | 'playlist' | null; id: string | null } {
@@ -49,7 +73,7 @@ export async function fetchYouTubeMetadata(id: string, type: 'video' | 'playlist
   const res = await fetch(url);
   if (!res.ok) throw new Error(`YouTube API error: ${res.status}`);
   
-  const data = (await res.json()) as any;
+  const data = (await res.json()) as YouTubeListResponse;
   const item = data.items?.[0];
   if (!item) throw new Error(`YouTube ${type} not found`);
 
@@ -64,7 +88,7 @@ export async function fetchYouTubeMetadata(id: string, type: 'video' | 'playlist
 
 /** Fetches playlist items and returns them formatted for insertion. */
 export async function fetchPlaylistItems(playlistId: string, apiKey: string) {
-  const items: any[] = [];
+  const items: PlaylistItem[] = [];
   let nextPageToken = '';
   
   // Cap at 50 items for v1 to avoid huge expansions.
@@ -73,10 +97,10 @@ export async function fetchPlaylistItems(playlistId: string, apiKey: string) {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`YouTube API error: ${res.status}`);
     
-    const data = (await res.json()) as any;
+    const data = (await res.json()) as YouTubeListResponse;
     for (const item of data.items || []) {
       items.push({
-        videoId: item.snippet.resourceId.videoId,
+        videoId: item.snippet.resourceId?.videoId ?? '',
         title: item.snippet.title,
         description: item.snippet.description,
         thumbnailUrl: item.snippet.thumbnails?.high?.url || item.snippet.thumbnails?.default?.url,
@@ -105,9 +129,13 @@ function parseIsoDuration(duration: string | undefined): number {
  * Integrates playlist expansion into the database.
  * Creates child learning_resources for each playlist item.
  */
-export async function expandPlaylist(db: Database, parentResource: any, YOUTUBE_API_KEY?: string) {
+export async function expandPlaylist(
+  db: Database,
+  parentResource: typeof learningResources.$inferSelect,
+  YOUTUBE_API_KEY?: string,
+) {
   if (!YOUTUBE_API_KEY) return;
-  const { type, id } = parseYouTubeId(parentResource.url);
+  const { type, id } = parseYouTubeId(parentResource.url ?? '');
   if (type !== 'playlist' || !id) return;
 
   const items = await fetchPlaylistItems(id, YOUTUBE_API_KEY);

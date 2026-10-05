@@ -6,7 +6,7 @@
  * bounds response size to 1MB.
  */
 
-import { eq, and, lte, isNull } from 'drizzle-orm';
+import { eq, and, isNull } from 'drizzle-orm';
 import { learningResources, type Database } from '@personalspace/db';
 import { parseYouTubeId, fetchYouTubeMetadata, expandPlaylist } from './youtube';
 
@@ -173,7 +173,7 @@ export async function processPendingMetadata(db: Database): Promise<number> {
         meta = await extractMetadata(resource.url);
       }
       
-      const patch: any = {
+      const patch: Record<string, unknown> = {
         metadataStatus: 'ok',
         metadataFetchedAt: new Date(),
         updatedAt: new Date(),
@@ -189,7 +189,7 @@ export async function processPendingMetadata(db: Database): Promise<number> {
         .update(learningResources)
         .set(patch)
         .where(eq(learningResources.id, resource.id));
-    } catch (e) {
+    } catch {
       await db
         .update(learningResources)
         .set({ metadataStatus: 'failed', metadataFetchedAt: new Date() })

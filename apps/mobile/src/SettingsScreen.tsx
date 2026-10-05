@@ -3,7 +3,7 @@ import { Alert, Modal, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { createClient } from '@personalspace/api-client';
 import type { PreferencesResponse, ExportJobResponse, DeletionStatusResponse } from '@personalspace/validation';
-import { Button, Card, Field, styles } from './components';
+import { Button, Card, styles } from './components';
 
 export function SettingsScreen({
   visible,
@@ -108,6 +108,14 @@ export function SettingsScreen({
                   <Text style={styles.subtitle}>Theme: {settings.theme}</Text>
                 </Card>
               )}
+
+              <Card>
+                <Text style={styles.label}>Session</Text>
+                <Text style={styles.subtitle}>
+                  Signing out keeps this account&apos;s unsynced data on the device.
+                </Text>
+                <Button secondary label="Sign out" onPress={onSignOut} disabled={saving} />
+              </Card>
 
               <Text style={[styles.title, { marginTop: 24 }]}>Data & Export</Text>
               

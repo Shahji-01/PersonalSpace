@@ -9,18 +9,20 @@
     "build": "tsup"
   },
   "dependencies": {
-    "@personalspace/domain": "workspace:*",
-    "@personalspace/validation": "workspace:*",
-    "sharp": "0.35.5",
-    "file-type": "21.3.0",
-    "@personalspace/storage": "workspace:*",
     "@personalspace/db": "workspace:*",
+    "@personalspace/domain": "workspace:*",
+    "@personalspace/storage": "workspace:*",
+    "@personalspace/validation": "workspace:*",
+    "archiver": "7.0.1",
     "bullmq": "^5.61.0",
+    "drizzle-orm": "^0.45.2",
+    "file-type": "21.3.0",
     "ioredis": "^5.8.0",
-    "zod": "^4.1.0",
-    "drizzle-orm": "^0.45.2"
+    "sharp": "0.35.5",
+    "zod": "^4.1.0"
   },
   "devDependencies": {
+    "@types/archiver": "6.0.4",
     "tsup": "^8.5.0"
   }
 }

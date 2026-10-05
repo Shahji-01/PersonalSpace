@@ -26,6 +26,7 @@ import {
 import { createS3Storage, readStorageConfig } from '../packages/storage/src/index';
 import { createApp } from '../apps/api/src/app';
 import { cleanAttachment } from '../apps/worker/src/attachment-cleanup';
+import { processExport } from '../apps/worker/src/export-processing';
 import {
   attachmentUploadStateSchema,
   attachmentUploadGrantSchema,
@@ -1085,4 +1086,146 @@ describe('attachment processing and download', () => {
       await redisContainer.stop();
     }
   }, 60000);
+});
+
+describe('private export artifacts', () => {
+  let maintenance: ReturnType<typeof createDatabase>;
+  beforeAll(() => {
+    const url = new URL(postgres.getConnectionUri());
+    url.username = 'personalspace_maintenance';
+    url.password = 'local_maintenance_only';
+    maintenance = createDatabase(url.href);
+  });
+  afterAll(async () => {
+    await maintenance.pool.end();
+  });
+  async function job(format: 'json' | 'csv' | 'markdown' = 'json') {
+    const jobId = v7();
+    await owner.query(
+      "INSERT INTO export_jobs(id,user_id,format,scope) VALUES ($1,$2,$3,'notes')",
+      [jobId, userA, format],
+    );
+    return { jobId, userId: userA, format, scope: 'notes' as const };
+  }
+  async function status(id: string) {
+    return (await owner.query('SELECT * FROM export_jobs WHERE id=$1', [id])).rows[0];
+  }
+  it('stores actual JSON and ZIP bytes through the restricted maintenance role and isolates users', async () => {
+    const own = await note(),
+      foreign = await note(userB);
+    for (const format of ['json', 'csv', 'markdown'] as const) {
+      const input = await job(format);
+      await processExport(maintenance.db, storage, input);
+      const ready = await status(input.jobId);
+      expect(ready.status).toBe('ready');
+      expect(ready.download_url_expires_at.getTime() - ready.completed_at.getTime()).toBeCloseTo(
+        24 * 3600 * 1000,
+        -2,
+      );
+      const bytes = (await storage.read(ready.storage_key, 50 * MB))!;
+      expect(Number(ready.size_bytes)).toBe(bytes.length);
+      if (format === 'json') {
+        const ids = JSON.parse(bytes.toString()).notes.map((row: { id: string }) => row.id);
+        expect(ids).toContain(own.id);
+        expect(ids).not.toContain(foreign.id);
+      } else {
+        expect(bytes.readUInt32LE(0)).toBe(0x04034b50);
+        expect(ready.storage_key).toMatch(/\.zip$/);
+      }
+      expect(
+        (await fetch(`${endpoint}/private-test-attachments/${ready.storage_key}`)).status,
+      ).toBe(403);
+      await processExport(maintenance.db, storage, input);
+      expect((await status(input.jobId)).storage_key).toBe(ready.storage_key);
+    }
+  });
+  it('rejects mismatched payloads and never marks missing or failed storage ready', async () => {
+    const input = await job();
+    await processExport(maintenance.db, storage, { ...input, userId: userB });
+    await processExport(maintenance.db, storage, { ...input, format: 'markdown' });
+    expect((await status(input.jobId)).status).toBe('queued');
+    await expect(processExport(maintenance.db, null, input)).rejects.toThrow(
+      'Export generation failed',
+    );
+    expect(await status(input.jobId)).toMatchObject({
+      status: 'failed',
+      storage_key: null,
+      size_bytes: null,
+      download_url_expires_at: null,
+    });
+    let attempted = '';
+    await expect(
+      processExport(
+        maintenance.db,
+        {
+          ...storage,
+          write: async (key, bytes, mime) => {
+            attempted = key;
+            await storage.write(key, bytes, mime);
+            throw new Error('private provider response');
+          },
+        },
+        input,
+      ),
+    ).rejects.toThrow('Export generation failed');
+    expect(await storage.head(attempted)).toBeNull();
+    expect((await status(input.jobId)).error).not.toContain('private provider');
+    await processExport(maintenance.db, storage, input);
+    expect((await status(input.jobId)).status).toBe('ready');
+  });
+  it('removes unverifiable uploads and cannot republish an expired job', async () => {
+    const input = await job();
+    let attempted = '';
+    await expect(
+      processExport(
+        maintenance.db,
+        {
+          ...storage,
+          write: async (key, bytes, mime) => {
+            attempted = key;
+            await storage.write(key, bytes, mime);
+          },
+          head: async () => null,
+        },
+        input,
+      ),
+    ).rejects.toThrow();
+    expect(await storage.head(attempted)).toBeNull();
+    expect((await status(input.jobId)).status).toBe('failed');
+    await processExport(
+      maintenance.db,
+      {
+        ...storage,
+        write: async (key, bytes, mime) => {
+          attempted = key;
+          await storage.write(key, bytes, mime);
+          await owner.query("UPDATE export_jobs SET status='expired' WHERE id=$1", [input.jobId]);
+        },
+      },
+      input,
+    );
+    expect((await status(input.jobId)).status).toBe('expired');
+    expect(await storage.head(attempted)).toBeNull();
+  });
+  it('a late attempt cannot overwrite a newer ready artifact', async () => {
+    const input = await job('csv');
+    let lateKey = '';
+    await processExport(
+      maintenance.db,
+      {
+        ...storage,
+        write: async (key, bytes, mime) => {
+          lateKey = key;
+          await processExport(maintenance.db, storage, input);
+          await storage.write(key, bytes, mime);
+        },
+      },
+      input,
+    );
+    const ready = await status(input.jobId);
+    expect(ready.status).toBe('ready');
+    expect(ready.storage_key).not.toBe(lateKey);
+    expect(await storage.head(ready.storage_key)).not.toBeNull();
+    expect(await storage.head(lateKey)).toBeNull();
+  });
 });

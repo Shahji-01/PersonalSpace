@@ -6,6 +6,7 @@
  */
 
 import { eq, isNull, and } from 'drizzle-orm';
+import { documentMarkdown, readDocument } from '@personalspace/editor-schema';
 import {
   notes,
   tasks,
@@ -26,7 +27,7 @@ import {
 export type ExportScope = 'everything' | 'notes' | 'tasks' | 'learning' | 'money';
 export type ExportFormat = 'json' | 'csv' | 'markdown';
 
-interface ExportData {
+export interface ExportData {
   exportedAt: string;
   scope: ExportScope;
   notes?: unknown[];
@@ -143,65 +144,106 @@ export function exportToJson(data: ExportData): string {
   return JSON.stringify(data, null, 2);
 }
 
-/** Convert export data to CSV. Only applicable for flat entity types. */
+const groups = [
+  'notes',
+  'folders',
+  'tasks',
+  'projects',
+  'reminders',
+  'learningCollections',
+  'learningResources',
+  'people',
+  'accounts',
+  'categories',
+  'debts',
+  'transactions',
+] as const;
+
+/** CSV keeps every selected column, including structured content/splits as JSON cells. */
 export function exportToCsv(data: ExportData): Record<string, string> {
   const files: Record<string, string> = {};
-
-  if (data.tasks?.length) {
-    files['tasks.csv'] = toCsv(data.tasks as Record<string, unknown>[]);
+  for (const group of groups) {
+    const rows = data[group] as Record<string, unknown>[] | undefined;
+    if (rows?.length) files[`${group}.csv`] = toCsv(rows);
   }
-  if (data.notes?.length) {
-    files['notes.csv'] = toCsv(
-      (data.notes as Record<string, unknown>[]).map((n) => ({
-        id: n.id,
-        title: n.title,
-        status: n.status,
-        folderId: n.folderId,
-        createdAt: n.createdAt,
-        updatedAt: n.updatedAt,
-      })),
-    );
-  }
-  if (data.transactions?.length) {
-    files['transactions.csv'] = toCsv(
-      (data.transactions as Record<string, unknown>[]).map((t) => ({
-        id: t.id,
-        type: t.transactionType,
-        amount: t.amountMinor,
-        currency: t.currency,
-        date: t.transactionDate,
-        description: t.description,
-        merchant: t.merchant,
-        status: t.status,
-        accountId: t.accountId,
-      })),
-    );
-  }
-  if (data.accounts?.length) {
-    files['accounts.csv'] = toCsv(data.accounts as Record<string, unknown>[]);
-  }
-  if (data.people?.length) {
-    files['people.csv'] = toCsv(data.people as Record<string, unknown>[]);
-  }
-  if (data.debts?.length) {
-    files['debts.csv'] = toCsv(data.debts as Record<string, unknown>[]);
-  }
-
   return files;
 }
 
-/** Simple CSV serializer for an array of objects. */
+function scalar(value: unknown): string {
+  if (value == null) return '';
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
 function toCsv(rows: Record<string, unknown>[]): string {
-  if (!rows.length) return '';
-  const headers = Object.keys(rows[0]!);
-  const escape = (v: unknown) => {
-    const s = v == null ? '' : String(v);
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"`
-      : s;
+  const headers = [...new Set(rows.flatMap((row) => Object.keys(row)))].sort();
+  const escape = (value: unknown) => {
+    let text = scalar(value);
+    // Quoting alone does not stop spreadsheet formula evaluation. Preserve numeric amounts.
+    if (typeof value === 'string' && /^[\s]*[=+@-]/.test(text)) text = `'${text}`;
+    return `"${text.replace(/"/g, '""')}"`;
   };
-  return [
-    headers.join(','),
-    ...rows.map((row) => headers.map((h) => escape(row[h])).join(',')),
-  ].join('\n');
+  return (
+    [
+      headers.map(escape).join(','),
+      ...rows.map((row) => headers.map((key) => escape(row[key])).join(',')),
+    ].join('\r\n') + '\r\n'
+  );
+}
+
+function identity(value: unknown): string {
+  if (typeof value !== 'string' || !/^[a-f0-9-]{36}$/i.test(value))
+    throw new Error('Invalid export identity');
+  return value;
+}
+function label(value: unknown): string {
+  return scalar(value)
+    .replace(/[\r\n]/g, ' ')
+    .replace(/[\\`*_<>[\]]/g, (character) => `\\${character}`);
+}
+
+/** Stable ID paths avoid filename collisions, traversal and platform-reserved titles. */
+export function exportToMarkdown(data: ExportData): Record<string, string> {
+  const files: Record<string, string> = {};
+  const folders = new Map(
+    (data.folders as Record<string, unknown>[] | undefined)?.map((row) => [
+      identity(row.id),
+      row,
+    ]) ?? [],
+  );
+  const folderPath = (id: unknown): string => {
+    const chain: string[] = [],
+      seen = new Set<string>();
+    while (typeof id === 'string' && folders.has(id)) {
+      if (seen.has(id) || chain.length >= 3) throw new Error('Invalid export folder hierarchy');
+      seen.add(id);
+      chain.unshift(`folder-${identity(id)}`);
+      id = folders.get(id)!.parentId;
+    }
+    return chain.length ? `${chain.join('/')}/` : '';
+  };
+  for (const folder of folders.values()) {
+    files[`notes/${folderPath(folder.id)}README.md`] = `# ${label(folder.name)}\n`;
+  }
+  for (const group of groups.filter((name) => name !== 'folders')) {
+    for (const row of (data[group] ?? []) as Record<string, unknown>[]) {
+      const id = identity(row.id);
+      const path =
+        group === 'notes' ? `notes/${folderPath(row.folderId)}note-${id}.md` : `${group}/${id}.md`;
+      const content =
+        group === 'notes' ? row.contentJson : group === 'tasks' ? row.descriptionJson : null;
+      const body = content
+        ? documentMarkdown(readDocument(content, Number(row.contentSchemaVersion ?? 1)))
+        : scalar(row.contentText ?? row.description ?? row.text);
+      const title = row.title ?? row.name ?? row.text ?? id;
+      const metadata = Object.entries(row).filter(
+        ([key]) =>
+          !['contentJson', 'descriptionJson', 'contentText', 'text', 'title', 'name'].includes(key),
+      );
+      files[path] =
+        `# ${label(title)}\n\n${body}\n\n## Details\n\n${metadata.map(([key, value]) => `- **${label(key)}:** ${label(value)}`).join('\n')}\n`;
+    }
+  }
+  return files;
 }

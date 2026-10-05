@@ -45,6 +45,7 @@ import { ProjectNotesScreen } from './ProjectNotesScreen';
 import { ProjectResourcesScreen } from './ProjectResourcesScreen';
 import { taskIsClosed, taskIsOverdue, taskMatches, taskViews, type TaskView } from './task-views';
 import { SettingsScreen } from './SettingsScreen';
+import { setupNotifications } from './notifications';
 import { RemindersScreen } from './RemindersScreen';
 import { LearningScreen } from './LearningScreen';
 import { MoneyScreen } from './MoneyScreen';
@@ -246,6 +247,10 @@ function Space({ session, onSignOut }: { session: Session; onSignOut: () => void
   useEffect(() => {
     setTagFilter(null);
   }, [tab, library, taskView]);
+  useEffect(() => {
+    if (!mounted.current || !records.length) return;
+    void setupNotifications(client, records);
+  }, [client, records]);
   const today = localDate();
   const suggestion = suggestCapture(text, today);
   const tomorrow = localDate(1);

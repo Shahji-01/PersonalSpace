@@ -15,14 +15,14 @@ import {
   pushResponseSchema,
   type Mutation,
   preferencesResponseSchema,
-  preferencesUpdateSchema,
   type PreferencesUpdate,
-  exportRequestSchema,
   type ExportRequest,
   exportJobResponseSchema,
-  deletionRequestSchema,
   type DeletionRequest,
   deletionStatusResponseSchema,
+  registerDeviceSchema,
+  type RegisterDevice,
+  updateDeviceWatermarkSchema,
 } from '@personalspace/validation';
 
 export class ApiError extends Error {
@@ -151,6 +151,11 @@ export function createClient(baseUrl: string, token: () => string | null) {
       request('/api/v1/me/deletion', deletionStatusResponseSchema, req),
     cancelDeletion: () =>
       request('/api/v1/me/deletion', deletionStatusResponseSchema, { action: 'cancel' }),
+    // Devices (§50)
+    registerDevice: (req: RegisterDevice) =>
+      request('/api/v1/devices', z.object({ success: z.literal(true) }), req),
+    updateDeviceWatermark: (req: { remindersScheduledThrough: string }) =>
+      request('/api/v1/devices/watermark', z.object({ success: z.literal(true) }), req),
   };
 }
 

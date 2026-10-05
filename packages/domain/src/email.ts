@@ -6,7 +6,7 @@
  * Falls back to logging in development if no provider is configured.
  */
 
-import { eq, and, isNull } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { notificationLog, authUsers, type Database } from '@personalspace/db';
 
 export interface EmailProvider {
@@ -15,7 +15,7 @@ export interface EmailProvider {
 
 /** Mock provider for development. */
 export class ConsoleEmailProvider implements EmailProvider {
-  async sendEmail(to: string, subject: string, body: string, html?: string): Promise<void> {
+  async sendEmail(to: string, subject: string, body: string): Promise<void> {
     console.log(`[EMAIL DISPATCH] To: ${to} | Subject: ${subject}`);
     console.log(`[EMAIL BODY]:\n${body}`);
   }

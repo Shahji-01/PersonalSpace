@@ -7,7 +7,7 @@
  *   3. Execute deletion pipeline (after grace expires)
  */
 
-import { eq, and, lte, sql, isNull } from 'drizzle-orm';
+import { eq, and, lte, sql } from 'drizzle-orm';
 import {
   deletionRequests,
   entities,

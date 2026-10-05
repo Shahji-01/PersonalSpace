@@ -58,6 +58,8 @@ export {
   generateExportData,
   exportToJson,
   exportToCsv,
+  exportToMarkdown,
+  type ExportData,
   type ExportScope,
   type ExportFormat,
 } from './export';
@@ -67,10 +69,7 @@ export {
   getDeletionStatus,
   executePendingDeletions,
 } from './deletion';
-export {
-  extractMetadata,
-  processPendingMetadata,
-} from './metadata';
+export { extractMetadata, processPendingMetadata } from './metadata';
 export { deliverDueReminders } from './notifications';
 export {
   parseYouTubeId,
@@ -78,8 +77,4 @@ export {
   fetchPlaylistItems,
   expandPlaylist,
 } from './youtube';
-export {
-  ConsoleEmailProvider,
-  processPendingEmails,
-  type EmailProvider,
-} from './email';
+export { ConsoleEmailProvider, processPendingEmails, type EmailProvider } from './email';
