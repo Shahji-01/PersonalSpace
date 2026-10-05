@@ -67,7 +67,7 @@ These checks mean code exists. Validation results are recorded separately in `do
 
 - [ ] Discovery interviews and timed prototype tests with the specification's decision rules.
 - [ ] Owner decisions: team, budget, provider accounts, domain, final product identifiers.
-- [ ] Google/Apple OAuth; verification/reset email; verified app/universal links.
+- [~] Google/Apple OAuth: server providers configured (Better Auth social providers + JWT plugin + `jwks` table; Apple client secret generated from team/key/private key) and mobile AuthScreen has Google/Apple buttons using a `Linking` redirect to `personalspace://oauth`. Remaining: real provider credentials, a native dev build, and the callback token-return/app-link verification. Verification/reset email still pending.
 - [ ] Auth library evaluation and final ADR-013: short-lived mobile access tokens, rotating refresh families/reuse detection, re-auth, consent version/history, breach check, account lockout.
 - [ ] Sync comparison spike against PowerSync and final ADR-011.
 - [ ] Mobile rich-text editor spike with low-end Android, Hindi IME and accessibility measurements (ADR-027).

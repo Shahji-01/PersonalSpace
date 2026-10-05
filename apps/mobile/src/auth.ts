@@ -48,3 +48,54 @@ export async function signIn(input: {
   return session;
 }
 export const clearSession = () => SecureStore.deleteItemAsync('personalspace.session');
+
+export const SOCIAL_CALLBACK = 'personalspace://oauth';
+
+/**
+ * Begin a Google/Apple sign-in. Asks the server for the provider authorization
+ * URL and opens it in the system browser; the provider redirects back to
+ * SOCIAL_CALLBACK, which AuthScreen listens for. Requires the provider to be
+ * configured on the server (GOOGLE_/APPLE_ env).
+ */
+export async function startSocialSignIn(provider: 'google' | 'apple'): Promise<void> {
+  const { Linking } = await import('react-native');
+  const response = await fetch(`${apiUrl}/api/auth/sign-in/social`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: 'personalspace://' },
+    body: JSON.stringify({ provider, callbackURL: SOCIAL_CALLBACK }),
+    signal: AbortSignal.timeout(15000),
+  });
+  const data: unknown = await response.json().catch(() => null);
+  if (!response.ok) throw new Error('Sign-in with this provider is not available yet.');
+  const url =
+    data && typeof data === 'object' && 'url' in data ? (data as { url?: string }).url : null;
+  if (!url) throw new Error('Could not start sign-in with this provider.');
+  await Linking.openURL(url);
+}
+
+/** Pull the bearer token from a deep-link callback URL, if present. */
+export function tokenFromCallback(url: string): string | null {
+  if (!url.startsWith(SOCIAL_CALLBACK)) return null;
+  try {
+    return new URL(url).searchParams.get('token');
+  } catch {
+    return null;
+  }
+}
+
+/** Complete a social sign-in by resolving the account for a returned bearer token. */
+export async function completeSocialSession(token: string): Promise<Session> {
+  const response = await fetch(`${apiUrl}/api/v1/me`, {
+    headers: { Authorization: `Bearer ${token}`, Origin: 'personalspace://' },
+    signal: AbortSignal.timeout(15000),
+  });
+  const data: unknown = await response.json().catch(() => null);
+  const id =
+    data && typeof data === 'object' && 'data' in data
+      ? (data as { data?: { id?: string } }).data?.id
+      : undefined;
+  if (!response.ok || !id) throw new Error('Could not complete sign-in. Try again.');
+  const session: Session = { token, user: { id, name: 'You' } };
+  await SecureStore.setItemAsync('personalspace.session', JSON.stringify(session));
+  return session;
+}

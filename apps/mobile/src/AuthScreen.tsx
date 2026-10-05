@@ -1,7 +1,21 @@
-import { useState } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, Switch, Text, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import {
+  KeyboardAvoidingView,
+  Linking,
+  Platform,
+  ScrollView,
+  Switch,
+  Text,
+  View,
+} from 'react-native';
 import { Button, Field, styles } from './components';
-import { signIn, type Session } from './auth';
+import {
+  completeSocialSession,
+  signIn,
+  startSocialSignIn,
+  tokenFromCallback,
+  type Session,
+} from './auth';
 
 export function AuthScreen({ onSession }: { onSession: (session: Session) => void }) {
   const [signup, setSignup] = useState(false);
@@ -11,6 +25,38 @@ export function AuthScreen({ onSession }: { onSession: (session: Session) => voi
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+
+  // Complete a social sign-in when the provider redirects back to the app.
+  useEffect(() => {
+    const complete = (url: string) => {
+      const token = tokenFromCallback(url);
+      if (!token) return;
+      setBusy(true);
+      setError('');
+      completeSocialSession(token)
+        .then(onSession)
+        .catch(() => setError('Could not complete sign-in. Try again.'))
+        .finally(() => setBusy(false));
+    };
+    const sub = Linking.addEventListener('url', ({ url }) => complete(url));
+    void Linking.getInitialURL().then((url) => {
+      if (url) complete(url);
+    });
+    return () => sub.remove();
+  }, [onSession]);
+
+  async function social(provider: 'google' | 'apple') {
+    setBusy(true);
+    setError('');
+    try {
+      await startSocialSignIn(provider);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not start sign-in.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function submit() {
     setBusy(true);
     setError('');
@@ -96,6 +142,11 @@ export function AuthScreen({ onSession }: { onSession: (session: Session) => voi
             setError('');
           }}
         />
+        <Text style={[styles.subtitle, { textAlign: 'center' }]}>or continue with</Text>
+        <View style={styles.row}>
+          <Button secondary label="Google" disabled={busy} onPress={() => void social('google')} />
+          <Button secondary label="Apple" disabled={busy} onPress={() => void social('apple')} />
+        </View>
       </ScrollView>
     </KeyboardAvoidingView>
   );
