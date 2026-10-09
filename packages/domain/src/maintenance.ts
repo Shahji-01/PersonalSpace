@@ -8,7 +8,7 @@
  * 5. Export expiry: mark ready exports older than 24 hours as expired.
  */
 
-import { and, eq, inArray, lte, isNotNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, lte, isNotNull, or, sql } from 'drizzle-orm';
 import {
   entities,
   notes,
@@ -147,7 +147,12 @@ export async function expireExports(db: Database): Promise<number> {
   const result = await db
     .update(exportJobs)
     .set({ status: 'expired' })
-    .where(and(eq(exportJobs.status, 'ready'), lte(exportJobs.completedAt, cutoff)))
+    .where(
+      and(
+        eq(exportJobs.status, 'ready'),
+        or(lte(exportJobs.downloadUrlExpiresAt, new Date()), lte(exportJobs.completedAt, cutoff)),
+      ),
+    )
     .returning({ id: exportJobs.id });
   return result.length;
 }

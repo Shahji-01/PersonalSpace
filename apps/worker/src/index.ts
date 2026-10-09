@@ -6,6 +6,7 @@ import { createDatabase, outboxEvents } from '@personalspace/db';
 import { createS3Storage, readStorageConfig } from '@personalspace/storage';
 import { cleanAttachment, cleanupEventSchema } from './attachment-cleanup';
 import { processExport } from './export-processing';
+import { cleanupExpiredExports, relayExports } from './export-lifecycle';
 import {
   createAttachmentProcessor,
   cleanupTrash,
@@ -290,6 +291,11 @@ redis.on('error', () => console.error(JSON.stringify({ event: 'redis_unavailable
 let stopping = false;
 async function relay() {
   // Independent relay attempts keep scanner/storage outages from blocking row-sync signals.
+  try {
+    await relayExports(db, exportQueue);
+  } catch {
+    console.error(JSON.stringify({ event: 'export_relay_failed' }));
+  }
   if (processingQueue) {
     try {
       await relayAttachmentProcessing(db, processingQueue);
@@ -357,7 +363,19 @@ process.on('SIGTERM', () => {
   stopping = true;
 });
 try {
+  let nextExportCleanupAt = 0;
   while (!stopping) {
+    // Run on startup and every minute, independently of the nightly scheduler.
+    if (Date.now() >= nextExportCleanupAt) {
+      nextExportCleanupAt = Date.now() + 60000;
+      try {
+        const result = await cleanupExpiredExports(maintenanceDb, storage);
+        if (result.expired || result.removed || result.failed)
+          console.log(JSON.stringify({ event: 'export_cleanup', ...result }));
+      } catch {
+        console.error(JSON.stringify({ event: 'export_cleanup_failed' }));
+      }
+    }
     try {
       await relay();
     } catch {

@@ -27,6 +27,7 @@ import { createS3Storage, readStorageConfig } from '../packages/storage/src/inde
 import { createApp } from '../apps/api/src/app';
 import { cleanAttachment } from '../apps/worker/src/attachment-cleanup';
 import { processExport } from '../apps/worker/src/export-processing';
+import { cleanupExpiredExports, relayExports } from '../apps/worker/src/export-lifecycle';
 import { createExportAccess } from '../packages/domain/src/export-access';
 import {
   attachmentUploadStateSchema,
@@ -1111,6 +1112,195 @@ describe('private export artifacts', () => {
   async function status(id: string) {
     return (await owner.query('SELECT * FROM export_jobs WHERE id=$1', [id])).rows[0];
   }
+  it('backfills stranded queued requests without republishing finished exports', async () => {
+    const queued = await job(),
+      finished = await job();
+    await owner.query("UPDATE export_jobs SET status='expired' WHERE id=$1", [finished.jobId]);
+    const client = await owner.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DROP INDEX export_cleanup_pending');
+      await client.query(
+        await readFile(
+          new URL('../packages/db/migrations/0041_export_delivery.sql', import.meta.url),
+          'utf8',
+        ),
+      );
+      const events = await client.query(
+        'SELECT id, payload FROM outbox_events WHERE id=ANY($1::uuid[])',
+        [[queued.jobId, finished.jobId]],
+      );
+      expect(events.rows).toEqual([
+        { id: queued.jobId, payload: { jobId: queued.jobId, format: 'json', scope: 'notes' } },
+      ]);
+      await client.query('DROP INDEX export_cleanup_pending');
+      await client.query(
+        await readFile(
+          new URL('../packages/db/migrations/0041_export_delivery.sql', import.meta.url),
+          'utf8',
+        ),
+      );
+      expect(
+        (await client.query('SELECT id FROM outbox_events WHERE id=$1', [queued.jobId])).rowCount,
+      ).toBe(1);
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
+  });
+  it('commits delivery intent atomically and rolls back the request when the outbox write fails', async () => {
+    const user = await fixtureUser();
+    await owner.query(`CREATE FUNCTION reject_export_event() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.type = 'exports.generate' AND NEW.user_id = '${user}'::uuid THEN
+          RAISE EXCEPTION 'simulated outbox failure';
+        END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER reject_export_event BEFORE INSERT ON outbox_events
+        FOR EACH ROW EXECUTE FUNCTION reject_export_event();`);
+    try {
+      await expect(
+        createExportAccess(domain.db).create(user, { format: 'json', scope: 'notes' }),
+      ).rejects.toThrow();
+      expect(
+        (await owner.query('SELECT id FROM export_jobs WHERE user_id=$1', [user])).rows,
+      ).toEqual([]);
+    } finally {
+      await owner.query(
+        'DROP TRIGGER reject_export_event ON outbox_events; DROP FUNCTION reject_export_event()',
+      );
+    }
+    const created = await createExportAccess(domain.db).create(user, {
+      format: 'json',
+      scope: 'notes',
+    });
+    const event = (await owner.query('SELECT * FROM outbox_events WHERE id=$1', [created.id]))
+      .rows[0];
+    expect(event).toMatchObject({
+      user_id: user,
+      type: 'exports.generate',
+      processed_at: null,
+      payload: { jobId: created.id, format: 'json', scope: 'notes' },
+    });
+  });
+  it('retries failed queue handoff and deduplicates a replay through real Redis and the restricted worker roles', async () => {
+    const redisContainer = await new GenericContainer('redis:7-alpine')
+      .withExposedPorts(6379)
+      .start();
+    const connection = new Redis({
+      host: redisContainer.getHost(),
+      port: redisContainer.getMappedPort(6379),
+      maxRetriesPerRequest: null,
+    });
+    const queue = new Queue('export-integration', { connection });
+    const events = new QueueEvents('export-integration', { connection });
+    const worker = new Worker(
+      'export-integration',
+      async (job) => processExport(maintenance.db, storage, job.data),
+      { connection },
+    );
+    try {
+      await events.waitUntilReady();
+      const created = await createExportAccess(domain.db).create(userA, {
+        format: 'csv',
+        scope: 'notes',
+      });
+      await expect(
+        relayExports(relayDb.db, {
+          add: async () => {
+            throw new Error('Redis unavailable');
+          },
+        }),
+      ).rejects.toThrow('Redis unavailable');
+      expect(
+        (await owner.query('SELECT processed_at FROM outbox_events WHERE id=$1', [created.id]))
+          .rows[0].processed_at,
+      ).toBeNull();
+      await relayExports(relayDb.db, queue);
+      const queued = await queue.getJob(created.id);
+      expect(queued).not.toBeNull();
+      await queued!.waitUntilFinished(events, 20000);
+      const ready = await status(created.id);
+      expect(ready.status).toBe('ready');
+      // Simulate a crash after publishing but before the database acknowledgement.
+      await owner.query('UPDATE outbox_events SET processed_at=NULL WHERE id=$1', [created.id]);
+      await relayExports(relayDb.db, queue);
+      expect((await queue.getJob(created.id))!.attemptsMade).toBe(1);
+      expect((await status(created.id)).storage_key).toBe(ready.storage_key);
+      expect(
+        (await owner.query('SELECT processed_at FROM outbox_events WHERE id=$1', [created.id]))
+          .rows[0].processed_at,
+      ).not.toBeNull();
+    } finally {
+      await worker.close();
+      await events.close();
+      await queue.close();
+      await connection.quit();
+      await redisContainer.stop();
+    }
+  }, 60000);
+  it('revokes expired exports without storage, retries deletion failures and preserves unexpired archives', async () => {
+    const expired = await job(),
+      live = await job();
+    await processExport(maintenance.db, storage, expired);
+    await processExport(maintenance.db, storage, live);
+    const key = (await status(expired.jobId)).storage_key;
+    const liveKey = (await status(live.jobId)).storage_key;
+    await owner.query(
+      "UPDATE export_jobs SET download_url_expires_at=now()-interval '1 second' WHERE id=$1",
+      [expired.jobId],
+    );
+    await cleanupExpiredExports(maintenance.db, null);
+    expect((await status(expired.jobId)).status).toBe('expired');
+    expect(await storage.head(key)).not.toBeNull();
+    const failed = await cleanupExpiredExports(maintenance.db, {
+      ...storage,
+      remove: async (candidate) => {
+        if (candidate === key) throw new Error('private storage response');
+        await storage.remove(candidate);
+      },
+    });
+    expect(failed.failed).toBeGreaterThan(0);
+    expect((await status(expired.jobId)).storage_key).toBe(key);
+    await cleanupExpiredExports(maintenance.db, storage);
+    expect(await storage.head(key)).toBeNull();
+    expect(await status(expired.jobId)).toMatchObject({
+      status: 'expired',
+      storage_key: null,
+      size_bytes: null,
+    });
+    expect((await status(live.jobId)).status).toBe('ready');
+    expect(await storage.head(liveKey)).not.toBeNull();
+    await cleanupExpiredExports(maintenance.db, storage);
+    await processExport(maintenance.db, storage, expired);
+    expect((await status(expired.jobId)).status).toBe('expired');
+  });
+  it('never cleans foreign keys and safely retries when storage deletion commits before a connection failure', async () => {
+    const input = await job();
+    await processExport(maintenance.db, storage, input);
+    const key = (await status(input.jobId)).storage_key;
+    const foreignKey = `exports/${userB}/${input.jobId}/foreign.json`;
+    await storage.write(foreignKey, Buffer.from('foreign archive'), 'application/json');
+    await owner.query("UPDATE export_jobs SET status='expired',storage_key=$2 WHERE id=$1", [
+      input.jobId,
+      foreignKey,
+    ]);
+    expect((await cleanupExpiredExports(maintenance.db, storage)).failed).toBeGreaterThan(0);
+    expect(await storage.head(foreignKey)).not.toBeNull();
+    await owner.query('UPDATE export_jobs SET storage_key=$2 WHERE id=$1', [input.jobId, key]);
+    await cleanupExpiredExports(maintenance.db, {
+      ...storage,
+      remove: async (candidate) => {
+        await storage.remove(candidate);
+        if (candidate === key) throw new Error('connection lost after delete');
+      },
+    });
+    expect(await storage.head(key)).toBeNull();
+    expect((await status(input.jobId)).storage_key).toBe(key);
+    await cleanupExpiredExports(maintenance.db, storage);
+    expect((await status(input.jobId)).storage_key).toBeNull();
+  });
   it('creates and lists exports with owner RLS and returns private authenticated download grants', async () => {
     const created = await app.inject({
       method: 'POST',

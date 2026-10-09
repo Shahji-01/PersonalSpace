@@ -6,8 +6,6 @@ import swagger from '@fastify/swagger';
 import { fromNodeHeaders } from 'better-auth/node';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
-import { Queue } from 'bullmq';
-import { Redis } from 'ioredis';
 import type { ServerConfig } from '@personalspace/config';
 import { eq as drizzleEq } from 'drizzle-orm';
 import type { Database } from '@personalspace/db';
@@ -520,34 +518,6 @@ export async function createApp(deps: {
       api.post('/exports', { schema: { security: [{ bearerAuth: [] }] } }, async (request) => {
         const input = exportRequestSchema.parse(request.body);
         const job = await exports.create(request.userId, input);
-        // Enqueue background export job via BullMQ if Redis is available.
-        try {
-          const redisUrl = process.env.REDIS_URL;
-          if (redisUrl) {
-            const redis = new Redis(redisUrl, { maxRetriesPerRequest: null });
-            const exportQueue = new Queue('export', { connection: redis });
-            await exportQueue.add(
-              'generate',
-              {
-                userId: request.userId,
-                jobId: job!.id,
-                format: input.format,
-                scope: input.scope,
-              },
-              {
-                jobId: job!.id,
-                attempts: 3,
-                backoff: { type: 'exponential', delay: 5000 },
-                removeOnComplete: { age: 7 * 86400 },
-                removeOnFail: false,
-              },
-            );
-            await exportQueue.close();
-            await redis.quit();
-          }
-        } catch {
-          // Export stays queued; worker will pick it up on relay.
-        }
         return {
           data: {
             id: job!.id,

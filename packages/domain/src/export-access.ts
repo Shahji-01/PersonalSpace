@@ -1,6 +1,6 @@
 import { and, desc, eq } from 'drizzle-orm';
 import { v7 } from 'uuid';
-import { exportJobs, withUser, type Database } from '@personalspace/db';
+import { exportJobs, outboxEvents, withUser, type Database } from '@personalspace/db';
 import type { AttachmentStorage } from '@personalspace/storage';
 import { exportRequestSchema, type ExportRequest } from '@personalspace/validation';
 import { DomainError } from './errors';
@@ -33,17 +33,21 @@ export function createExportAccess(db: Database, storage?: AttachmentStorage) {
   return {
     create: (userId: string, raw: ExportRequest) => {
       const input = exportRequestSchema.parse(raw);
-      return withUser(
-        db,
-        userId,
-        async (tx) =>
-          (
-            await tx
-              .insert(exportJobs)
-              .values({ id: v7(), userId, ...input })
-              .returning()
-          )[0]!,
-      );
+      return withUser(db, userId, async (tx) => {
+        const [job] = await tx
+          .insert(exportJobs)
+          .values({ id: v7(), userId, ...input })
+          .returning();
+        // Commit the request and its delivery intent together. Redis outages
+        // must neither lose the export nor keep the HTTP request waiting.
+        await tx.insert(outboxEvents).values({
+          id: job!.id,
+          userId,
+          type: 'exports.generate',
+          payload: { jobId: job!.id, ...input },
+        });
+        return job!;
+      });
     },
     list: (userId: string) =>
       withUser(

@@ -1,5 +1,12 @@
 # Verification
 
+## Durable export delivery and expiry — 9 October 2026
+
+- All 174 unit tests and 84 PostgreSQL/API/storage/Redis integration tests passed. Five new integration cases cover migration backfill/idempotency, atomic rollback when the outbox insert fails, queue outage/replay, expiry without storage, deletion retries, missing objects and foreign/live-object preservation. Tests use isolated PostgreSQL 17, Redis 7 and private MinIO storage with the actual restricted application/relay/maintenance roles.
+- Tools/tests and all 14 workspaces passed TypeScript. Changed source files passed ESLint and formatting. API and worker builds passed; the pre-existing `rrule` default-export bundler warning remains.
+- Export delivery no longer depends on Redis in the HTTP request. Migration 0041 backfills queued requests; it was applied and repeated in isolated fixtures. No migration was applied to the user's running development database, and no running app was restarted.
+- No mobile UI or native dependency changed, so native/browser bundles were not rerun. The emulator was untouched. Export-ready notifications, full account/attachment coverage, orphan attempt recovery and recent re-auth remain open; see the refreshed [project audit](project-audit.md).
+
 ## Completed upload-copy cleanup — 5 October 2026
 
 - All 167 unit tests passed. Five new cases cover atomic cleanup reservation, matching synced readiness, original fingerprint and parent lifecycle checks, account isolation, stale progress/retry protection, restart/idempotent cleanup, disk failure and transaction rollback. An actual-filesystem adapter test confirms removal frees upload-copy bytes while preserving the picker source and verified offline download/share.
