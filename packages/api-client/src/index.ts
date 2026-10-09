@@ -189,7 +189,7 @@ export function createClient(baseUrl: string, token: () => string | null) {
     registerDevice: (req: RegisterDevice) =>
       request(
         '/api/v1/devices',
-        z.object({ data: z.object({ id: z.string() }) }),
+        z.object({ data: z.object({ id: z.uuid() }) }),
         registerDeviceSchema.parse(req),
       ),
     updateDeviceWatermark: (deviceId: string, req: { remindersScheduledThrough: string }) =>
@@ -197,6 +197,16 @@ export function createClient(baseUrl: string, token: () => string | null) {
         `/api/v1/devices/${encodeURIComponent(deviceId)}/watermark`,
         z.object({ status: z.literal('ok') }),
         updateDeviceWatermarkSchema.parse(req),
+        undefined,
+        'PATCH',
+      ),
+    unregisterDevice: (deviceId: string) =>
+      request(
+        `/api/v1/devices/${encodeURIComponent(deviceId)}`,
+        z.object({ status: z.literal('ok') }),
+        undefined,
+        undefined,
+        'DELETE',
       ),
   };
 }

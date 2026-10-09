@@ -7,7 +7,7 @@ import { fromNodeHeaders } from 'better-auth/node';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import type { ServerConfig } from '@personalspace/config';
-import { eq as drizzleEq } from 'drizzle-orm';
+import { and as drizzleAnd, eq as drizzleEq } from 'drizzle-orm';
 import type { Database } from '@personalspace/db';
 import { deviceTokens, authUsers, notificationLog, withUser } from '@personalspace/db';
 import type { AttachmentStorage } from '@personalspace/storage';
@@ -468,37 +468,52 @@ export async function createApp(deps: {
       // ============================================================
       api.post('/devices', { schema: { security: [{ bearerAuth: [] }] } }, async (request) => {
         const input = registerDeviceSchema.parse(request.body);
-        const [device] = await deps.db
-          .insert(deviceTokens)
-          .values({
-            userId: request.userId,
-            platform: input.platform,
-            token: input.token,
-            deviceName: input.deviceName ?? null,
-            appVersion: input.appVersion ?? null,
-          })
-          .onConflictDoUpdate({
-            target: [deviceTokens.userId, deviceTokens.token],
-            set: {
+        const [device] = await withUser(deps.db, request.userId, (tx) =>
+          tx
+            .insert(deviceTokens)
+            .values({
+              userId: request.userId,
               platform: input.platform,
+              token: input.token,
               deviceName: input.deviceName ?? null,
               appVersion: input.appVersion ?? null,
-              lastSeenAt: new Date(),
-            },
-          })
-          .returning();
+            })
+            .onConflictDoUpdate({
+              target: [deviceTokens.userId, deviceTokens.token],
+              set: {
+                platform: input.platform,
+                deviceName: input.deviceName ?? null,
+                appVersion: input.appVersion ?? null,
+                lastSeenAt: new Date(),
+              },
+            })
+            .returning({ id: deviceTokens.id }),
+        );
         return { data: { id: device!.id } };
       });
       api.patch(
         '/devices/:id/watermark',
         { schema: { security: [{ bearerAuth: [] }] } },
         async (request) => {
-          const { id } = z.object({ id: idSchema }).parse(request.params);
+          // Device IDs use the database UUIDv4 default, unlike domain UUIDv7 IDs.
+          const { id } = z.object({ id: z.uuid() }).parse(request.params);
           const { remindersScheduledThrough } = updateDeviceWatermarkSchema.parse(request.body);
-          await deps.db
-            .update(deviceTokens)
-            .set({ remindersScheduledThrough: new Date(remindersScheduledThrough) })
-            .where(drizzleEq(deviceTokens.id, id));
+          const [device] = await withUser(deps.db, request.userId, (tx) =>
+            tx
+              .update(deviceTokens)
+              .set({
+                remindersScheduledThrough: new Date(remindersScheduledThrough),
+                lastSeenAt: new Date(),
+              })
+              .where(
+                drizzleAnd(
+                  drizzleEq(deviceTokens.id, id),
+                  drizzleEq(deviceTokens.userId, request.userId),
+                ),
+              )
+              .returning({ id: deviceTokens.id }),
+          );
+          if (!device) throw new DomainError('DEVICE_NOT_FOUND', 'Device not found.', 404);
           return { status: 'ok' };
         },
       );
@@ -506,8 +521,19 @@ export async function createApp(deps: {
         '/devices/:id',
         { schema: { security: [{ bearerAuth: [] }] } },
         async (request) => {
-          const { id } = z.object({ id: idSchema }).parse(request.params);
-          await deps.db.delete(deviceTokens).where(drizzleEq(deviceTokens.id, id));
+          const { id } = z.object({ id: z.uuid() }).parse(request.params);
+          const [device] = await withUser(deps.db, request.userId, (tx) =>
+            tx
+              .delete(deviceTokens)
+              .where(
+                drizzleAnd(
+                  drizzleEq(deviceTokens.id, id),
+                  drizzleEq(deviceTokens.userId, request.userId),
+                ),
+              )
+              .returning({ id: deviceTokens.id }),
+          );
+          if (!device) throw new DomainError('DEVICE_NOT_FOUND', 'Device not found.', 404);
           return { status: 'ok' };
         },
       );

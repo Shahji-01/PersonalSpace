@@ -3932,4 +3932,90 @@ describe('authenticated capture → PostgreSQL → sync', () => {
     const after = await app.inject({ url: '/api/v1/preferences', headers: headers(tokenA) });
     expect(after.json().data).toMatchObject({ theme: 'dark', notificationReminder: false });
   });
+  it('registers devices idempotently and updates UUIDv4 watermarks with owner RLS', async () => {
+    const token = `test-device-${v7()}`;
+    const register = () =>
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/devices',
+        headers: headers(tokenA),
+        payload: { platform: 'android', token, deviceName: 'Test device' },
+      });
+    const [first, retry] = await Promise.all([register(), register()]);
+    expect(first.statusCode, first.body).toBe(200);
+    expect(retry.statusCode, retry.body).toBe(200);
+    const id = first.json().data.id as string;
+    expect(id[14]).toBe('4');
+    expect(retry.json().data.id).toBe(id);
+    const watermark = '2026-10-10T10:00:00.000Z';
+    const patch = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/devices/${id}/watermark`,
+      headers: headers(tokenA),
+      payload: { remindersScheduledThrough: watermark },
+    });
+    expect(patch.statusCode, patch.body).toBe(200);
+    expect(
+      (
+        await owner.query('SELECT reminders_scheduled_through FROM device_tokens WHERE id=$1', [id])
+      ).rows[0].reminders_scheduled_through.toISOString(),
+    ).toBe(watermark);
+    await register();
+    expect(
+      (
+        await owner.query('SELECT reminders_scheduled_through FROM device_tokens WHERE id=$1', [id])
+      ).rows[0].reminders_scheduled_through.toISOString(),
+    ).toBe(watermark);
+    const deleted = await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/devices/${id}`,
+      headers: headers(tokenA),
+    });
+    expect(deleted.statusCode, deleted.body).toBe(200);
+    expect((await owner.query('SELECT id FROM device_tokens WHERE id=$1', [id])).rows).toEqual([]);
+  });
+  it('rejects unauthenticated device writes and hides foreign and missing devices identically', async () => {
+    const registered = await app.inject({
+      method: 'POST',
+      url: '/api/v1/devices',
+      headers: headers(tokenB),
+      payload: { platform: 'ios', token: `foreign-device-${v7()}` },
+    });
+    expect(registered.statusCode, registered.body).toBe(200);
+    const foreignId = registered.json().data.id as string;
+    for (const id of [foreignId, v7()]) {
+      const patch = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/devices/${id}/watermark`,
+        headers: headers(tokenA),
+        payload: { remindersScheduledThrough: '2026-10-10T10:00:00Z' },
+      });
+      expect(patch.statusCode, patch.body).toBe(404);
+      expect(patch.json().error.code).toBe('DEVICE_NOT_FOUND');
+      const removed = await app.inject({
+        method: 'DELETE',
+        url: `/api/v1/devices/${id}`,
+        headers: headers(tokenA),
+      });
+      expect(removed.statusCode, removed.body).toBe(404);
+      expect(removed.json().error.code).toBe('DEVICE_NOT_FOUND');
+    }
+    expect(
+      (
+        await owner.query('SELECT reminders_scheduled_through FROM device_tokens WHERE id=$1', [
+          foreignId,
+        ])
+      ).rows[0].reminders_scheduled_through,
+    ).toBeNull();
+    for (const method of ['POST', 'PATCH', 'DELETE'] as const) {
+      const res = await app.inject({
+        method,
+        url:
+          method === 'POST'
+            ? '/api/v1/devices'
+            : `/api/v1/devices/${foreignId}${method === 'PATCH' ? '/watermark' : ''}`,
+      });
+      expect(res.statusCode).toBe(401);
+    }
+  });
 });

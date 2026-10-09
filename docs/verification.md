@@ -1,5 +1,12 @@
 # Verification
 
+## Device registration and watermark contract — 9 October 2026
+
+- All 175 unit tests and the 51-test PostgreSQL/API foundation integration suite passed. Added coverage for concurrent registration retries, existing UUIDv4 IDs, watermark persistence through re-registration, successful unregister, unauthenticated writes and indistinguishable missing/foreign device errors. The API client test verifies PATCH/DELETE methods against the contract.
+- Tools/tests and all 14 workspace type checks passed. Changed source files passed ESLint/formatting, and the API build passed with the existing `rrule` warning.
+- Device registration/update/delete now establish the owner transaction required by RLS, mutations include explicit owner filters, and missing rows return 404. The client now uses PATCH for watermarks and exposes unregister. No native scheduling behavior, push-provider delivery or sign-out cleanup is claimed complete by these API checks.
+- The 35 attachment/export integration tests passed in the preceding export stage; that unchanged suite was not rerun for device-only changes. No emulator interaction, native dependency change or running-service restart occurred.
+
 ## Durable export delivery and expiry — 9 October 2026
 
 - All 174 unit tests and 84 PostgreSQL/API/storage/Redis integration tests passed. Five new integration cases cover migration backfill/idempotency, atomic rollback when the outbox insert fails, queue outage/replay, expiry without storage, deletion retries, missing objects and foreign/live-object preservation. Tests use isolated PostgreSQL 17, Redis 7 and private MinIO storage with the actual restricted application/relay/maintenance roles.

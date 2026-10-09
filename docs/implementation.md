@@ -1,5 +1,7 @@
 # Implementation status
 
+Status note — 9 October 2026: the [current project audit](project-audit.md) supersedes the historical coverage and gap lists below. It records the newer authentication, Money, settings, SQLite migration, export and device API implementations, along with the remaining operational and release gates. Exact checks are in [verification](verification.md).
+
 ## Current increment: development foundation + notes/tasks
 
 See [the whole-project audit](project-audit.md) for specification coverage, defects addressed, remaining work and migration order.

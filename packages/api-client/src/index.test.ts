@@ -70,6 +70,30 @@ function attachmentSetup() {
   };
   return { client, put, part, signal, grant, transport: createAttachmentTransport(client, put) };
 }
+it('sends device watermark and unregister requests using the server HTTP methods', async () => {
+  const id = '6ef04704-e8f7-4456-ae4b-6c7b3e0a993b';
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify({ data: { id } })))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'ok' })))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'ok' })));
+  vi.stubGlobal('fetch', fetcher);
+  const client = createClient('https://api.example.test', () => 'session');
+  expect(await client.registerDevice({ platform: 'android', token: 'device-token' })).toEqual({
+    data: { id },
+  });
+  const watermark = { remindersScheduledThrough: '2026-10-10T00:00:00Z' };
+  await client.updateDeviceWatermark(id, watermark);
+  expect(fetcher.mock.calls[1]).toEqual([
+    `https://api.example.test/api/v1/devices/${id}/watermark`,
+    expect.objectContaining({ method: 'PATCH', body: JSON.stringify(watermark) }),
+  ]);
+  await client.unregisterDevice(id);
+  expect(fetcher.mock.calls[2]).toEqual([
+    `https://api.example.test/api/v1/devices/${id}`,
+    expect.objectContaining({ method: 'DELETE' }),
+  ]);
+});
 it('maps API failures to durable transfer retry/auth/rejection policies', async () => {
   const { client, transport, signal } = attachmentSetup();
   for (const [status, code, expected] of [
