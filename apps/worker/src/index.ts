@@ -7,15 +7,11 @@ import { createS3Storage, readStorageConfig } from '@personalspace/storage';
 import { cleanAttachment, cleanupEventSchema } from './attachment-cleanup';
 import { cleanAccountStorage } from './account-cleanup';
 import { scheduleAccountDeletion } from './deletion-schedule';
+import { runMaintenance, scheduleMaintenance } from './maintenance';
 import { processExport } from './export-processing';
 import { cleanupExpiredExports, relayExports } from './export-lifecycle';
 import {
   createAttachmentProcessor,
-  cleanupTrash,
-  cleanupTombstones,
-  cleanupIdempotencyKeys,
-  reconcileBalances,
-  expireExports,
   executePendingDeletions,
   processPendingMetadata,
   deliverDueReminders,
@@ -125,44 +121,10 @@ worker.on('error', () => console.error(JSON.stringify({ event: 'worker_unavailab
 const maintenanceQueue = new Queue('maintenance', { connection: redis });
 const maintenanceWorker = new Worker(
   'maintenance',
-  async () => {
-    const log = (event: string, detail?: object) =>
-      console.log(JSON.stringify({ event, ...detail }));
-    try {
-      const trashCount = await cleanupTrash(maintenanceDb);
-      log('trash_cleanup', { purged: trashCount });
-    } catch (e) {
-      log('trash_cleanup_failed', { error: String(e) });
-    }
-    try {
-      const tombstoneCount = await cleanupTombstones(maintenanceDb);
-      log('tombstone_cleanup', { removed: tombstoneCount });
-    } catch (e) {
-      log('tombstone_cleanup_failed', { error: String(e) });
-    }
-    try {
-      const keyCount = await cleanupIdempotencyKeys(maintenanceDb);
-      log('idempotency_cleanup', { removed: keyCount });
-    } catch (e) {
-      log('idempotency_cleanup_failed', { error: String(e) });
-    }
-    try {
-      const { drifts } = await reconcileBalances(maintenanceDb);
-      if (drifts.length) {
-        log('balance_drift_detected', { drifts });
-      } else {
-        log('balance_reconciliation_ok');
-      }
-    } catch (e) {
-      log('balance_reconciliation_failed', { error: String(e) });
-    }
-    try {
-      const expiredCount = await expireExports(maintenanceDb);
-      log('export_expiry', { expired: expiredCount });
-    } catch (e) {
-      log('export_expiry_failed', { error: String(e) });
-    }
-  },
+  () =>
+    runMaintenance(maintenanceDb, (event, detail) =>
+      console.log(JSON.stringify({ event, ...detail })),
+    ),
   { connection: redis, concurrency: 1 },
 );
 maintenanceWorker.on('failed', (job) =>
@@ -362,16 +324,21 @@ process.on('SIGTERM', () => {
 });
 try {
   let nextExportCleanupAt = 0;
-  let deletionScheduled = false,
-    nextScheduleAttemptAt = 0;
+  let nextScheduleAttemptAt = 0;
+  const pendingSchedules = new Map([
+    ['deletion', () => scheduleAccountDeletion(deletionQueue)],
+    ['maintenance', () => scheduleMaintenance(maintenanceQueue)],
+  ]);
   while (!stopping) {
-    if (!deletionScheduled && Date.now() >= nextScheduleAttemptAt) {
+    if (pendingSchedules.size && Date.now() >= nextScheduleAttemptAt) {
       nextScheduleAttemptAt = Date.now() + 60000;
-      try {
-        await scheduleAccountDeletion(deletionQueue);
-        deletionScheduled = true;
-      } catch {
-        console.error(JSON.stringify({ event: 'deletion_schedule_failed' }));
+      for (const [name, install] of pendingSchedules) {
+        try {
+          await install();
+          pendingSchedules.delete(name);
+        } catch {
+          console.error(JSON.stringify({ event: `${name}_schedule_failed` }));
+        }
       }
     }
     // Run on startup and every minute, independently of the nightly scheduler.
@@ -393,19 +360,6 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 
-  // Schedule nightly maintenance if not already running.
-  const existing = await maintenanceQueue.getRepeatableJobs();
-  if (!existing.length) {
-    await maintenanceQueue.add(
-      'nightly',
-      {},
-      {
-        repeat: { pattern: '0 2 * * *' }, // 2:00 AM daily
-        removeOnComplete: { age: 7 * 86400 },
-        removeOnFail: false,
-      },
-    );
-  }
   // Schedule metadata background fetch every 5 minutes.
   const metadataJobs = await metadataQueue.getRepeatableJobs();
   if (!metadataJobs.length) {

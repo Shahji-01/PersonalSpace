@@ -27,7 +27,6 @@ import {
   createSearchService,
   reconcileBalances,
   cleanupTrash,
-  cleanupTombstones,
   cleanupIdempotencyKeys,
   expireExports,
   deliverDueReminders,
@@ -1363,7 +1362,9 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       { op: 'note.purge', id: noteId, baseVersion: convTrashed!.version },
       'test',
     );
-    expect(purged).toEqual([]);
+    expect(purged).toHaveLength(1);
+    expect(purged[0]).toMatchObject({ id: inboxId, status: 'converted' });
+    expect(purged[0]!.version).toBeGreaterThan(convTrashed!.version);
     await withUser(domain.db, userA, async (tx) => {
       expect(await tx.select().from(notes).where(eq(notes.id, noteId))).toHaveLength(0);
       expect(
@@ -3441,18 +3442,18 @@ describe('authenticated capture → PostgreSQL → sync', () => {
     const driftFor = (id: string) => first.drifts.find((d) => d.accountId === id);
     expect(driftFor(accountId)).toMatchObject({ computed: 100000 + 50000 - 25000 - 30000 - 10000 });
     expect(driftFor(savingsId)).toMatchObject({ computed: 30000 });
-    // Cached balances are corrected, so a second pass finds no drift.
+    // Reconciliation reports drift without silently overwriting ledger state.
     const second = await reconcileBalances(maintenance.db);
-    expect(second.drifts).toEqual([]);
+    expect(second.drifts).toEqual(first.drifts);
     const checking = await owner.query(
       'SELECT cached_balance_minor FROM finance_accounts WHERE id=$1',
       [accountId],
     );
-    expect(Number(checking.rows[0].cached_balance_minor)).toBe(85000);
+    expect(Number(checking.rows[0].cached_balance_minor)).toBe(100000);
   });
   it('runs nightly maintenance under the dedicated least-privilege role', async () => {
     const service = createCaptureService(domain.db);
-    // A note that was purged long ago is hard-deleted by the Trash cleanup.
+    // Trash expiry removes content but reserves its UUID for offline devices.
     const noteId = v7();
     const [note] = await service.execute(
       userA,
@@ -3469,22 +3470,30 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       { op: 'note.delete', id: noteId, baseVersion: note!.version },
       'maint',
     );
-    await service.execute(
-      userA,
-      v7(),
-      { op: 'note.purge', id: noteId, baseVersion: deleted!.version },
-      'maint',
-    );
-    // Backdate the purge so it falls outside the 30-day Trash window.
-    await owner.query("UPDATE entities SET purged_at = now() - interval '31 days' WHERE id = $1", [
+    await owner.query("UPDATE entities SET deleted_at = now() - interval '31 days' WHERE id = $1", [
       noteId,
     ]);
     const purged = await cleanupTrash(maintenance.db);
     expect(purged).toBeGreaterThanOrEqual(1);
-    expect((await owner.query('SELECT 1 FROM entities WHERE id=$1', [noteId])).rowCount).toBe(0);
+    const marker = (await owner.query('SELECT * FROM entities WHERE id=$1', [noteId])).rows[0];
+    expect(marker.purged_at).toBeInstanceOf(Date);
+    expect(Number(marker.version)).toBeGreaterThan(deleted!.version);
+    expect(marker.tags).toEqual([]);
     expect((await owner.query('SELECT 1 FROM notes WHERE id=$1', [noteId])).rowCount).toBe(0);
 
-    // Tombstone cleanup removes entities purged beyond the 180-day window.
+    expect(
+      (await owner.query('SELECT 1 FROM note_versions WHERE note_id=$1', [noteId])).rowCount,
+    ).toBe(0);
+    expect(
+      (await owner.query('SELECT 1 FROM search_documents WHERE entity_id=$1', [noteId])).rowCount,
+    ).toBe(0);
+    expect((await service.pull(userA, deleted!.version, true)).tombstones).toContainEqual({
+      id: noteId,
+      version: Number(marker.version),
+      purgedAt: marker.purged_at.toISOString(),
+    });
+
+    // Old markers remain available to full recovery, while incremental cursors expire.
     const toppleId = v7();
     const [t] = await service.execute(
       userA,
@@ -3510,25 +3519,50 @@ describe('authenticated capture → PostgreSQL → sync', () => {
     await owner.query("UPDATE entities SET purged_at = now() - interval '181 days' WHERE id = $1", [
       toppleId,
     ]);
-    expect(await cleanupTombstones(maintenance.db)).toBeGreaterThanOrEqual(1);
-    expect((await owner.query('SELECT 1 FROM entities WHERE id=$1', [toppleId])).rowCount).toBe(0);
+    expect(await cleanupTrash(maintenance.db)).toBe(0);
+    expect((await owner.query('SELECT 1 FROM entities WHERE id=$1', [toppleId])).rowCount).toBe(1);
+    await expect(service.pull(userA, 0)).rejects.toMatchObject({ code: 'RESYNC_REQUIRED' });
+    await expect(
+      service.execute(
+        userA,
+        v7(),
+        {
+          op: 'capture',
+          payload: { id: toppleId, type: 'task', text: 'Offline retry', plannedDate: null },
+        },
+        'maint',
+      ),
+    ).rejects.toMatchObject({ code: 'ID_UNAVAILABLE' });
 
-    // Idempotency keys older than seven days are removed.
+    // Seven-day response content expires, but its key/hash still prevents duplicate execution.
     const staleKey = v7();
-    await service.execute(
-      userA,
-      staleKey,
-      { op: 'capture', payload: { id: v7(), type: 'inbox', text: 'keeps key', plannedDate: null } },
-      'maint',
-    );
+    const retryCommand = {
+      op: 'capture' as const,
+      payload: { id: v7(), type: 'inbox' as const, text: 'keeps key', plannedDate: null },
+    };
+    await service.execute(userA, staleKey, retryCommand, 'maint');
     await owner.query(
       "UPDATE idempotency_keys SET created_at = now() - interval '8 days' WHERE key = $1",
       [staleKey],
     );
     expect(await cleanupIdempotencyKeys(maintenance.db)).toBeGreaterThanOrEqual(1);
-    expect(
-      (await owner.query('SELECT 1 FROM idempotency_keys WHERE key=$1', [staleKey])).rowCount,
-    ).toBe(0);
+    const retry = (
+      await owner.query('SELECT response, request_hash FROM idempotency_keys WHERE key=$1', [
+        staleKey,
+      ])
+    ).rows[0];
+    expect(retry.response).toEqual([]);
+    expect(retry.request_hash).toHaveLength(64);
+    expect(await service.execute(userA, staleKey, retryCommand, 'maint')).toEqual([]);
+    await expect(
+      service.execute(
+        userA,
+        staleKey,
+        { ...retryCommand, payload: { ...retryCommand.payload, id: v7() } },
+        'maint',
+      ),
+    ).rejects.toMatchObject({ code: 'IDEMPOTENCY_KEY_REUSED' });
+    expect(await cleanupIdempotencyKeys(maintenance.db)).toBe(0);
 
     // Ready exports older than 24 hours are expired.
     const exportId = v7();

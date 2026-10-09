@@ -1,5 +1,12 @@
 # Verification
 
+## Safe Trash retention and nightly scheduling — 9 October 2026
+
+- All **177 unit tests** and **99 integration tests** passed. The integration suite uses isolated PostgreSQL, Redis and MinIO instances, including the dedicated maintenance role. New cases cover expired/recent/live Trash, attachment cleanup events, note history and recurrence erasure, affected project/inbox references, retained UUIDs and retry hashes, concurrent restore, rollback, concurrent cleanup attempts, account-erasure exclusion, bounded pages and task-parent starvation. Real Redis tests verify maintenance/deletion repeat schedule deduplication despite unrelated schedules.
+- Maintenance failure tests verify independent steps continue, queue attempts fail for retry, and logs expose counts rather than financial values or raw errors. Database tests prove the maintenance role cannot update cached account balances or read auth passwords.
+- Tools/tests and all 14 workspace type checks passed. Changed TypeScript files passed ESLint; API and worker builds passed with the existing rrule import warning. Existing Fastify/SQLite/terminal warnings remain. No mobile UI or native runtime changed, so mobile exports and interactive device checks were not repeated.
+- Migration 0043 was exercised in isolated databases; it has not been applied to the running development database. The emulator and running services were untouched. Separate development-preview CORS/auth/generated-type edits remain outside this commit. See [maintenance](maintenance.md) for retention limits and the metadata/reminder/email work still outstanding.
+
 ## Account deletion, storage erasure and startup schedule — 9 October 2026
 
 - The 175-test unit suite passed. The full 90-test PostgreSQL/API/Redis/MinIO integration suite passed; after adding startup schedule coverage, the three account-erasure tests passed again (91 integration tests now exist). New checks cover owner-scoped request/status/cancel, concurrent requests, atomic confirmation enqueue, expired/started cancellation guards, erased retry/sync data and reset tokens, fenced writes, stale worker recovery, storage failure, late uploads, retained multipart keys, version/delete-marker erasure, foreign-account preservation and repeat schedule deduplication.

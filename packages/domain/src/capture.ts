@@ -137,7 +137,13 @@ async function insertCapture(tx: Transaction, userId: string, version: number, i
   if (input.type === 'note') await tx.insert(notes).values({ ...std, ...noteContent(input.text) });
 }
 
-async function purgeRecords(tx: Transaction, userId: string, ids: string[], version: number) {
+/** Shared by explicit purges and retention, under the account's sync-state lock. */
+export async function purgeRecords(
+  tx: Transaction,
+  userId: string,
+  ids: string[],
+  version: number,
+) {
   ids.push(...(await purgeParentAttachments(tx, userId, ids)));
   const removedTasks = await tx
     .select({ ruleId: tasks.recurrenceRuleId })
@@ -154,10 +160,11 @@ async function purgeRecords(tx: Transaction, userId: string, ids: string[], vers
         inArray(entityLinks.relation, ['related', 'related_resource']),
       ),
     );
-  await tx
+  const detachedInbox = await tx
     .update(inboxItems)
-    .set({ convertedEntityId: null })
-    .where(and(eq(inboxItems.userId, userId), inArray(inboxItems.convertedEntityId, ids)));
+    .set({ convertedEntityId: null, version, updatedAt: new Date() })
+    .where(and(eq(inboxItems.userId, userId), inArray(inboxItems.convertedEntityId, ids)))
+    .returning({ id: inboxItems.id });
   await tx
     .delete(entityLinks)
     .where(
@@ -209,7 +216,7 @@ async function purgeRecords(tx: Transaction, userId: string, ids: string[], vers
       .update(projects)
       .set({ version, updatedAt: now })
       .where(and(eq(projects.userId, userId), inArray(projects.id, affected)));
-  return affected;
+  return [...affected, ...detachedInbox.map((row) => row.id).filter((id) => !ids.includes(id))];
 }
 
 export function createCaptureService(db: Database) {

@@ -2,81 +2,138 @@
  * Maintenance jobs — nightly background work (§49.2, §64.1, §45.3).
  *
  * 1. Trash auto-cleanup: hard-delete items in Trash for > 30 days.
- * 2. Tombstone cleanup: remove sync tombstones older than 180 days.
- * 3. Idempotency key cleanup: remove keys older than 7 days.
+ * 2. Preserve UUID reservations for full sync recovery and offline retries.
+ * 3. Compact cached retry responses after 7 days, retaining deduplication keys.
  * 4. Balance reconciliation: recompute account balances and alert on drift.
  * 5. Export expiry: mark ready exports older than 24 hours as expired.
  */
 
-import { and, eq, inArray, lte, isNotNull, or, sql } from 'drizzle-orm';
+import { v7 } from 'uuid';
+import { and, eq, inArray, lte, isNull, or, sql } from 'drizzle-orm';
 import {
   entities,
-  notes,
   tasks,
-  reminders,
-  learningCollections,
-  learningResources,
-  people,
-  financeAccounts,
-  financeCategories,
-  debts,
-  financeTransactions,
-  idempotencyKeys,
+  syncState,
+  auditLogs,
+  outboxEvents,
   exportJobs,
+  withUser,
   type Database,
 } from '@personalspace/db';
+import { purgeRecords } from './capture';
+import { nextVersion } from './capture.repository';
+import { indexSearchRecords } from './search';
 
-/** Hard-delete items that have been in Trash (deletedAt set) for > 30 days. */
+/** Bounded content erasure, serialized with restores and all other account mutations. */
 export async function cleanupTrash(db: Database): Promise<number> {
   const cutoff = new Date(Date.now() - 30 * 24 * 3600 * 1000);
-  // All domain tables have deletedAt and reference entities.
-  // We delete from child tables first, then entities.
+  const eligible = and(
+    isNull(entities.purgedAt),
+    lte(entities.deletedAt, cutoff),
+    // Financial rows and containers have different, explicit deletion workflows.
+    inArray(entities.type, ['note', 'task', 'inbox', 'reminder', 'learning_resource']),
+    sql`NOT EXISTS (SELECT 1 FROM deletion_requests d WHERE d.user_id = ${entities.userId}
+      AND (d.status IN ('processing', 'completed') OR d.started_at IS NOT NULL))`,
+  );
   const trashedEntities = await db
     .select({ id: entities.id, userId: entities.userId })
     .from(entities)
-    .where(and(isNotNull(entities.purgedAt), lte(entities.purgedAt, cutoff)))
+    .where(eligible)
+    // Visit task children before parents. Otherwise a page full of older parents
+    // could keep deferring forever because their eligible children fell on page two.
+    .orderBy(
+      sql`CASE WHEN ${entities.type} = 'task' AND EXISTS (
+        SELECT 1 FROM tasks child WHERE child.user_id = ${entities.userId}
+          AND child.parent_id = ${entities.id}
+      ) THEN 1 ELSE 0 END`,
+      entities.deletedAt,
+      entities.id,
+    )
     .limit(500);
-  if (!trashedEntities.length) return 0;
-
-  const ids = trashedEntities.map((e) => e.id);
-  // Delete from all domain tables (order doesn't matter since they reference entities).
-  for (const table of [
-    notes,
-    tasks,
-    reminders,
-    learningResources,
-    learningCollections,
-    financeTransactions,
-    debts,
-    financeCategories,
-    financeAccounts,
-    people,
-  ] as const) {
-    await db.delete(table).where(inArray(table.id, ids));
+  let purged = 0;
+  for (const userId of new Set(trashedEntities.map((row) => row.userId))) {
+    purged += await withUser(db, userId, async (tx) => {
+      // Match the domain's first data lock. Recheck after waiting for any restore.
+      const [state] = await tx
+        .select()
+        .from(syncState)
+        .where(eq(syncState.userId, userId))
+        .for('update');
+      if (!state) return 0;
+      const rows = await tx
+        .select({ id: entities.id })
+        .from(entities)
+        .where(
+          and(
+            eligible,
+            eq(entities.userId, userId),
+            inArray(
+              entities.id,
+              trashedEntities.filter((row) => row.userId === userId).map((row) => row.id),
+            ),
+          ),
+        );
+      if (!rows.length) return 0;
+      const candidates = new Set(rows.map((row) => row.id));
+      const children = await tx
+        .select({ id: tasks.id, parentId: tasks.parentId })
+        .from(tasks)
+        .where(and(eq(tasks.userId, userId), inArray(tasks.parentId, [...candidates])));
+      // Never strand a live/recently trashed child or exceed the candidate page.
+      for (const child of children)
+        if (!candidates.has(child.id)) candidates.delete(child.parentId!);
+      const ids = [...candidates];
+      if (!ids.length) return 0;
+      const [updated] = await tx
+        .update(syncState)
+        .set({ version: nextVersion })
+        .where(eq(syncState.userId, userId))
+        .returning();
+      const version = updated!.version;
+      const affected = await purgeRecords(tx, userId, ids, version);
+      await indexSearchRecords(tx, userId, ids, []);
+      if (affected.length)
+        await tx
+          .update(entities)
+          .set({ version, updatedAt: new Date() })
+          .where(and(eq(entities.userId, userId), inArray(entities.id, affected)));
+      const changed = [...new Set([...ids, ...affected])];
+      await tx.insert(auditLogs).values(
+        changed.map((id) => ({
+          id: v7(),
+          userId,
+          action: 'maintenance.trashPurge',
+          entityId: id,
+          requestId: 'nightly-retention',
+        })),
+      );
+      await tx.insert(outboxEvents).values({
+        id: v7(),
+        userId,
+        type: 'entities.changed',
+        payload: { entityIds: changed, version },
+      });
+      return ids.length;
+    });
   }
-  // Finally purge the entity row.
-  await db.delete(entities).where(inArray(entities.id, ids));
-  return ids.length;
+  return purged;
 }
 
-/** Remove sync tombstones older than 180 days (§64.1). */
-export async function cleanupTombstones(db: Database): Promise<number> {
-  const cutoff = new Date(Date.now() - 180 * 24 * 3600 * 1000);
-  const result = await db
-    .delete(entities)
-    .where(and(isNotNull(entities.purgedAt), lte(entities.purgedAt, cutoff)))
-    .returning({ id: entities.id });
-  return result.length;
-}
-
-/** Remove expired idempotency keys (> 7 days). */
+/** Drop old response content, but keep hashes so offline retries cannot execute twice. */
 export async function cleanupIdempotencyKeys(db: Database): Promise<number> {
   const cutoff = new Date(Date.now() - 7 * 24 * 3600 * 1000);
-  const result = await db
-    .delete(idempotencyKeys)
-    .where(lte(idempotencyKeys.createdAt, cutoff))
-    .returning({ key: idempotencyKeys.key });
-  return result.length;
+  const result = await db.execute(sql`
+    WITH batch AS (
+      SELECT user_id, key FROM idempotency_keys k
+      WHERE created_at <= ${cutoff} AND response <> '[]'::jsonb
+        AND NOT EXISTS (SELECT 1 FROM deletion_requests d WHERE d.user_id = k.user_id
+          AND (d.status IN ('processing', 'completed') OR d.started_at IS NOT NULL))
+      ORDER BY created_at, user_id, key LIMIT 500
+      FOR UPDATE SKIP LOCKED
+    ) UPDATE idempotency_keys k SET response = '[]'::jsonb FROM batch b
+      WHERE k.user_id = b.user_id AND k.key = b.key RETURNING k.key
+  `);
+  return result.rows.length;
 }
 
 /** Recompute account cached balances from transactions and alert on drift (§45.3). */
@@ -131,11 +188,6 @@ export async function reconcileBalances(
     const computed = Number(row.computed_balance);
     if (cached !== computed) {
       drifts.push({ accountId: row.account_id, cached, computed });
-      // Auto-correct the cached balance.
-      await db
-        .update(financeAccounts)
-        .set({ cachedBalanceMinor: computed, updatedAt: new Date() })
-        .where(eq(financeAccounts.id, row.account_id));
     }
   }
   return { drifts };

@@ -35,6 +35,7 @@ import { createApp } from '../apps/api/src/app';
 import { cleanAttachment } from '../apps/worker/src/attachment-cleanup';
 import { cleanAccountStorage } from '../apps/worker/src/account-cleanup';
 import { scheduleAccountDeletion } from '../apps/worker/src/deletion-schedule';
+import { scheduleMaintenance } from '../apps/worker/src/maintenance';
 import { processExport } from '../apps/worker/src/export-processing';
 import { cleanupExpiredExports, relayExports } from '../apps/worker/src/export-lifecycle';
 import { createExportAccess } from '../packages/domain/src/export-access';
@@ -1504,7 +1505,7 @@ describe('private export artifacts', () => {
 });
 
 describe('account object erasure', () => {
-  it('installs the deletion schedule in a fresh queue and deduplicates concurrent restarts', async () => {
+  it('installs deletion and maintenance schedules in fresh queues and deduplicates concurrent restarts', async () => {
     const redisContainer = await new GenericContainer('redis:7-alpine')
       .withExposedPorts(6379)
       .start();
@@ -1514,7 +1515,24 @@ describe('account object erasure', () => {
       maxRetriesPerRequest: null,
     });
     const queue = new Queue('deletion-schedule-test', { connection });
+    const maintenanceQueue = new Queue('maintenance-schedule-test', { connection });
     try {
+      await maintenanceQueue.add('unrelated', {}, { repeat: { pattern: '0 1 * * *' } });
+      await Promise.all([
+        scheduleMaintenance(maintenanceQueue),
+        scheduleMaintenance(maintenanceQueue),
+      ]);
+      await scheduleMaintenance(maintenanceQueue);
+      const maintenanceSchedules = (await maintenanceQueue.getRepeatableJobs()).filter(
+        (job) => job.name === 'nightly',
+      );
+      expect(maintenanceSchedules).toHaveLength(1);
+      expect(maintenanceSchedules[0]).toMatchObject({
+        pattern: '0 2 * * *',
+        next: expect.any(Number),
+      });
+      const [scheduledJob] = await maintenanceQueue.getDelayed();
+      expect(scheduledJob).toBeDefined();
       await queue.add('unrelated', {}, { repeat: { pattern: '0 1 * * *' } });
       await Promise.all([scheduleAccountDeletion(queue), scheduleAccountDeletion(queue)]);
       await scheduleAccountDeletion(queue);
@@ -1525,6 +1543,7 @@ describe('account object erasure', () => {
       expect(schedules[0]).toMatchObject({ pattern: '0 * * * *', next: expect.any(Number) });
       expect(schedules[0]!.next).toBeGreaterThan(Date.now());
     } finally {
+      await maintenanceQueue.close();
       await queue.close();
       await connection.quit();
       await redisContainer.stop();

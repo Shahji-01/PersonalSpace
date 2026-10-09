@@ -50,7 +50,6 @@ export {
 export { getPreferences, updatePreferences } from './preferences';
 export {
   cleanupTrash,
-  cleanupTombstones,
   cleanupIdempotencyKeys,
   reconcileBalances,
   expireExports,
