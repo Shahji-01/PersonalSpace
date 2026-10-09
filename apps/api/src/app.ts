@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import type { ServerConfig } from '@personalspace/config';
 import { and as drizzleAnd, eq as drizzleEq } from 'drizzle-orm';
 import type { Database } from '@personalspace/db';
-import { deviceTokens, authUsers, notificationLog, withUser } from '@personalspace/db';
+import { deviceTokens, notificationLog, withUser } from '@personalspace/db';
 import type { AttachmentStorage } from '@personalspace/storage';
 import {
   createCaptureService,
@@ -591,41 +591,8 @@ export async function createApp(deps: {
           config: { rateLimit: { max: 3, timeWindow: '1 hour' } },
         },
         async (request) => {
-          deletionRequestSchema.parse(request.body);
-          const result = await requestDeletion(deps.db, request.userId);
-          // Queue a confirmation email via the notification log so the email
-          // worker delivers it during its next sweep.
-          try {
-            const user = await deps.db
-              .select({ email: authUsers.email, name: authUsers.name })
-              .from(authUsers)
-              .where(drizzleEq(authUsers.id, request.userId))
-              .then((rows) => rows[0]);
-            if (user?.email) {
-              await deps.db.insert(notificationLog).values({
-                userId: request.userId,
-                type: 'transactional',
-                dedupeKey: `deletion_request_${result.id}`,
-                channel: 'email',
-                title: 'Account Deletion Confirmation',
-                body: [
-                  `Hi ${user.name},`,
-                  '',
-                  'We received a request to delete your PersonalSpace account.',
-                  `Your account is scheduled for permanent deletion on ${new Date(result.graceEndsAt).toLocaleDateString()}.`,
-                  '',
-                  'If you did not request this, sign in to your account and cancel the deletion immediately.',
-                  '',
-                  'All your data will be permanently removed after the grace period.',
-                  '',
-                  '— PersonalSpace',
-                ].join('\n'),
-                status: 'pending',
-              });
-            }
-          } catch {
-            // Email delivery is best-effort; deletion proceeds regardless.
-          }
+          const input = deletionRequestSchema.parse(request.body);
+          const result = await requestDeletion(deps.db, request.userId, input.reason);
           return { data: result };
         },
       );

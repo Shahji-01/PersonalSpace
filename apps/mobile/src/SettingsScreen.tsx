@@ -32,6 +32,10 @@ export function SettingsScreen({
   const [exportFormat, setExportFormat] = useState<ExportFormat>('json');
   const [exportScope, setExportScope] = useState<ExportScope>('everything');
   const [deleteConfirm, setDeleteConfirm] = useState('');
+  const canCancelDeletion =
+    deletion?.status === 'pending' &&
+    !!deletion.graceEndsAt &&
+    Date.parse(deletion.graceEndsAt) > Date.now();
 
   useEffect(() => {
     if (!visible) return;
@@ -137,7 +141,7 @@ export function SettingsScreen({
               setDeleteConfirm('');
               Alert.alert(
                 'Deletion scheduled',
-                `Your account will be permanently deleted on ${new Date(res.graceEndsAt!).toLocaleDateString()}. You can cancel anytime before then.`,
+                `Deletion starts after ${new Date(res.graceEndsAt!).toLocaleString()}. You can cancel before then.`,
               );
             } catch (e) {
               Alert.alert('Deletion failed', String(e));
@@ -384,21 +388,33 @@ export function SettingsScreen({
                 {deletion && deletion.status !== 'none' && deletion.status !== 'cancelled' ? (
                   <>
                     <Text style={[styles.label, { color: '#D62828' }]}>
-                      ⚠ Account deletion scheduled
+                      {deletion.status === 'completed'
+                        ? 'Account deleted'
+                        : canCancelDeletion
+                          ? 'Account deletion scheduled'
+                          : 'Account deletion in progress'}
                     </Text>
                     <Text style={styles.subtitle}>
-                      Your account and all associated data will be permanently deleted on{' '}
-                      {new Date(deletion.graceEndsAt!).toLocaleDateString()}.
+                      {canCancelDeletion
+                        ? `You can cancel until ${new Date(deletion.graceEndsAt!).toLocaleString()}.`
+                        : deletion.status === 'completed'
+                          ? 'Account cleanup has completed.'
+                          : 'The cancellation period has ended. Your account data and files are being removed.'}
                     </Text>
                     <Text style={styles.subtitle}>
-                      You can cancel deletion any time before that date. After the grace period,
-                      deletion is irreversible.
+                      {canCancelDeletion
+                        ? 'After the grace period, deletion is irreversible.'
+                        : deletion.status === 'completed'
+                          ? 'Your account can no longer be used.'
+                          : 'File cleanup may take additional time while existing upload links expire.'}
                     </Text>
-                    <Button
-                      label="Cancel Deletion"
-                      onPress={() => void handleCancelDelete()}
-                      disabled={saving}
-                    />
+                    {canCancelDeletion && (
+                      <Button
+                        label="Cancel Deletion"
+                        onPress={() => void handleCancelDelete()}
+                        disabled={saving}
+                      />
+                    )}
                   </>
                 ) : (
                   <>

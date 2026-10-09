@@ -8,6 +8,12 @@ import sharp from 'sharp';
 import { Queue, QueueEvents, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { Pool } from 'pg';
+import {
+  S3Client,
+  PutBucketVersioningCommand,
+  ListObjectVersionsCommand,
+  ListMultipartUploadsCommand,
+} from '@aws-sdk/client-s3';
 import { v7 } from 'uuid';
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
@@ -18,6 +24,7 @@ import {
   createAttachmentProcessor,
   createCaptureService,
   createNoteHistoryService,
+  executePendingDeletions,
 } from '../packages/domain/src/index';
 import {
   processAttachment,
@@ -26,6 +33,8 @@ import {
 import { createS3Storage, readStorageConfig } from '../packages/storage/src/index';
 import { createApp } from '../apps/api/src/app';
 import { cleanAttachment } from '../apps/worker/src/attachment-cleanup';
+import { cleanAccountStorage } from '../apps/worker/src/account-cleanup';
+import { scheduleAccountDeletion } from '../apps/worker/src/deletion-schedule';
 import { processExport } from '../apps/worker/src/export-processing';
 import { cleanupExpiredExports, relayExports } from '../apps/worker/src/export-lifecycle';
 import { createExportAccess } from '../packages/domain/src/export-access';
@@ -1491,5 +1500,213 @@ describe('private export artifacts', () => {
     expect(ready.storage_key).not.toBe(lateKey);
     expect(await storage.head(ready.storage_key)).not.toBeNull();
     expect(await storage.head(lateKey)).toBeNull();
+  });
+});
+
+describe('account object erasure', () => {
+  it('installs the deletion schedule in a fresh queue and deduplicates concurrent restarts', async () => {
+    const redisContainer = await new GenericContainer('redis:7-alpine')
+      .withExposedPorts(6379)
+      .start();
+    const connection = new Redis({
+      host: redisContainer.getHost(),
+      port: redisContainer.getMappedPort(6379),
+      maxRetriesPerRequest: null,
+    });
+    const queue = new Queue('deletion-schedule-test', { connection });
+    try {
+      await queue.add('unrelated', {}, { repeat: { pattern: '0 1 * * *' } });
+      await Promise.all([scheduleAccountDeletion(queue), scheduleAccountDeletion(queue)]);
+      await scheduleAccountDeletion(queue);
+      const schedules = (await queue.getRepeatableJobs()).filter(
+        (job) => job.name === 'process-deletions',
+      );
+      expect(schedules).toHaveLength(1);
+      expect(schedules[0]).toMatchObject({ pattern: '0 * * * *', next: expect.any(Number) });
+      expect(schedules[0]!.next).toBeGreaterThan(Date.now());
+    } finally {
+      await queue.close();
+      await connection.quit();
+      await redisContainer.stop();
+    }
+  }, 60000);
+  it('erases attachment/export versions, delete markers and multipart uploads without touching other accounts', async () => {
+    const user = await fixtureUser(),
+      foreign = await fixtureUser();
+    const config = readStorageConfig({
+      S3_ENDPOINT: endpoint,
+      S3_BUCKET: 'private-deletion-versions',
+      S3_REGION: 'us-east-1',
+      S3_FORCE_PATH_STYLE: 'true',
+      S3_ACCESS_KEY_ID: 'integration_test',
+      S3_SECRET_ACCESS_KEY: 'integration_secret_only',
+    })!;
+    const objects = createS3Storage(config);
+    const s3 = new S3Client({
+      endpoint,
+      region: config.S3_REGION,
+      forcePathStyle: true,
+      credentials: {
+        accessKeyId: config.S3_ACCESS_KEY_ID,
+        secretAccessKey: config.S3_SECRET_ACCESS_KEY,
+      },
+    });
+    try {
+      await objects.setup();
+      await s3.send(
+        new PutBucketVersioningCommand({
+          Bucket: config.S3_BUCKET,
+          VersioningConfiguration: { Status: 'Enabled' },
+        }),
+      );
+      const ownKey = `u/${user}/${v7()}`,
+        exportKey = `exports/${user}/${v7()}/attempt.zip`,
+        foreignKey = `u/${foreign}/${v7()}`;
+      await objects.write(ownKey, Buffer.from('old private content'), 'text/plain');
+      await objects.write(ownKey, Buffer.from('new private content'), 'text/plain');
+      await objects.remove(ownKey);
+      await objects.write(exportKey, Buffer.from('private export'), 'application/zip');
+      await objects.write(foreignKey, Buffer.from('keep'), 'text/plain');
+      const uploadKey = `u/${user}/${v7()}`,
+        uploadId = await objects.createMultipart(uploadKey);
+      const part = Buffer.from('private unfinished multipart bytes');
+      const grant = await objects.grant({
+        key: uploadKey,
+        uploadId,
+        number: 1,
+        size: part.length,
+        sha256: createHash('sha256').update(part).digest('hex'),
+      });
+      const uploaded = await fetch(grant.url, {
+        method: 'PUT',
+        headers: grant.headers,
+        body: new Uint8Array(part),
+      });
+      expect(uploaded.status).toBe(200);
+      await uploaded.body?.cancel();
+      expect((await objects.parts(uploadKey, uploadId))?.length).toBe(1);
+      const multipartPage = await s3.send(
+        new ListMultipartUploadsCommand({
+          Bucket: config.S3_BUCKET,
+          Prefix: uploadKey,
+          MaxUploads: 100,
+        }),
+      );
+      expect(multipartPage.Uploads, JSON.stringify(multipartPage)).toEqual(
+        expect.arrayContaining([expect.objectContaining({ Key: uploadKey, UploadId: uploadId })]),
+      );
+      await expect(objects.removeAccountObjects('../')).rejects.toThrow();
+      await objects.removeAccountObjects(user, [uploadKey]);
+      for (const prefix of [`u/${user}/`, `exports/${user}/`]) {
+        const page = await s3.send(
+          new ListObjectVersionsCommand({ Bucket: config.S3_BUCKET, Prefix: prefix }),
+        );
+        expect(page.Versions ?? []).toEqual([]);
+        expect(page.DeleteMarkers ?? []).toEqual([]);
+      }
+      expect(await objects.parts(uploadKey, uploadId)).toBeNull();
+      expect((await objects.read(foreignKey, 100))?.toString()).toBe('keep');
+      await objects.removeAccountObjects(user);
+    } finally {
+      objects.close();
+      s3.destroy();
+    }
+  });
+  it('retries storage failures, fences writes, resumes abandoned claims and sweeps late uploads before completion', async () => {
+    const user = await fixtureUser();
+    const item = await note(user);
+    await owner.query(
+      "INSERT INTO auth_verification(id,identifier,value,expires_at) VALUES ($1,'reset-password:fixture',$2,now()+interval '1 hour')",
+      [v7(), user],
+    );
+    const key = `u/${user}/${v7()}`;
+    await storage.write(key, Buffer.from('private bytes'), 'text/plain');
+    await owner.query(
+      "INSERT INTO outbox_events(id,user_id,type,payload) VALUES ($1,$2,'attachments.cleanup',$3::jsonb)",
+      [v7(), user, JSON.stringify({ key, uploadId: null, notBefore: Date.now() })],
+    );
+    const url = new URL(postgres.getConnectionUri());
+    url.username = 'personalspace_maintenance';
+    url.password = 'local_maintenance_only';
+    const maintenance = createDatabase(url.href);
+    const cleanup = (userId: string) => cleanAccountStorage(maintenance.db, storage, userId);
+    try {
+      await owner.query(
+        "INSERT INTO deletion_requests(user_id,grace_ends_at) VALUES ($1,now()-interval '1 day')",
+        [user],
+      );
+      expect(
+        await executePendingDeletions(maintenance.db, async () => {
+          throw new Error('private provider response');
+        }),
+      ).not.toContain(user);
+      expect((await owner.query('SELECT id FROM notes WHERE id=$1', [item.id])).rowCount).toBe(1);
+      const failed = (await owner.query('SELECT * FROM deletion_requests WHERE user_id=$1', [user]))
+        .rows[0];
+      expect(failed.status).toBe('pending');
+      expect(
+        (await owner.query('SELECT id FROM auth_verification WHERE value=$1', [user])).rows,
+      ).toEqual([]);
+      await expect(
+        owner.query(
+          "INSERT INTO auth_verification(id,identifier,value,expires_at) VALUES ($1,'reset-password:late',$2,now()+interval '1 hour')",
+          [v7(), user],
+        ),
+      ).rejects.toThrow('Account deletion is in progress');
+      expect(JSON.stringify(failed.steps_log)).not.toContain('private provider');
+      await expect(note(user)).rejects.toThrow();
+      await expect(
+        owner.query(
+          "INSERT INTO device_tokens(user_id,platform,token) VALUES ($1,'android','late')",
+          [user],
+        ),
+      ).rejects.toThrow('Account deletion is in progress');
+      // Simulate a process that died while owning the claim.
+      await owner.query(
+        "UPDATE deletion_requests SET status='processing',started_at=now()-interval '16 minutes' WHERE user_id=$1",
+        [user],
+      );
+      const runs = await Promise.all([
+        executePendingDeletions(maintenance.db, cleanup),
+        executePendingDeletions(maintenance.db, cleanup),
+      ]);
+      expect(runs.flat()).not.toContain(user);
+      expect(await storage.head(key)).toBeNull();
+      const waiting = (
+        await owner.query('SELECT status,step FROM deletion_requests WHERE user_id=$1', [user])
+      ).rows[0];
+      expect(waiting).toEqual({ status: 'processing', step: 'awaiting_storage_expiry' });
+      await expect(note(user)).rejects.toThrow();
+      // A previously issued signed grant could still put bytes after the first pass.
+      await storage.write(key, Buffer.from('late upload'), 'text/plain');
+      const lateMultipart = await storage.createMultipart(key);
+      await owner.query(
+        "UPDATE deletion_requests SET storage_cleanup_after=now()-interval '1 second' WHERE user_id=$1",
+        [user],
+      );
+      expect(await executePendingDeletions(maintenance.db, cleanup)).toContain(user);
+      expect(await storage.head(key)).toBeNull();
+      expect(await storage.parts(key, lateMultipart)).toBeNull();
+      expect(
+        (
+          await owner.query('SELECT storage_cleanup_keys FROM deletion_requests WHERE user_id=$1', [
+            user,
+          ])
+        ).rows[0].storage_cleanup_keys,
+      ).toEqual([]);
+      expect(
+        (await owner.query('SELECT status FROM deletion_requests WHERE user_id=$1', [user])).rows[0]
+          .status,
+      ).toBe('completed');
+      await expect(note(user)).rejects.toThrow();
+      await expect(
+        owner.query(
+          "INSERT INTO auth_session(id,user_id,token,expires_at) VALUES ($1,$2,'late-session',now()+interval '1 day')",
+          [v7(), user],
+        ),
+      ).rejects.toThrow('Account deletion is in progress');
+    } finally {
+      await maintenance.pool.end();
+    }
   });
 });

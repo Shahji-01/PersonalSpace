@@ -586,6 +586,8 @@ export const exportJobs = pgTable(
 export const deletionRequests = pgTable('deletion_requests', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').notNull().unique(),
+  storageCleanupAfter: instant('storage_cleanup_after'),
+  storageCleanupKeys: jsonb('storage_cleanup_keys').$type<string[]>().notNull().default([]),
   status: text('status').notNull().default('pending'),
   reason: text('reason'),
   graceEndsAt: instant('grace_ends_at').notNull(),

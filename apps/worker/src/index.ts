@@ -5,6 +5,8 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { createDatabase, outboxEvents } from '@personalspace/db';
 import { createS3Storage, readStorageConfig } from '@personalspace/storage';
 import { cleanAttachment, cleanupEventSchema } from './attachment-cleanup';
+import { cleanAccountStorage } from './account-cleanup';
+import { scheduleAccountDeletion } from './deletion-schedule';
 import { processExport } from './export-processing';
 import { cleanupExpiredExports, relayExports } from './export-lifecycle';
 import {
@@ -191,13 +193,9 @@ const deletionQueue = new Queue('deletion', { connection: redis });
 const deletionWorker = new Worker(
   'deletion',
   async () => {
-    const onStorageCleanup = storage
-      ? async (userId: string) => {
-          // Remove all user files from object storage.
-          // In production, this would list and delete the u/<userId>/ prefix.
-          console.log(JSON.stringify({ event: 'deletion_storage_cleanup', userId }));
-        }
-      : undefined;
+    const onStorageCleanup = async (userId: string) => {
+      await cleanAccountStorage(maintenanceDb, storage, userId);
+    };
     const onCacheCleanup = async (userId: string) => {
       await redis.del(`sync-version:${userId}`);
       console.log(JSON.stringify({ event: 'deletion_cache_cleanup', userId }));
@@ -364,7 +362,18 @@ process.on('SIGTERM', () => {
 });
 try {
   let nextExportCleanupAt = 0;
+  let deletionScheduled = false,
+    nextScheduleAttemptAt = 0;
   while (!stopping) {
+    if (!deletionScheduled && Date.now() >= nextScheduleAttemptAt) {
+      nextScheduleAttemptAt = Date.now() + 60000;
+      try {
+        await scheduleAccountDeletion(deletionQueue);
+        deletionScheduled = true;
+      } catch {
+        console.error(JSON.stringify({ event: 'deletion_schedule_failed' }));
+      }
+    }
     // Run on startup and every minute, independently of the nightly scheduler.
     if (Date.now() >= nextExportCleanupAt) {
       nextExportCleanupAt = Date.now() + 60000;
@@ -392,19 +401,6 @@ try {
       {},
       {
         repeat: { pattern: '0 2 * * *' }, // 2:00 AM daily
-        removeOnComplete: { age: 7 * 86400 },
-        removeOnFail: false,
-      },
-    );
-  }
-  // Schedule hourly deletion check.
-  const deletionJobs = await deletionQueue.getRepeatableJobs();
-  if (!deletionJobs.length) {
-    await deletionQueue.add(
-      'process-deletions',
-      {},
-      {
-        repeat: { pattern: '0 * * * *' }, // Every hour
         removeOnComplete: { age: 7 * 86400 },
         removeOnFail: false,
       },

@@ -12,6 +12,9 @@ import {
   UploadPartCommand,
   CompleteMultipartUploadCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
+  ListObjectVersionsCommand,
+  ListMultipartUploadsCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { z } from 'zod';
@@ -277,6 +280,78 @@ export function createS3Storage(config: NonNullable<ReturnType<typeof readStorag
   };
   return {
     ...storage,
+    // Prefixes are derived only from a validated account ID. Enumerating versions
+    // also erases overwritten objects and delete markers in versioned buckets.
+    removeAccountObjects: async (userId: string, knownAttachmentKeys: string[] = []) => {
+      z.uuid().parse(userId);
+      for (const key of knownAttachmentKeys) {
+        const prefix = `u/${userId}/`;
+        if (!key.startsWith(prefix)) throw new Error('Invalid account storage key');
+        z.uuid().parse(key.slice(prefix.length));
+      }
+      const deadline = Date.now() + 60000;
+      const checkTime = () => {
+        if (Date.now() >= deadline) throw new Error('Account storage cleanup must continue');
+      };
+      // MinIO requires the exact object key for multipart listings. Include
+      // persisted attachment/cleanup keys as well as the AWS prefix sweep.
+      for (const Prefix of new Set([
+        ...knownAttachmentKeys,
+        `u/${userId}/`,
+        `exports/${userId}/`,
+      ])) {
+        // Always drain the first page: deleting it shifts the next page forward,
+        // and a retry after partial failure simply lists the remaining objects.
+        for (;;) {
+          checkTime();
+          const page = await send((abortSignal) =>
+            client.send(new ListMultipartUploadsCommand({ Bucket, Prefix, MaxUploads: 100 }), {
+              abortSignal,
+            }),
+          );
+          const uploads = page.Uploads ?? [];
+          if (!uploads.length) {
+            if (page.IsTruncated) throw new Error('Incomplete multipart listing');
+            break;
+          }
+          for (const upload of uploads) {
+            checkTime();
+            if (
+              !upload.Key?.startsWith(Prefix) ||
+              !upload.UploadId ||
+              (!Prefix.endsWith('/') && upload.Key !== Prefix)
+            )
+              throw new Error('Invalid account storage listing');
+            await storage.abort(upload.Key, upload.UploadId);
+          }
+        }
+        if (!Prefix.endsWith('/')) continue;
+        for (;;) {
+          checkTime();
+          const page = await send((abortSignal) =>
+            client.send(new ListObjectVersionsCommand({ Bucket, Prefix, MaxKeys: 1000 }), {
+              abortSignal,
+            }),
+          );
+          const versions = [...(page.Versions ?? []), ...(page.DeleteMarkers ?? [])];
+          if (!versions.length) {
+            if (page.IsTruncated) throw new Error('Incomplete object listing');
+            break;
+          }
+          const Objects = versions.map((version) => {
+            if (!version.Key?.startsWith(Prefix) || !version.VersionId)
+              throw new Error('Invalid account storage listing');
+            return { Key: version.Key, VersionId: version.VersionId };
+          });
+          const result = await send((abortSignal) =>
+            client.send(new DeleteObjectsCommand({ Bucket, Delete: { Objects, Quiet: true } }), {
+              abortSignal,
+            }),
+          );
+          if (result.Errors?.length) throw new Error('Account storage cleanup incomplete');
+        }
+      }
+    },
     ready: () =>
       send((abortSignal) => client.send(new HeadBucketCommand({ Bucket }), { abortSignal })),
     // Explicit development setup only; startup never changes bucket policies/lifecycle.

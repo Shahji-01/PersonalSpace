@@ -1,5 +1,13 @@
 # Verification
 
+## Account deletion, storage erasure and startup schedule — 9 October 2026
+
+- The 175-test unit suite passed. The full 90-test PostgreSQL/API/Redis/MinIO integration suite passed; after adding startup schedule coverage, the three account-erasure tests passed again (91 integration tests now exist). New checks cover owner-scoped request/status/cancel, concurrent requests, atomic confirmation enqueue, expired/started cancellation guards, erased retry/sync data and reset tokens, fenced writes, stale worker recovery, storage failure, late uploads, retained multipart keys, version/delete-marker erasure, foreign-account preservation and repeat schedule deduplication.
+- Tests reproduced MinIO's exact-key multipart listing behavior. Cleanup now retains attachment/outbox keys through the final sweep. Versioned-bucket tests upload actual multipart bytes before verifying their removal. Auth fixture signups use separate synthetic source IPs so the real rate limit remains enabled without timing-dependent suite failures.
+- Tools/tests and all 14 workspace type checks passed. Changed files passed ESLint/formatting. API/worker builds and Android/iOS Hermes + DOM exports passed; existing Fastify/rrule and terminal-color warnings remain. UI copy received one final state correction and its mobile export was rerun.
+- Migration 0042 was applied in isolated test databases. It fences account writes, adds cleanup state/permissions and reopens old deletion requests that the previous worker marked completed without verified storage cleanup. It was not applied to the user's running database; services and emulator were not restarted.
+- Validation used the shared checkout, which also contains separate uncommitted development-preview authentication/CORS changes. Those changes are preserved and excluded from this increment's commit. Native accessibility, physical-device erasure, large-account progress and external backups/provider erasure remain open; see [account deletion](account-deletion.md).
+
 ## Device registration and watermark contract — 9 October 2026
 
 - All 175 unit tests and the 51-test PostgreSQL/API foundation integration suite passed. Added coverage for concurrent registration retries, existing UUIDv4 IDs, watermark persistence through re-registration, successful unregister, unauthenticated writes and indistinguishable missing/foreign device errors. The API client test verifies PATCH/DELETE methods against the contract.

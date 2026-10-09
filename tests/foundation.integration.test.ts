@@ -36,6 +36,8 @@ import {
   exportToJson,
   processPendingMetadata,
   executePendingDeletions,
+  requestDeletion,
+  cancelDeletion,
 } from '../packages/domain/src/index';
 import { searchQuerySchema, type RecordItem } from '../packages/validation/src/index';
 import { eq, sql } from 'drizzle-orm';
@@ -3765,6 +3767,7 @@ describe('authenticated capture → PostgreSQL → sync', () => {
   it('executes an expired account-deletion under the background role, owner-scoped', async () => {
     // A throwaway account so the wipe does not disturb userA/userB fixtures.
     const signup = await app.inject({
+      remoteAddress: '127.0.0.21',
       method: 'POST',
       url: '/api/auth/sign-up/email',
       headers: { origin: 'personalspace://', 'sec-fetch-mode': 'cors' },
@@ -3827,7 +3830,16 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       [userC],
     );
 
-    const deleted = await executePendingDeletions(maintenance.db);
+    expect(await executePendingDeletions(maintenance.db, async () => {})).not.toContain(userC);
+    expect(
+      (await owner.query('SELECT status,step FROM deletion_requests WHERE user_id=$1', [userC]))
+        .rows[0],
+    ).toEqual({ status: 'processing', step: 'awaiting_storage_expiry' });
+    await owner.query(
+      "UPDATE deletion_requests SET storage_cleanup_after=now()-interval '1 second' WHERE user_id=$1",
+      [userC],
+    );
+    const deleted = await executePendingDeletions(maintenance.db, async () => {});
     expect(deleted).toContain(userC);
 
     // Every domain/infra table for the user is emptied.
@@ -3839,6 +3851,10 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       'search_documents',
       'audit_logs',
       'outbox_events',
+      'idempotency_keys',
+      'user_sync_state',
+      'recurrence_rules',
+      'inbox_items',
     ])
       expect(await countFor(table)).toBe(0);
 
@@ -3873,6 +3889,7 @@ describe('authenticated capture → PostgreSQL → sync', () => {
   it('queues verification and password-reset emails through the notification log', async () => {
     const email = `reset-${v7()}@example.test`;
     const signup = await app.inject({
+      remoteAddress: '127.0.0.22',
       method: 'POST',
       url: '/api/auth/sign-up/email',
       headers: { origin: 'personalspace://', 'sec-fetch-mode': 'cors' },
@@ -3898,6 +3915,7 @@ describe('authenticated capture → PostgreSQL → sync', () => {
 
     // Requesting a password reset queues a reset email (and never reveals account existence).
     const reset = await app.inject({
+      remoteAddress: '127.0.0.22',
       method: 'POST',
       url: '/api/auth/request-password-reset',
       headers: { origin: 'personalspace://', 'sec-fetch-mode': 'cors' },
@@ -4017,5 +4035,100 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       });
       expect(res.statusCode).toBe(401);
     }
+  });
+  it('requests, reads and cancels account deletion through owner RLS and queues one confirmation per request', async () => {
+    const request = () =>
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/account/delete',
+        headers: headers(tokenA),
+        payload: { confirmText: 'DELETE', reason: 'Test request' },
+      });
+    const responses = await Promise.all([request(), request()]);
+    expect(responses.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+    const created = responses.find((r) => r.statusCode === 200)!.json().data;
+    expect(new Date(created.graceEndsAt).getTime() - new Date(created.createdAt).getTime()).toBe(
+      14 * 86400000,
+    );
+    const own = await app.inject({ url: '/api/v1/account/delete', headers: headers(tokenA) });
+    expect(own.statusCode, own.body).toBe(200);
+    expect(own.json().data.status).toBe('pending');
+    const foreign = await app.inject({ url: '/api/v1/account/delete', headers: headers(tokenB) });
+    expect(foreign.json().data.status).toBe('none');
+    expect(
+      (await owner.query('SELECT reason FROM deletion_requests WHERE user_id=$1', [userA])).rows[0]
+        .reason,
+    ).toBe('Test request');
+    const confirmations = () =>
+      owner.query(
+        "SELECT id FROM notification_log WHERE user_id=$1 AND dedupe_key LIKE 'deletion_request_%'",
+        [userA],
+      );
+    expect((await confirmations()).rowCount).toBe(1);
+    const cancel = await app.inject({
+      method: 'DELETE',
+      url: '/api/v1/account/delete',
+      headers: headers(tokenA),
+    });
+    expect(cancel.statusCode, cancel.body).toBe(200);
+    expect(cancel.json().data.status).toBe('cancelled');
+    const again = await request();
+    expect(again.statusCode, again.body).toBe(200);
+    expect((await confirmations()).rowCount).toBe(2);
+    expect(
+      (
+        await owner.query(
+          'SELECT cancelled_at, started_at FROM deletion_requests WHERE user_id=$1',
+          [userA],
+        )
+      ).rows[0],
+    ).toEqual({ cancelled_at: null, started_at: null });
+    await cancelDeletion(domain.db, userA);
+  });
+  it('rolls back a deletion request when confirmation enqueue fails and refuses expired or started cancellations', async () => {
+    await owner.query(`CREATE FUNCTION reject_deletion_email() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.user_id = '${userB}'::uuid AND NEW.dedupe_key LIKE 'deletion_request_%' THEN
+          RAISE EXCEPTION 'simulated email enqueue failure';
+        END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER reject_deletion_email BEFORE INSERT ON notification_log
+      FOR EACH ROW EXECUTE FUNCTION reject_deletion_email();`);
+    try {
+      await expect(requestDeletion(domain.db, userB)).rejects.toThrow();
+      expect(
+        (await owner.query('SELECT id FROM deletion_requests WHERE user_id=$1', [userB])).rowCount,
+      ).toBe(0);
+    } finally {
+      await owner.query(
+        'DROP TRIGGER reject_deletion_email ON notification_log; DROP FUNCTION reject_deletion_email()',
+      );
+    }
+    await requestDeletion(domain.db, userB);
+    await owner.query(
+      "UPDATE deletion_requests SET grace_ends_at=now()-interval '1 second' WHERE user_id=$1",
+      [userB],
+    );
+    await expect(cancelDeletion(domain.db, userB)).rejects.toMatchObject({
+      code: 'DELETION_NOT_CANCELLABLE',
+    });
+    for (const status of ['processing', 'completed']) {
+      await owner.query('UPDATE deletion_requests SET status=$2 WHERE user_id=$1', [userB, status]);
+      await expect(requestDeletion(domain.db, userB)).rejects.toMatchObject({
+        code: 'DELETION_ALREADY_REQUESTED',
+      });
+      await expect(cancelDeletion(domain.db, userB)).rejects.toMatchObject({
+        code: 'DELETION_NOT_CANCELLABLE',
+      });
+    }
+    await owner.query(
+      "UPDATE deletion_requests SET status='pending',started_at=now(),grace_ends_at=now()+interval '1 day' WHERE user_id=$1",
+      [userB],
+    );
+    await expect(cancelDeletion(domain.db, userB)).rejects.toMatchObject({
+      code: 'DELETION_NOT_CANCELLABLE',
+    });
+    await owner.query("UPDATE deletion_requests SET status='cancelled' WHERE user_id=$1", [userB]);
   });
 });
