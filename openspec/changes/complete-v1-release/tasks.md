@@ -10,13 +10,13 @@ Capability: `background-delivery`. No feature dependencies.
 
 - [x] 1.1 Move metadata, notification and email schedule registration into active startup/retry progression with stable identities; verify an empty Redis fixture obtains every required schedule while the worker remains running.
 - [x] 1.2 Isolate registration failures and recover after queue reconnect; verify duplicate worker startup, unrelated existing schedules and Redis outage/recovery do not lose or duplicate logical schedules.
-- [ ] 1.3 Preserve deletion/maintenance behavior and shutdown cleanup; run worker schedule integration tests and affected build/type/lint checks, update the maintenance runbook and verification evidence, then commit/push and verify the remote commit.
+- [x] 1.3 Preserve deletion/maintenance behavior and shutdown cleanup; run worker schedule integration tests and affected build/type/lint checks, update the maintenance runbook and verification evidence, then commit/push and verify the remote commit.
 
 ## 2. Durable transactional email
 
 Capability: `background-delivery`. Depends on group 1.
 
-- [ ] 2.1 Add forward migration and restricted-role permissions for delivery attempts, lease ownership, retry timing and sanitized outcomes; verify fresh/upgrade migrations and denial of unrelated account/auth access.
+- [x] 2.1 Add forward migration and restricted-role permissions for delivery attempts, lease ownership, retry timing and sanitized outcomes; verify fresh/upgrade migrations and denial of unrelated account/auth access.
 - [ ] 2.2 Implement atomic email claims, stale-claim fencing, expired-lease recovery and bounded backoff; verify competing workers and crashes before/after provider submission with stable message identity.
 - [ ] 2.3 Add Resend timeout/idempotency/error normalization and explicit preview/unavailable outcomes; verify contract fixtures for acceptance, timeout, throttling, permanent failure and missing configuration without raw content logs.
 - [ ] 2.4 Make required auth/account/export email enqueue durable and visible on failure; verify rollback/recoverable responses when the enqueue path fails instead of swallowing errors.

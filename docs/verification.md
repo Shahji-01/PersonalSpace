@@ -1,5 +1,11 @@
 # Verification
 
+## Email delivery-state migration — 22 October 2026
+
+- All five new PostgreSQL integration tests passed with `pnpm exec vitest run --config vitest.integration.config.ts tests/email-delivery.integration.test.ts`. They cover repeated fresh migrations, an actual 0043-to-0044 upgrade retaining pending/sent/failed outcomes, owner isolation and restricted-role denial, claim/error constraints, immutable attempted envelopes, and the existing erasure fence/inventory.
+- The tests use isolated PostgreSQL 17 and real application/auth/relay/maintenance roles. The owner policy was narrowed to the application role with missing-context-safe evaluation, so unauthorized roles receive permission denial instead of evaluating another role's account-context expression.
+- No live database was migrated and no email was sent. Sender claims/retries, provider behavior and enqueue integration remain separate tasks; see [email delivery](email-delivery.md). The broader application integration suites have not been rerun for this additive schema increment.
+
 ## Runtime background schedules — 22 October 2026
 
 - Added four unit cases and three isolated Redis integration cases for startup registration, legacy/unrelated repeat definitions, concurrent starts, independent failure handling, preservation of delayed occurrences, startup/reconnect outages, lost Redis data and registration-loop shutdown. The Redis suite uses synthetic queue definitions and a TCP outage proxy; it never starts the application's email, metadata, notification or deletion processors.
