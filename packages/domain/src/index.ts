@@ -83,4 +83,8 @@ export {
   createEmailProvider,
   processPendingEmails,
   type EmailProvider,
+  type EmailEnvelope,
+  type EmailOutcome,
+  EmailDeliveryError,
+  UnavailableEmailProvider,
 } from './email';

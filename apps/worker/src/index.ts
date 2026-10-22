@@ -233,12 +233,14 @@ const emailWorker = new Worker(
   'email',
   async () => {
     try {
-      const sent = await processPendingEmails(maintenanceDb, emailProvider);
-      if (sent > 0) {
-        console.log(JSON.stringify({ event: 'emails_sent', count: sent }));
+      const accepted = await processPendingEmails(maintenanceDb, emailProvider);
+      if (accepted > 0) {
+        console.log(JSON.stringify({ event: 'emails_accepted', count: accepted }));
       }
-    } catch (e) {
-      console.log(JSON.stringify({ event: 'email_processing_failed', error: String(e) }));
+    } catch {
+      // Database errors can contain private query parameters. BullMQ gets only
+      // a sanitized failure; the durable claim is recovered after its lease.
+      throw new Error('email_processing_failed');
     }
   },
   { connection: redis, concurrency: 1 },

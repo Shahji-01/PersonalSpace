@@ -1,132 +1,190 @@
-/**
- * Transactional Email Worker (§70, M5).
- *
- * Processes pending email notifications from the notificationLog
- * and delivers them using a configured email provider.
- * Falls back to logging in development if no provider is configured.
- */
+import { randomUUID } from 'node:crypto';
+import { and, asc, eq, sql } from 'drizzle-orm';
+import { deletionRequests, notificationLog, type Database } from '@personalspace/db';
+import { EmailDeliveryError, type EmailProvider, type EmailOutcome } from './email-provider';
 
-import { eq, and } from 'drizzle-orm';
-import { notificationLog, authUsers, type Database } from '@personalspace/db';
+export * from './email-provider';
 
-export interface EmailProvider {
-  sendEmail(to: string, subject: string, body: string, html?: string): Promise<void>;
-}
+const leaseMs = 120_000;
+const maxAttempts = 8;
+// Resend retains keys for 24 hours. Stop earlier, including after a long outage.
+const retryWindowMs = 23 * 60 * 60 * 1000;
+type Email = typeof notificationLog.$inferSelect;
+type Claim = { kind: 'claimed'; email: Email } | { kind: 'skipped' };
 
-/** Mock provider for development. */
-export class ConsoleEmailProvider implements EmailProvider {
-  async sendEmail(to: string, subject: string, body: string): Promise<void> {
-    console.log(`[EMAIL DISPATCH] To: ${to} | Subject: ${subject}`);
-    console.log(`[EMAIL BODY]:\n${body}`);
-  }
-}
+const accountIsErasing = sql`exists (
+  select 1 from deletion_requests d where d.user_id = ${notificationLog.userId}
+  and (d.status in ('processing', 'completed') or (d.status = 'pending' and d.started_at is not null))
+)`;
 
-/**
- * Resend email provider (https://resend.com).
- * Uses the HTTP API directly — no SDK dependency.
- */
-export class ResendEmailProvider implements EmailProvider {
-  constructor(
-    private readonly apiKey: string,
-    private readonly fromAddress: string = 'PersonalSpace <noreply@personalspace.app>',
-  ) {}
-
-  async sendEmail(to: string, subject: string, body: string, html?: string): Promise<void> {
-    const response = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        from: this.fromAddress,
-        to: [to],
-        subject,
-        text: body,
-        ...(html ? { html } : {}),
-      }),
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.text().catch(() => 'Unknown error');
-      throw new Error(`Resend API error ${response.status}: ${errorBody}`);
-    }
-  }
-}
-
-/**
- * Factory: pick provider based on environment configuration.
- * Falls back to ConsoleEmailProvider when no API key is set.
- */
-export function createEmailProvider(): EmailProvider {
-  const apiKey = process.env.RESEND_API_KEY;
-  const fromAddress = process.env.EMAIL_FROM_ADDRESS;
-  if (apiKey) {
-    return new ResendEmailProvider(apiKey, fromAddress || undefined);
-  }
-  return new ConsoleEmailProvider();
-}
-
-/**
- * Worker job to process and send pending emails.
- * Returns the number of emails processed.
- */
-export async function processPendingEmails(db: Database, provider: EmailProvider): Promise<number> {
-  const pending = await db
-    .select({
-      id: notificationLog.id,
-      userId: notificationLog.userId,
-      title: notificationLog.title,
-      body: notificationLog.body,
-    })
-    .from(notificationLog)
-    .where(
-      and(
-        eq(notificationLog.channel, 'email'),
-        eq(notificationLog.status, 'pending')
+/** Claim one envelope at a time so queued messages cannot outlive a batch lease. */
+export async function claimNextEmail(db: Database, provider: EmailProvider): Promise<Claim | null> {
+  return db.transaction(async (tx) => {
+    const [email] = await tx
+      .select()
+      .from(notificationLog)
+      .where(
+        and(
+          eq(notificationLog.channel, 'email'),
+          sql`not ${accountIsErasing}`,
+          sql`((${notificationLog.status} in ('pending', 'retrying') and ${notificationLog.emailNextAttemptAt} <= now())
+          or (${notificationLog.status} = 'processing' and ${notificationLog.emailLeaseExpiresAt} <= now()))`,
+        ),
       )
+      .orderBy(
+        asc(notificationLog.emailNextAttemptAt),
+        asc(notificationLog.createdAt),
+        asc(notificationLog.id),
+      )
+      .limit(1)
+      .for('update', { skipLocked: true });
+    if (!email) return null;
+    const clock = await tx.execute<{ now: string }>(sql`select clock_timestamp() as now`);
+    const now = new Date(clock.rows[0]!.now);
+    const failure = !email.emailTo
+      ? 'recipient_missing'
+      : email.emailExpiresAt && email.emailExpiresAt <= now
+        ? 'expired'
+        : email.emailFirstAttemptAt &&
+            now.getTime() - email.emailFirstAttemptAt.getTime() >= retryWindowMs
+          ? 'delivery_uncertain'
+          : email.emailAttempts >= maxAttempts
+            ? 'attempts_exhausted'
+            : null;
+    if (failure) {
+      await tx
+        .update(notificationLog)
+        .set({
+          status: 'failed',
+          emailErrorCode: failure,
+          error: null,
+          emailClaimId: null,
+          emailLeaseExpiresAt: null,
+        })
+        .where(eq(notificationLog.id, email.id));
+      return { kind: 'skipped' };
+    }
+    const [claimed] = await tx
+      .update(notificationLog)
+      .set({
+        status: 'processing',
+        emailClaimId: randomUUID(),
+        emailLeaseExpiresAt: new Date(now.getTime() + leaseMs),
+        emailAttempts: email.emailAttempts + 1,
+        emailFirstAttemptAt: email.emailFirstAttemptAt ?? now,
+        emailFrom: email.emailFirstAttemptAt ? email.emailFrom : provider.fromAddress,
+        emailErrorCode: null,
+        error: null,
+      })
+      .where(eq(notificationLog.id, email.id))
+      .returning();
+    return { kind: 'claimed', email: claimed! };
+  });
+}
+
+/** Stale workers cannot submit or finalize a newer worker's lease. */
+export async function deliverClaimedEmail(
+  db: Database,
+  provider: EmailProvider,
+  claim: Email,
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    // Match the erasure trigger's lock: deletion cannot start during bounded I/O.
+    const [deletion] = await tx
+      .select()
+      .from(deletionRequests)
+      .where(eq(deletionRequests.userId, claim.userId))
+      .for('share');
+    if (
+      deletion &&
+      (['processing', 'completed'].includes(deletion.status) ||
+        (deletion.status === 'pending' && deletion.startedAt))
     )
-    .limit(50); // Batch size
-
-  if (pending.length === 0) return 0;
-
-  let count = 0;
-  for (const log of pending) {
-    // Look up the user's email address
-    const user = await db
-      .select({ email: authUsers.email })
-      .from(authUsers)
-      .where(eq(authUsers.id, log.userId))
-      .then((rows) => rows[0]);
-
-    if (!user || !user.email) {
-      await db
-        .update(notificationLog)
-        .set({ status: 'failed', error: 'User email not found', sentAt: new Date() })
-        .where(eq(notificationLog.id, log.id));
-      continue;
+      return false;
+    const ownsClaim = and(
+      eq(notificationLog.id, claim.id),
+      eq(notificationLog.status, 'processing'),
+      eq(notificationLog.emailClaimId, claim.emailClaimId!),
+      sql`${notificationLog.emailLeaseExpiresAt} > clock_timestamp()`,
+    );
+    const [email] = await tx.select().from(notificationLog).where(ownsClaim).for('update');
+    if (!email) return false;
+    const clock = await tx.execute<{ now: string }>(sql`select clock_timestamp() as now`);
+    const now = new Date(clock.rows[0]!.now);
+    let outcome: EmailOutcome | undefined;
+    let failure: EmailDeliveryError | undefined;
+    if (email.emailExpiresAt && email.emailExpiresAt <= now) {
+      failure = new EmailDeliveryError('expired', false);
+    } else if (now.getTime() - email.emailFirstAttemptAt!.getTime() >= retryWindowMs) {
+      failure = new EmailDeliveryError('delivery_uncertain', false);
+    } else {
+      try {
+        outcome = await provider.sendEmail({
+          idempotencyKey: `personalspace/email/${email.id}`,
+          to: email.emailTo!,
+          from: email.emailFrom,
+          subject: email.title,
+          text: email.body ?? '',
+          html: email.emailHtml,
+        });
+      } catch (error) {
+        failure =
+          error instanceof EmailDeliveryError
+            ? error
+            : new EmailDeliveryError('network_error', true);
+      }
     }
-
-    try {
-      await provider.sendEmail(
-        user.email,
-        log.title,
-        log.body || '',
+    // Honor Retry-After only inside the idempotency window and message expiry.
+    const backoff = Math.min(60 * 60_000, 30_000 * 2 ** (email.emailAttempts - 1));
+    const finishedClock = await tx.execute<{ now: string }>(sql`select clock_timestamp() as now`);
+    const finishedAt = new Date(finishedClock.rows[0]!.now);
+    const nextAttempt = new Date(
+      finishedAt.getTime() + Math.max(backoff, failure?.retryAfterMs ?? 0),
+    );
+    const withinWindow =
+      nextAttempt.getTime() < email.emailFirstAttemptAt!.getTime() + retryWindowMs;
+    const withinExpiry = !email.emailExpiresAt || nextAttempt < email.emailExpiresAt;
+    const retry =
+      failure?.retryable && email.emailAttempts < maxAttempts && withinWindow && withinExpiry;
+    const errorCode = failure
+      ? !withinWindow
+        ? 'delivery_uncertain'
+        : !withinExpiry
+          ? 'expired'
+          : failure.retryable && email.emailAttempts >= maxAttempts
+            ? 'attempts_exhausted'
+            : failure.code
+      : null;
+    await tx
+      .update(notificationLog)
+      .set({
+        status: outcome?.kind ?? (retry ? 'retrying' : 'failed'),
+        emailProviderId: outcome?.kind === 'accepted' ? outcome.providerId : null,
+        emailAcceptedAt: outcome?.kind === 'accepted' ? finishedAt : null,
+        emailErrorCode: errorCode,
+        emailNextAttemptAt: nextAttempt,
+        emailClaimId: null,
+        emailLeaseExpiresAt: null,
+        error: null,
+      })
+      .where(
+        and(
+          eq(notificationLog.id, email.id),
+          eq(notificationLog.emailClaimId, email.emailClaimId!),
+        ),
       );
+    return outcome?.kind === 'accepted';
+  });
+}
 
-      await db
-        .update(notificationLog)
-        .set({ status: 'sent', sentAt: new Date() })
-        .where(eq(notificationLog.id, log.id));
-      
-      count++;
-    } catch (e) {
-      await db
-        .update(notificationLog)
-        .set({ status: 'failed', error: String(e), sentAt: new Date() })
-        .where(eq(notificationLog.id, log.id));
-    }
+/** Returns provider acceptances, never preview counts or assumed deliveries. */
+export async function processPendingEmails(db: Database, provider: EmailProvider): Promise<number> {
+  let accepted = 0;
+  for (let index = 0; index < 50; index++) {
+    const claim = await claimNextEmail(db, provider);
+    if (!claim) break;
+    if (claim.kind === 'claimed' && (await deliverClaimedEmail(db, provider, claim.email)))
+      accepted++;
   }
-
-  return count;
+  return accepted;
 }

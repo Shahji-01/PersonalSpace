@@ -3652,18 +3652,19 @@ describe('authenticated capture → PostgreSQL → sync', () => {
   it('sends pending transactional emails to the recipient under the background role', async () => {
     const dedupe = `email-test-${v7()}`;
     await owner.query(
-      `INSERT INTO notification_log (user_id, type, dedupe_key, title, body, channel, status)
-       VALUES ($1, 'export_ready', $2, 'Your export is ready', 'Download it within 24 hours.', 'email', 'pending')`,
+      `INSERT INTO notification_log (user_id, type, dedupe_key, title, body, channel, status, email_to)
+       VALUES ($1, 'export_ready', $2, 'Your export is ready', 'Download it within 24 hours.', 'email', 'pending', 'a@example.test')`,
       [userA, dedupe],
     );
     const sent: Array<{ to: string; subject: string; body: string }> = [];
     const provider = {
-      async sendEmail(to: string, subject: string, body: string) {
-        sent.push({ to, subject, body });
+      fromAddress: 'sender@example.test',
+      async sendEmail(email: import('../packages/domain/src/email').EmailEnvelope) {
+        sent.push({ to: email.to, subject: email.subject, body: email.text });
+        return { kind: 'accepted' as const, providerId: v7() };
       },
     };
-    // The background role can read only id+email from auth_user (column grant).
-    // Other pending emails (e.g. sign-up verification) may also be delivered.
+    // Delivery uses the original recipient snapshot, not the current profile.
     expect(await processPendingEmails(maintenance.db, provider)).toBeGreaterThanOrEqual(1);
     expect(sent).toContainEqual({
       to: 'a@example.test',
@@ -3671,11 +3672,11 @@ describe('authenticated capture → PostgreSQL → sync', () => {
       body: 'Download it within 24 hours.',
     });
     const row = await owner.query(
-      'SELECT status, sent_at FROM notification_log WHERE dedupe_key=$1',
+      'SELECT status, email_accepted_at, sent_at FROM notification_log WHERE dedupe_key=$1',
       [dedupe],
     );
-    expect(row.rows[0]).toMatchObject({ status: 'sent' });
-    expect(row.rows[0].sent_at).not.toBeNull();
+    expect(row.rows[0]).toMatchObject({ status: 'accepted', sent_at: null });
+    expect(row.rows[0].email_accepted_at).not.toBeNull();
     // Already-sent rows are not reprocessed.
     const delivered = sent.length;
     expect(await processPendingEmails(maintenance.db, provider)).toBe(0);

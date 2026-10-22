@@ -1,5 +1,12 @@
 # Verification
 
+## Email claims, retries and provider contracts — 22 October 2026
+
+- Fourteen provider unit fixtures pass: stable key/envelope submission, ten-second timeout, throttling, transient/permanent rejection, both idempotency conflict outcomes, malformed receipts, missing configuration and private development preview.
+- Fourteen isolated PostgreSQL integration cases pass, including the five migration/permission cases and nine cases covering competing workers, crashes before/after provider acceptance, live/expired leases, stale-worker fencing, bounded backoff, message/key expiry, explicit preview/unavailable states, recipient snapshots, sanitized errors and serialization with account erasure. The original foundation email integration also passes against the new acceptance contract (one targeted case; the other 52 foundation cases were not rerun).
+- Domain/worker TypeScript, tools/tests TypeScript, changed-source ESLint and worker build passed. Existing Fastify deprecation and `rrule` build warnings remain. The first database run exposed raw timestamp decoding differences in Drizzle; the final run passes with explicit decoding of the database clock.
+- No real provider call, live database migration, running application restart or emulator interaction occurred. Enqueue callers and complete templates are still pending; these checks establish the delivery engine, not complete account-email or release acceptance.
+
 ## Email delivery-state migration — 22 October 2026
 
 - All five new PostgreSQL integration tests passed with `pnpm exec vitest run --config vitest.integration.config.ts tests/email-delivery.integration.test.ts`. They cover repeated fresh migrations, an actual 0043-to-0044 upgrade retaining pending/sent/failed outcomes, owner isolation and restricted-role denial, claim/error constraints, immutable attempted envelopes, and the existing erasure fence/inventory.
