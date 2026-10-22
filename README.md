@@ -78,6 +78,8 @@ Creates work offline. Completion and conversion require the source item to have 
 
 ## Verify
 
+For specification-driven feature work, OpenSpec is configured for Codex. See the [OpenSpec setup and workflow](openspec/README.md).
+
 ```sh
 pnpm format:check
 pnpm lint

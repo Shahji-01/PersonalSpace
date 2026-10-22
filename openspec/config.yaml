@@ -1,0 +1,40 @@
+schema: spec-driven
+
+context: |
+  PersonalSpace is a mobile-first personal organizer for life, learning, work and money.
+  PersonalSpace-Specification-v1.2.md remains the product source of truth; do not
+  infer that its requirements are implemented. Read docs/project-audit.md for
+  known gaps, inspect the relevant code, and use docs/verification.md for evidence.
+  Introduce capability specs incrementally as changes are planned and verified.
+  Follow AGENTS.md, including the installed-version Turborepo guidance.
+  Preserve account isolation, offline replay/idempotency, sync deletion markers,
+  integer money arithmetic, private attachment access and durable outbox behavior.
+  The repository is a development preview; production acceptance is still pending.
+  Native device acceptance is distinct from unit tests, headless checks and bundles.
+  Leave the user's running emulator alone unless they explicitly authorize access.
+
+rules:
+  proposal:
+    - Identify the concrete behavior gap, affected capabilities and scope boundaries.
+    - Check existing specifications and implementation before proposing new work.
+  specs:
+    - State testable requirements with observable scenarios, including failure behavior.
+    - Cover account isolation and offline/retry behavior when the change affects user data.
+  design:
+    - Explain migrations, compatibility and recovery for persistence or background-job changes.
+    - Describe mobile states and accessibility when a user-facing workflow changes.
+  tasks:
+    - Use small deliverable groups with appropriate validation and explicit acceptance criteria.
+    - Include documentation updates and a commit/push step for each completed feature.
+    - Keep provider credentials, external provisioning and physical-device acceptance visibly separate.
+
+operations:
+  apply:
+    guidance:
+      - Preserve unrelated edits and keep unfinished work and secrets out of commits.
+      - Run relevant checks, then commit and push completed work to the configured remote branch; this workflow is authorized by AGENTS.md.
+      - Never force-push without explicit authorization or claim unrun checks passed.
+  archive:
+    guidance:
+      - Archive only completed work whose implementation and relevant checks are verified.
+      - Record material remaining limitations and update the project audit and verification notes.
