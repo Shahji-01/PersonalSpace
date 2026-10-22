@@ -1,4 +1,4 @@
-# Project audit — 9 October 2026
+# Project audit — 22 October 2026
 
 Compared the current checkout with `PersonalSpace-Specification-v1.2.md`, the four apps, ten shared packages, migrations, worker wiring, infrastructure and tests. This replaces the older coverage table: several features it listed as absent now have implementations. Code coverage and release acceptance remain separate.
 
@@ -31,7 +31,7 @@ The principal data path is mobile SQLite/outbox → API commands → PostgreSQL/
 
 These are source findings, not inferred from missing checkboxes:
 
-1. **Background schedule registration:** metadata, notifications and email repeat jobs are still registered after the worker's `while (!stopping)` loop. A fresh worker therefore does not install those schedules while running. Existing Redis schedules may hide this. Export delivery/expiry, hourly deletion and nightly maintenance now register/run inside the active loop.
+1. **Background schedule registration repaired:** all five periodic schedules now register in an independent runtime loop with bounded Redis attempts. Existing repeat identities and delayed occurrences are preserved; concurrent starts, unrelated schedules, startup/reconnect outages and Redis data loss are covered by isolated Redis tests. Export delivery/expiry remains in the relay loop. This does not complete the downstream metadata, email or push processors.
 2. **Deletion implementation advanced:** request/cancel races, missing owner context, real object/version/multipart cleanup, stale claims, late uploads and omitted retry/sync/recurrence data are now handled. Migration 0042 fences writes and reopens older falsely completed requests. Large-account progress, lost historical multipart keys, external providers/backups and native acceptance remain open; see [account deletion](account-deletion.md).
 3. **Notifications do not yet send server pushes:** `deliverDueReminders` inserts pending log rows and advances reminder state, but has no push provider call. Device registration, watermark updates and unregister now have tested owner-scoped transactions, UUIDv4 compatibility and matching client methods. Provider delivery, local scheduling completeness and sign-out/token lifecycle remain open.
 4. **Email delivery remains partial:** a Resend provider and auth enqueue hooks now exist. The fallback console provider logs recipient/body content, provider errors can be persisted verbatim, and failed messages lack a complete retry/claim lifecycle. Provider delivery and link completion have not been accepted.

@@ -6,8 +6,8 @@ import { createDatabase, outboxEvents } from '@personalspace/db';
 import { createS3Storage, readStorageConfig } from '@personalspace/storage';
 import { cleanAttachment, cleanupEventSchema } from './attachment-cleanup';
 import { cleanAccountStorage } from './account-cleanup';
-import { scheduleAccountDeletion } from './deletion-schedule';
-import { runMaintenance, scheduleMaintenance } from './maintenance';
+import { runMaintenance } from './maintenance';
+import { runBackgroundSchedules } from './background-schedules';
 import { processExport } from './export-processing';
 import { cleanupExpiredExports, relayExports } from './export-lifecycle';
 import {
@@ -316,31 +316,21 @@ async function relay() {
       .where(eq(outboxEvents.id, event.id));
   }
 }
+const scheduleStop = new AbortController();
 process.on('SIGINT', () => {
   stopping = true;
+  scheduleStop.abort();
 });
 process.on('SIGTERM', () => {
   stopping = true;
+  scheduleStop.abort();
 });
+const scheduleRun = runBackgroundSchedules(env.data.REDIS_URL, scheduleStop.signal, (event) =>
+  console.error(JSON.stringify({ event })),
+);
 try {
   let nextExportCleanupAt = 0;
-  let nextScheduleAttemptAt = 0;
-  const pendingSchedules = new Map([
-    ['deletion', () => scheduleAccountDeletion(deletionQueue)],
-    ['maintenance', () => scheduleMaintenance(maintenanceQueue)],
-  ]);
   while (!stopping) {
-    if (pendingSchedules.size && Date.now() >= nextScheduleAttemptAt) {
-      nextScheduleAttemptAt = Date.now() + 60000;
-      for (const [name, install] of pendingSchedules) {
-        try {
-          await install();
-          pendingSchedules.delete(name);
-        } catch {
-          console.error(JSON.stringify({ event: `${name}_schedule_failed` }));
-        }
-      }
-    }
     // Run on startup and every minute, independently of the nightly scheduler.
     if (Date.now() >= nextExportCleanupAt) {
       nextExportCleanupAt = Date.now() + 60000;
@@ -359,47 +349,9 @@ try {
     }
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
-
-  // Schedule metadata background fetch every 5 minutes.
-  const metadataJobs = await metadataQueue.getRepeatableJobs();
-  if (!metadataJobs.length) {
-    await metadataQueue.add(
-      'fetch-metadata',
-      {},
-      {
-        repeat: { pattern: '*/5 * * * *' }, // Every 5 minutes
-        removeOnComplete: { age: 7 * 86400 },
-        removeOnFail: false,
-      },
-    );
-  }
-  // Schedule notifications push every minute.
-  const notificationJobs = await notificationsQueue.getRepeatableJobs();
-  if (!notificationJobs.length) {
-    await notificationsQueue.add(
-      'deliver-reminders',
-      {},
-      {
-        repeat: { pattern: '* * * * *' }, // Every minute
-        removeOnComplete: { age: 7 * 86400 },
-        removeOnFail: false,
-      },
-    );
-  }
-  // Schedule email processing every minute.
-  const emailJobs = await emailQueue.getRepeatableJobs();
-  if (!emailJobs.length) {
-    await emailQueue.add(
-      'process-emails',
-      {},
-      {
-        repeat: { pattern: '* * * * *' }, // Every minute
-        removeOnComplete: { age: 7 * 86400 },
-        removeOnFail: false,
-      },
-    );
-  }
 } finally {
+  scheduleStop.abort();
+  await scheduleRun;
   await emailWorker.close();
   await emailQueue.close();
   await notificationsWorker.close();

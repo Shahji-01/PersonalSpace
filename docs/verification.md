@@ -1,5 +1,13 @@
 # Verification
 
+## Runtime background schedules — 22 October 2026
+
+- Added four unit cases and three isolated Redis integration cases for startup registration, legacy/unrelated repeat definitions, concurrent starts, independent failure handling, preservation of delayed occurrences, startup/reconnect outages, lost Redis data and registration-loop shutdown. The Redis suite uses synthetic queue definitions and a TCP outage proxy; it never starts the application's email, metadata, notification or deletion processors.
+- `pnpm exec vitest run` passed 179 of 181 tests inside the sandbox; two existing scanner tests could not use their local sockets. Rerunning `pnpm exec vitest run apps/worker/src/attachment-scanner.test.ts` outside the sandbox passed all seven scanner cases, completing coverage of all 181 unit tests. The final `pnpm exec vitest run --config vitest.integration.config.ts tests/background-schedules.integration.test.ts` passed all three schedule tests using Docker outside the sandbox. The broader database/storage integration suites were not rerun for this scheduling-only change.
+- Worker TypeScript, tools/tests TypeScript, changed-source ESLint and the worker build passed. The existing `rrule` default-import build warning remains. No migration or native dependency changed, so mobile bundles and device checks were not rerun.
+- The outage test initially exposed the installed BullMQ lazy repeat getter hanging when queue initialization rejected. Explicit queue readiness now makes this a bounded, retryable pass failure; the final suite passes without unhandled rejections.
+- Docker Desktop was started with approval to run isolated Redis fixtures. No application service was restarted, migration applied or emulator operated. Existing unrelated development-preview edits remain excluded. Registering the schedules does not complete downstream email safety/provider delivery, metadata security or server push; those remain separate OpenSpec tasks.
+
 ## Safe Trash retention and nightly scheduling — 9 October 2026
 
 - All **177 unit tests** and **99 integration tests** passed. The integration suite uses isolated PostgreSQL, Redis and MinIO instances, including the dedicated maintenance role. New cases cover expired/recent/live Trash, attachment cleanup events, note history and recurrence erasure, affected project/inbox references, retained UUIDs and retry hashes, concurrent restore, rollback, concurrent cleanup attempts, account-erasure exclusion, bounded pages and task-parent starvation. Real Redis tests verify maintenance/deletion repeat schedule deduplication despite unrelated schedules.

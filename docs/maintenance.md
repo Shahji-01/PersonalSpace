@@ -2,7 +2,9 @@
 
 Apply migration **0043** before running the updated worker. It adds retention indexes and column-level permissions for sync/audit bookkeeping, and removes the maintenance role's ability to update financial account balances. No authentication privileges are added. Migration and runtime validation in this increment use isolated databases; the running development services are not restarted.
 
-The worker registers the `nightly` job (`0 2 * * *`) during its active loop. Registration retries approximately once per minute after failure, independently of deletion schedule registration. Its existing BullMQ repeat identity is preserved, so concurrent starts and older installations deduplicate. Unrelated repeat jobs do not suppress registration. Each scheduled job has three attempts with exponential backoff; failed jobs remain available for inspection. Loss of the Redis dataset after successful registration still requires a worker restart to reinstall these schedules.
+The worker starts an independent schedule-registration loop before the outbox relay. It checks every minute for the required deletion (`0 * * * *`), maintenance (`0 2 * * *`), metadata (`*/5 * * * *`), reminder (`* * * * *`) and email (`* * * * *`) repeat definitions. Missing definitions are installed; existing definitions and their delayed occurrences are left untouched. Legacy identities are preserved, so concurrent starts deduplicate and unrelated repeat jobs cannot suppress registration.
+
+Registration uses a separate short-lived Redis producer connection with five-second connection/command limits and no offline command buffering. Failed registration is retried on the next pass independently of stalled relay I/O. Redis data loss no longer requires a worker restart to reinstall schedules. Shutdown aborts the registration loop, disconnects its producer and closes its queue handles. Logs contain only schedule categories, never raw connection errors. Deletion and maintenance retain three attempts with exponential backoff; failed jobs remain available for inspection.
 
 ## Content retention
 
@@ -26,4 +28,4 @@ Balance reconciliation reads the ledger and cached balances in one SQL statement
 
 Operational logs contain event names and counts, not account identifiers, financial values or raw database errors. Independent maintenance steps continue after a failure; the queue attempt then fails with a generic error so BullMQ retries. External alert delivery and an operator repair workflow remain open.
 
-The metadata, reminder and email schedulers are still separate pending work. In particular, registering email delivery before repairing its console fallback, claims and retry behavior would activate known privacy/reliability defects. Real server push transport is also still absent.
+Schedule registration is implemented, but the downstream email console fallback, claims/retries and provider delivery still need the separate transactional-email increment. The current console fallback can print private email content; schedule registration is not email privacy/reliability acceptance. Metadata fetch hardening and real server push transport also remain open. The scheduling checks use isolated Redis and synthetic definitions without starting these processors or restarting the user's running services.
