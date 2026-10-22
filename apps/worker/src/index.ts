@@ -16,6 +16,7 @@ import {
   processPendingMetadata,
   deliverDueReminders,
   processPendingEmails,
+  processCompletionEmails,
   createEmailProvider,
 } from '@personalspace/domain';
 import { createClamScanner, readProcessorConfig } from './attachment-scanner';
@@ -162,7 +163,15 @@ const deletionWorker = new Worker(
       await redis.del(`sync-version:${userId}`);
       console.log(JSON.stringify({ event: 'deletion_cache_cleanup', userId }));
     };
-    const deleted = await executePendingDeletions(maintenanceDb, onStorageCleanup, onCacheCleanup);
+    const deleted = await executePendingDeletions(
+      maintenanceDb,
+      onStorageCleanup,
+      onCacheCleanup,
+    ).catch(() => {
+      // Claim/enqueue query errors may include the final recipient. Do not copy
+      // those parameters into BullMQ's persisted failure diagnostics.
+      throw new Error('deletion_processing_failed');
+    });
     if (deleted.length) {
       console.log(JSON.stringify({ event: 'deletion_completed', count: deleted.length }));
     }
@@ -233,7 +242,9 @@ const emailWorker = new Worker(
   'email',
   async () => {
     try {
-      const accepted = await processPendingEmails(maintenanceDb, emailProvider);
+      // Expiry cleanup runs even if ordinary account email processing fails.
+      const completions = await processCompletionEmails(maintenanceDb, emailProvider);
+      const accepted = completions + (await processPendingEmails(maintenanceDb, emailProvider));
       if (accepted > 0) {
         console.log(JSON.stringify({ event: 'emails_accepted', count: accepted }));
       }

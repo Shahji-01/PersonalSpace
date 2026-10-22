@@ -64,6 +64,8 @@ Add delivery state/attempt metadata through additive migrations: bounded claim l
 
 Keep the existing Resend adapter as the initial email integration, adding timeout/idempotency/error normalization. A development sink must explicitly return preview status and omit private message content from normal logs. Production readiness fails when a required delivery adapter is absent. Transactional enqueue failures cannot be swallowed by auth hooks.
 
+Approved on 22 October 2026: deletion-completion email uses a separate completion-only outbox. Capture its recipient atomically with the first erasure claim, before anonymization. Retain only the recipient, frozen sender/template version, stable delivery identity, claim/retry metadata and timestamps. Its absolute expiry is at most 24 hours after capture and cannot be extended by retries; deletion progress is not held open by email delivery. Send only after the deletion ledger confirms completion. Delete the outbox row on provider acceptance, preview or terminal failure, and purge expired rows even when erasure has not finished. The ledger retains only the non-content outcome and capture time. No ordinary message is exempted from account-erasure fencing. Outages must not cause expired messages to send; physical expiry cleanup resumes with the worker.
+
 Provider acceptance does not prove user receipt. Email and push retain their respective receipt capabilities and unknown outcomes; do not promise universal exactly-once display. The alternative of marking logs sent before transport or retrying without stable identity is rejected.
 
 ### 3. Make ledger effects transactional and shared

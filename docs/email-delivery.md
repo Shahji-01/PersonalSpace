@@ -32,7 +32,11 @@ Resend requests time out after ten seconds and do not follow redirects. HTTP 429
 
 No delivery webhook/receipt consumer is implemented yet. `sent_at` is not populated by new acceptance or preview outcomes. Worker logs report `emails_accepted`, and database failures fail the queue job with a sanitized error instead of silently completing it.
 
-## Provider setup
+## Deletion-completion exception
+
+Migration 0045 adds a maintenance-only outbox for the one final email after account erasure. Recipient capture commits with the first deletion claim; sending waits for the ledger to become completed. Its fixed, versioned plain-text/HTML template contains no account content or links. Claims use the same bounded attempts, timeouts and stable-provider-key approach as ordinary email. Acceptance, preview and terminal failure remove the record, leaving only a non-content ledger outcome. An immutable capture marker prevents recapturing the address after expiry cleanup. See [account deletion](account-deletion.md) for the approved 24-hour retention window and outage behavior.
+
+## Provider configuration
 
 Set `EMAIL_DELIVERY_MODE=resend`, `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS` using a verified sender. Never commit credentials. Development defaults to `preview` without a key; `.env.example` makes that choice explicit. An incomplete or unknown development provider configuration records `configuration_missing`. Production worker startup rejects missing credentials, a missing sender or preview mode. The application's separate production release gate remains in place.
 

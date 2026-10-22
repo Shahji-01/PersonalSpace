@@ -88,3 +88,4 @@ export {
   EmailDeliveryError,
   UnavailableEmailProvider,
 } from './email';
+export { processCompletionEmails } from './deletion-completion-email';

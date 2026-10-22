@@ -16,6 +16,14 @@ import {
   type EmailProvider,
   type EmailEnvelope,
 } from '../packages/domain/src/email';
+import { executePendingDeletions } from '../packages/domain/src/deletion';
+import {
+  claimCompletionEmail,
+  deliverCompletionEmail,
+  processCompletionEmails,
+  purgeExpiredCompletionEmails,
+  deletionCompletionTemplate,
+} from '../packages/domain/src/deletion-completion-email';
 
 let container: StartedPostgreSqlContainer;
 let owner: Pool, app: Pool, maintenance: Pool, relay: Pool, auth: Pool;
@@ -53,6 +61,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await owner.query('DELETE FROM notification_log');
+  await owner.query('DELETE FROM deletion_requests');
 });
 
 async function user(db = owner) {
@@ -223,6 +232,29 @@ it('keeps the account-erasure fence and erases delivery metadata with its notifi
 function deliveryDb() {
   return drizzle(maintenance, { schema });
 }
+
+it('preserves database timestamp precision when reclaiming an existing email attempt', async () => {
+  const id = await readyEmail();
+  await maintenance.query(
+    "UPDATE notification_log SET email_first_attempt_at=clock_timestamp(),email_attempts=1,email_from='sender@example.test',status='retrying' WHERE id=$1",
+    [id],
+  );
+  const original = (
+    await owner.query(
+      'SELECT email_first_attempt_at::text AS stamp FROM notification_log WHERE id=$1',
+      [id],
+    )
+  ).rows[0].stamp;
+  expect(await processPendingEmails(deliveryDb(), fakeProvider())).toBe(1);
+  expect(
+    (
+      await owner.query(
+        'SELECT email_first_attempt_at::text AS stamp FROM notification_log WHERE id=$1',
+        [id],
+      )
+    ).rows[0].stamp,
+  ).toBe(original);
+});
 async function readyEmail() {
   const id = await enqueue(await user());
   await owner.query(
@@ -465,3 +497,253 @@ it('does not resolve the recipient again after an account address changes or ret
   expect(await processPendingEmails(deliveryDb(), provider)).toBe(0);
   expect(provider.sendEmail).toHaveBeenCalledTimes(2);
 });
+
+async function startErasure() {
+  const account = await user();
+  const {
+    rows: [request],
+  } = await owner.query(
+    "INSERT INTO deletion_requests(user_id,status,grace_ends_at) VALUES ($1,'pending',now()-interval '1 day') RETURNING id",
+    [account],
+  );
+  await executePendingDeletions(deliveryDb(), async () => {});
+  return { account, id: request.id as string };
+}
+async function finishErasure(account: string) {
+  await owner.query(
+    "UPDATE deletion_requests SET storage_cleanup_after=now()-interval '1 second' WHERE user_id=$1",
+    [account],
+  );
+  expect(await executePendingDeletions(deliveryDb(), async () => {})).toContain(account);
+}
+async function completionRow(id: string) {
+  return (await owner.query('SELECT * FROM deletion_completion_outbox WHERE id=$1', [id])).rows[0];
+}
+async function completionStatus(id: string) {
+  return (
+    await owner.query('SELECT completion_email_status FROM deletion_requests WHERE id=$1', [id])
+  ).rows[0]?.completion_email_status;
+}
+
+it('captures one final recipient before erasure, sends only after completion, then removes it', async () => {
+  const { account, id } = await startErasure();
+  const queued = await completionRow(id);
+  expect(queued.recipient).toBe(`${account}@example.test`);
+  expect(queued.expires_at.getTime() - queued.created_at.getTime()).toBe(24 * 60 * 60_000);
+  expect(
+    (await owner.query('SELECT email FROM auth_user WHERE id=$1', [account])).rows[0].email,
+  ).toBe(`deleted+${account}@deleted.invalid`);
+  const provider = fakeProvider();
+  expect(await processCompletionEmails(deliveryDb(), provider)).toBe(0);
+  expect(provider.sendEmail).not.toHaveBeenCalled();
+  await finishErasure(account);
+  expect((await completionRow(id)).created_at).toEqual(queued.created_at);
+  expect(await processCompletionEmails(deliveryDb(), provider)).toBe(1);
+  expect(provider.sendEmail.mock.calls[0]![0]).toMatchObject({
+    to: queued.recipient,
+    idempotencyKey: `personalspace/deletion-completed/${id}`,
+    ...deletionCompletionTemplate,
+  });
+  expect(await completionRow(id)).toBeUndefined();
+  expect(await completionStatus(id)).toBe('accepted');
+  expect(await processCompletionEmails(deliveryDb(), provider)).toBe(0);
+});
+
+it('rolls back the first erasure claim when completion enqueue fails', async () => {
+  const account = await user();
+  await owner.query(
+    "INSERT INTO deletion_requests(user_id,status,grace_ends_at) VALUES ($1,'pending',now()-interval '1 day')",
+    [account],
+  );
+  await owner.query(`CREATE FUNCTION reject_completion_fixture() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN RAISE EXCEPTION 'fixture enqueue failure'; END $$;
+    CREATE TRIGGER reject_completion_fixture BEFORE INSERT ON deletion_completion_outbox
+    FOR EACH ROW EXECUTE FUNCTION reject_completion_fixture();`);
+  const cleanup = vi.fn(async () => {});
+  try {
+    await expect(executePendingDeletions(deliveryDb(), cleanup)).rejects.toThrow();
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(
+      (
+        await owner.query(
+          'SELECT status,started_at,completion_email_captured_at FROM deletion_requests WHERE user_id=$1',
+          [account],
+        )
+      ).rows[0],
+    ).toEqual({ status: 'pending', started_at: null, completion_email_captured_at: null });
+    expect(
+      (await owner.query('SELECT email FROM auth_user WHERE id=$1', [account])).rows[0].email,
+    ).toBe(`${account}@example.test`);
+  } finally {
+    await owner.query(
+      'DROP TRIGGER reject_completion_fixture ON deletion_completion_outbox; DROP FUNCTION reject_completion_fixture()',
+    );
+  }
+});
+
+it('denies ordinary roles access and prevents extending or changing completion envelopes', async () => {
+  const { id } = await startErasure();
+  for (const role of [app, relay, auth]) {
+    await expect(
+      role.query('SELECT recipient FROM deletion_completion_outbox'),
+    ).rejects.toMatchObject({ code: '42501' });
+    await expect(role.query('DELETE FROM deletion_completion_outbox')).rejects.toMatchObject({
+      code: '42501',
+    });
+  }
+  await expect(
+    maintenance.query(
+      "UPDATE deletion_completion_outbox SET expires_at=expires_at+interval '1 minute' WHERE id=$1",
+      [id],
+    ),
+  ).rejects.toMatchObject({ code: '55000' });
+  await expect(
+    maintenance.query(
+      "UPDATE deletion_completion_outbox SET recipient='replacement@example.test' WHERE id=$1",
+      [id],
+    ),
+  ).rejects.toMatchObject({ code: '55000' });
+  await expect(
+    maintenance.query(
+      'UPDATE deletion_requests SET completion_email_captured_at=NULL WHERE id=$1',
+      [id],
+    ),
+  ).rejects.toMatchObject({ code: '55000' });
+});
+
+it('serializes completion delivery and erases preview or unavailable recipients immediately', async () => {
+  const first = await startErasure();
+  await finishErasure(first.account);
+  const provider = fakeProvider();
+  const results = await Promise.all(
+    Array.from({ length: 4 }, () => processCompletionEmails(deliveryDb(), provider)),
+  );
+  expect(results.reduce((a, b) => a + b, 0)).toBe(1);
+  expect(provider.sendEmail).toHaveBeenCalledTimes(1);
+  for (const [adapter, status] of [
+    [new ConsoleEmailProvider(), 'preview'],
+    [new UnavailableEmailProvider(), 'failed'],
+  ] as const) {
+    const next = await startErasure();
+    await finishErasure(next.account);
+    expect(await processCompletionEmails(deliveryDb(), adapter)).toBe(0);
+    expect(await completionRow(next.id)).toBeUndefined();
+    expect(await completionStatus(next.id)).toBe(status);
+  }
+});
+
+it('recovers completion acceptance after a crash with the same identity and fences stale claims', async () => {
+  const { account, id } = await startErasure();
+  await finishErasure(account);
+  const provider = fakeProvider();
+  const abandoned = (await claimCompletionEmail(deliveryDb(), provider))!;
+  const envelope = {
+    to: abandoned.recipient,
+    from: abandoned.sender,
+    idempotencyKey: `personalspace/deletion-completed/${id}`,
+    ...deletionCompletionTemplate,
+  };
+  await provider.sendEmail(envelope);
+  await owner.query(
+    "UPDATE deletion_completion_outbox SET lease_expires_at=now()-interval '1 second' WHERE id=$1",
+    [id],
+  );
+  const replacement = (await claimCompletionEmail(deliveryDb(), {
+    ...provider,
+    fromAddress: 'changed@example.test',
+  }))!;
+  expect(replacement.sender).toBe(abandoned.sender);
+  expect(await deliverCompletionEmail(deliveryDb(), provider, abandoned)).toBe(false);
+  expect(await deliverCompletionEmail(deliveryDb(), provider, replacement)).toBe(true);
+  expect(provider.accepted.size).toBe(1);
+  expect(provider.sendEmail.mock.calls.map(([email]) => email)).toEqual([envelope, envelope]);
+  expect(await completionRow(id)).toBeUndefined();
+});
+
+it('bounds completion retries and removes recipients on permanent rejection', async () => {
+  const { account, id } = await startErasure();
+  await finishErasure(account);
+  const provider = fakeProvider();
+  provider.sendEmail.mockRejectedValueOnce(
+    new EmailDeliveryError('provider_rate_limited', true, 120_000),
+  );
+  const expiry = (await completionRow(id)).expires_at;
+  expect(await processCompletionEmails(deliveryDb(), provider)).toBe(0);
+  expect(await completionRow(id)).toMatchObject({
+    status: 'retrying',
+    attempts: 1,
+    error_code: 'provider_rate_limited',
+    expires_at: expiry,
+  });
+  expect((await completionRow(id)).next_attempt_at.getTime()).toBeGreaterThan(Date.now() + 118_000);
+  expect(await processCompletionEmails(deliveryDb(), provider)).toBe(0);
+  await owner.query('UPDATE deletion_completion_outbox SET next_attempt_at=now() WHERE id=$1', [
+    id,
+  ]);
+  provider.sendEmail.mockRejectedValueOnce(new EmailDeliveryError('provider_rejected', false));
+  expect(await processCompletionEmails(deliveryDb(), provider)).toBe(0);
+  expect(await completionRow(id)).toBeUndefined();
+  expect(await completionStatus(id)).toBe('failed');
+});
+
+it('purges expired final mail even before deletion finishes and cannot recapture the recipient', async () => {
+  const account = await user();
+  // Seed an old first capture through the same guarded maintenance writes. The
+  // recipient remains unanonymized to prove the marker, not a tombstone check,
+  // prevents reacquisition after expiry cleanup.
+  const captured = new Date(Date.now() - 25 * 60 * 60_000);
+  const {
+    rows: [request],
+  } = await owner.query(
+    `INSERT INTO deletion_requests(user_id,status,grace_ends_at,started_at,completion_email_captured_at,completion_email_status)
+    VALUES ($1,'processing',$2,$2,$2,'pending') RETURNING id`,
+    [account, captured],
+  );
+  await maintenance.query(
+    `INSERT INTO deletion_completion_outbox(id,recipient,created_at,expires_at)
+    VALUES ($1,$2,$3,$4)`,
+    [
+      request.id,
+      `${account}@example.test`,
+      captured,
+      new Date(captured.getTime() + 24 * 60 * 60_000),
+    ],
+  );
+  expect(await purgeExpiredCompletionEmails(deliveryDb())).toBe(1);
+  expect(await completionRow(request.id)).toBeUndefined();
+  expect(await completionStatus(request.id)).toBe('expired');
+  await executePendingDeletions(deliveryDb(), async () => {});
+  expect(await completionRow(request.id)).toBeUndefined();
+  expect(await completionStatus(request.id)).toBe('expired');
+  await finishErasure(account);
+  const provider = fakeProvider();
+  expect(await processCompletionEmails(deliveryDb(), provider)).toBe(0);
+  expect(provider.sendEmail).not.toHaveBeenCalled();
+});
+
+it.each(['attempts', 'expiry'] as const)(
+  'stops completion retries at the %s boundary',
+  async (boundary) => {
+    const { account, id } = await startErasure();
+    await finishErasure(account);
+    if (boundary === 'attempts') {
+      await maintenance.query(
+        'UPDATE deletion_completion_outbox SET attempts=7,first_attempt_at=now(),sender=$2 WHERE id=$1',
+        [id, 'sender@example.test'],
+      );
+    }
+    const provider = fakeProvider();
+    provider.sendEmail.mockRejectedValue(
+      new EmailDeliveryError(
+        'provider_rate_limited',
+        true,
+        boundary === 'expiry' ? 24 * 60 * 60_000 : undefined,
+      ),
+    );
+    expect(await processCompletionEmails(deliveryDb(), provider)).toBe(0);
+    expect(provider.sendEmail).toHaveBeenCalledTimes(1);
+    expect(await completionRow(id)).toBeUndefined();
+    expect(await completionStatus(id)).toBe(boundary === 'expiry' ? 'expired' : 'failed');
+    expect(await processCompletionEmails(deliveryDb(), provider)).toBe(0);
+  },
+);

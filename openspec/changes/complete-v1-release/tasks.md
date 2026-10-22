@@ -20,6 +20,7 @@ Capability: `background-delivery`. Depends on group 1.
 - [x] 2.2 Implement atomic email claims, stale-claim fencing, expired-lease recovery and bounded backoff; verify competing workers and crashes before/after provider submission with stable message identity.
 - [x] 2.3 Add Resend timeout/idempotency/error normalization and explicit preview/unavailable outcomes; verify contract fixtures for acceptance, timeout, throttling, permanent failure and missing configuration without raw content logs.
 - [ ] 2.4 Make required auth/account/export email enqueue durable and visible on failure; verify rollback/recoverable responses when the enqueue path fails instead of swallowing errors.
+- [x] 2.4a Implement the approved completion-only outbox with atomic pre-erasure capture, restricted access, immutable 24-hour expiry, completion gating and removal on terminal outcomes; verify recovery cannot recreate retained recipients and that ordinary erasure fencing remains intact.
 - [ ] 2.5 Complete all v1.0 email templates and safe link/expiry rendering; verify template fixtures, accessible HTML/plain text and redaction of tokens/recipients in operational errors.
 - [ ] 2.6 Run email/worker integration checks, update delivery/provider setup documentation and audit evidence, then commit/push the tested increment and verify the remote commit; leave real-provider acceptance to group 21.
 

@@ -71,7 +71,8 @@ export async function claimNextEmail(db: Database, provider: EmailProvider): Pro
         emailClaimId: randomUUID(),
         emailLeaseExpiresAt: new Date(now.getTime() + leaseMs),
         emailAttempts: email.emailAttempts + 1,
-        emailFirstAttemptAt: email.emailFirstAttemptAt ?? now,
+        // Preserve PostgreSQL sub-millisecond precision on recovered rows.
+        emailFirstAttemptAt: sql`coalesce(${notificationLog.emailFirstAttemptAt}, ${now})`,
         emailFrom: email.emailFirstAttemptAt ? email.emailFrom : provider.fromAddress,
         emailErrorCode: null,
         error: null,

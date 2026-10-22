@@ -1,5 +1,12 @@
 # Verification
 
+## Bounded deletion-completion email — 22 October 2026
+
+- All 24 email PostgreSQL integration cases pass, including nine completion-outbox cases and a timestamp-precision regression. Coverage includes atomic capture/rollback, real erasure before submission, owner/auth/relay access denial, immutable recipient/expiry/capture markers, concurrent claims, acceptance-before-crash recovery, stale workers, preview/unavailable cleanup, bounded retries and expiry before erasure finishes without recapture.
+- All 53 foundation/API integration cases passed, as did the two existing PostgreSQL/MinIO object-erasure regressions. An initial filtered foundation run hit the signup rate limit; running the erasure case alone then exposed its dependency on earlier fixture data. The test now creates and verifies its own foreign-account record. The subsequent full foundation suite passes. Unrelated attachment cases were not rerun.
+- Database/domain/worker TypeScript, tools/tests TypeScript, changed-source ESLint and worker build pass. The retry-boundary fixture exposed PostgreSQL microseconds being rounded by JavaScript on an immutable first-attempt timestamp; both delivery paths now preserve that timestamp in SQL, with a dedicated passing regression.
+- Migration 0045 was exercised on fresh and upgraded isolated databases. The user approved the completion-only 24-hour retention exception; the design and capability specs now record it. No live database migration, real provider delivery, running app restart or emulator operation was performed. Full template/enqueue and external-provider acceptance remain open.
+
 ## Email claims, retries and provider contracts — 22 October 2026
 
 - Fourteen provider unit fixtures pass: stable key/envelope submission, ten-second timeout, throttling, transient/permanent rejection, both idempotency conflict outcomes, malformed receipts, missing configuration and private development preview.

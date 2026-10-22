@@ -608,5 +608,24 @@ export const deletionRequests = pgTable('deletion_requests', {
   startedAt: instant('started_at'),
   completedAt: instant('completed_at'),
   cancelledAt: instant('cancelled_at'),
+  completionEmailCapturedAt: instant('completion_email_captured_at'),
+  completionEmailStatus: text('completion_email_status'),
   createdAt: instant('created_at').notNull().defaultNow(),
+});
+
+// Only the maintenance role can access this bounded final-notification exception.
+export const deletionCompletionOutbox = pgTable('deletion_completion_outbox', {
+  id: uuid('id').primaryKey(),
+  recipient: text('recipient').notNull(),
+  sender: text('sender'),
+  templateVersion: integer('template_version').notNull().default(1),
+  createdAt: instant('created_at').notNull().defaultNow(),
+  expiresAt: instant('expires_at').notNull(),
+  status: text('status').notNull().default('pending'),
+  attempts: integer('attempts').notNull().default(0),
+  firstAttemptAt: instant('first_attempt_at'),
+  nextAttemptAt: instant('next_attempt_at').notNull().defaultNow(),
+  claimId: uuid('claim_id'),
+  leaseExpiresAt: instant('lease_expires_at'),
+  errorCode: text('error_code'),
 });

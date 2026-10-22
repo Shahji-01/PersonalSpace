@@ -10,6 +10,7 @@
 import { eq, and, gt, isNull, lte, or, sql } from 'drizzle-orm';
 import {
   deletionRequests,
+  deletionCompletionOutbox,
   entities,
   inboxItems,
   idempotencyKeys,
@@ -189,16 +190,43 @@ export async function executePendingDeletions(
   const deleted: string[] = [];
   for (const req of expired) {
     const startedAt = new Date();
-    const [claimed] = await db
-      .update(deletionRequests)
-      .set({
-        status: 'processing',
-        startedAt,
-        step: 'storage',
-        storageCleanupAfter: sql`coalesce(${deletionRequests.storageCleanupAfter}, ${new Date(Date.now() + 10 * 60000)})`,
-      })
-      .where(and(eq(deletionRequests.id, req.id), claimable))
-      .returning();
+    const claimed = await db.transaction(async (tx) => {
+      const [request] = await tx
+        .update(deletionRequests)
+        .set({
+          status: 'processing',
+          startedAt,
+          step: 'storage',
+          storageCleanupAfter: sql`coalesce(${deletionRequests.storageCleanupAfter}, ${new Date(Date.now() + 10 * 60000)})`,
+        })
+        .where(and(eq(deletionRequests.id, req.id), claimable))
+        .returning();
+      if (!request || request.completionEmailCapturedAt) return request;
+      const [user] = await tx
+        .select({ email: authUsers.email })
+        .from(authUsers)
+        .where(eq(authUsers.id, request.userId));
+      const recipient = user?.email && !user.email.endsWith('@deleted.invalid') ? user.email : null;
+      // Capture once, in the erasure-claim transaction. Retries cannot renew its
+      // lifetime, even after the short-lived outbox record has been purged.
+      const clock = await tx.execute<{ now: string }>(sql`select clock_timestamp() as now`);
+      const capturedAt = new Date(clock.rows[0]!.now);
+      await tx
+        .update(deletionRequests)
+        .set({
+          completionEmailCapturedAt: capturedAt,
+          completionEmailStatus: recipient ? 'pending' : 'unavailable',
+        })
+        .where(eq(deletionRequests.id, request.id));
+      if (recipient)
+        await tx.insert(deletionCompletionOutbox).values({
+          id: request.id,
+          recipient,
+          createdAt: capturedAt,
+          expiresAt: new Date(capturedAt.getTime() + 24 * 60 * 60_000),
+        });
+      return request;
+    });
     if (!claimed) continue;
     const ownsClaim = and(
       eq(deletionRequests.id, req.id),

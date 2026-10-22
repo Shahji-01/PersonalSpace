@@ -3817,6 +3817,17 @@ describe('authenticated capture → PostgreSQL → sync', () => {
     expect(signup.statusCode, signup.body).toBe(200);
     const userC = signup.json<{ user: { id: string } }>().user.id;
     const service = createCaptureService(domain.db);
+    // Establish isolation evidence locally instead of relying on earlier tests.
+    const preservedNote = v7();
+    await service.execute(
+      userA,
+      v7(),
+      {
+        op: 'capture',
+        payload: { id: preservedNote, type: 'note', text: 'Keep this account', plannedDate: null },
+      },
+      'del-isolation',
+    );
     const noteId = v7();
     await service.execute(
       userC,
@@ -3915,11 +3926,13 @@ describe('authenticated capture → PostgreSQL → sync', () => {
 
     // Owner isolation: userA's data is untouched.
     expect(
-      Number(
-        (await owner.query('SELECT count(*)::int c FROM entities WHERE user_id=$1', [userA]))
-          .rows[0].c,
-      ),
-    ).toBeGreaterThan(0);
+      (
+        await owner.query('SELECT id FROM entities WHERE user_id=$1 AND id=$2', [
+          userA,
+          preservedNote,
+        ])
+      ).rows,
+    ).toEqual([{ id: preservedNote }]);
   });
   it('queues verification and password-reset emails through the notification log', async () => {
     const email = `reset-${v7()}@example.test`;

@@ -41,6 +41,16 @@ Account deletion SHALL require recent authentication, support cancellation durin
 - **WHEN** a deletion worker stops midway through object or record cleanup
 - **THEN** another attempt resumes from durable progress without reopening writes or erasing another account
 
+#### Scenario: Bounded final notification
+
+- **WHEN** erasure starts with a deliverable recipient address
+- **THEN** only the separate completion outbox may retain that address for up to 24 hours, solely for the fixed completion email, and the ordinary notification inventory is erased
+
+#### Scenario: Completion notification cannot delay erasure
+
+- **WHEN** email delivery is unavailable or the completion envelope expires
+- **THEN** account erasure still completes and only a non-content notification outcome remains in its ledger
+
 #### Scenario: Backup later restored
 
 - **WHEN** a backup predating completed deletion is restored

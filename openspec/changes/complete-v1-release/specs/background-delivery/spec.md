@@ -59,3 +59,17 @@ The system SHALL durably enqueue required authentication, account and export mes
 
 - **WHEN** a provider returns a response containing recipient data or a token
 - **THEN** stored diagnostics and logs contain only approved error categories and correlation identifiers
+
+### Requirement: Deletion-completion delivery has bounded retention
+
+The system SHALL atomically capture minimum completion-email data before anonymization and expire it within 24 hours without extensions. Only maintenance delivery SHALL access this separate outbox. Acceptance, preview, terminal failure or expiry cleanup SHALL remove it. The ledger MAY retain only a non-content outcome and capture time. Ordinary emails SHALL remain blocked by erasure fencing.
+
+#### Scenario: Completion after recipient anonymization
+
+- **WHEN** the erasure pipeline finishes within the completion outbox lifetime
+- **THEN** the worker can send the fixed completion message using its retained recipient and stable idempotency key, then removes the delivery record
+
+#### Scenario: Erasure or worker outage exceeds retention
+
+- **WHEN** the completion envelope expires before successful delivery
+- **THEN** it is never submitted again, expiry cleanup removes it when the worker runs, and neither retries nor erasure recovery recreate or extend its recipient retention
